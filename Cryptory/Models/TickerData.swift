@@ -10,6 +10,9 @@ struct TickerData {
     var volume: Double
     var high24: Double
     var low24: Double
-    var sparkline: [Double]
-    var flash: FlashType?
+    var sparkline: [Double] = []
+    var flash: FlashType? = nil
+    var timestamp: Date? = nil
+    var isStale: Bool = false
+    var sourceExchange: Exchange? = nil
 }

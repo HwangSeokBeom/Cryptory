@@ -1,20 +1,11 @@
 import SwiftUI
 
 struct PremiumSummary: View {
-    @ObservedObject var vm: CryptoViewModel
+    let coinViewStates: [KimchiPremiumCoinViewState]
 
-    private let domesticExchanges: [Exchange] = [.upbit, .bithumb, .coinone, .korbit]
-    private var topCoins: [CoinInfo] { Array(COINS.prefix(8)) }
-
-    private func avgPremium(for exchange: Exchange) -> Double? {
-        let premiums = topCoins.compactMap { coin -> Double? in
-            guard let exPrice = vm.prices[coin.symbol]?[exchange.rawValue]?.price,
-                  let binPrice = vm.prices[coin.symbol]?[Exchange.binance.rawValue]?.price,
-                  binPrice > 0 else { return nil }
-            return (exPrice - binPrice) / binPrice * 100
-        }
-        guard !premiums.isEmpty else { return nil }
-        return premiums.reduce(0, +) / Double(premiums.count)
+    private var exchanges: [Exchange] {
+        let exchangeSet = Set(coinViewStates.flatMap { $0.cells.map(\.exchange) })
+        return exchangeSet.sorted { $0.displayName < $1.displayName }
     }
 
     var body: some View {
@@ -32,18 +23,19 @@ struct PremiumSummary: View {
                 GridItem(.flexible()),
                 GridItem(.flexible())
             ], spacing: 8) {
-                ForEach(domesticExchanges) { ex in
-                    let avg = avgPremium(for: ex)
-                    let isUp = (avg ?? 0) >= 0
+                ForEach(exchanges) { exchange in
+                    let premiums = premiumValues(for: exchange)
+                    let average = premiums.isEmpty ? nil : premiums.reduce(0, +) / Double(premiums.count)
+                    let isUp = (average ?? 0) >= 0
 
                     HStack {
-                        Text(ex.displayName)
+                        Text(exchange.displayName)
                             .font(.system(size: 11))
                             .foregroundColor(.textSecondary)
                         Spacer()
-                        Text(avg.map { String(format: "avg %@%.2f%%", $0 >= 0 ? "+" : "", $0) } ?? "대기중")
+                        Text(average.map { String(format: "avg %@%.2f%%", $0 >= 0 ? "+" : "", $0) } ?? "대기중")
                             .font(.mono(13, weight: .heavy))
-                            .foregroundColor(avg == nil ? .textMuted : (isUp ? .up : .down))
+                            .foregroundColor(average == nil ? .textMuted : (isUp ? .up : .down))
                     }
                     .padding(.vertical, 6)
                     .padding(.horizontal, 10)
@@ -69,5 +61,15 @@ struct PremiumSummary: View {
                         .stroke(Color.accent.opacity(0.3), lineWidth: 1)
                 )
         )
+    }
+
+    private func premiumValues(for exchange: Exchange) -> [Double] {
+        coinViewStates.compactMap { coinViewState in
+            coinViewState.cells.first { $0.exchange == exchange }
+        }
+        .compactMap { cell in
+            let normalized = cell.premiumText.replacingOccurrences(of: "%", with: "").replacingOccurrences(of: "+", with: "")
+            return Double(normalized)
+        }
     }
 }

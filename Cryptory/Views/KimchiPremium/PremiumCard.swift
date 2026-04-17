@@ -1,54 +1,52 @@
 import SwiftUI
 
 struct PremiumCard: View {
-    @ObservedObject var vm: CryptoViewModel
-    let coin: CoinInfo
-
-    private var binancePrice: Double? {
-        vm.prices[coin.symbol]?[Exchange.binance.rawValue]?.price
-    }
-
-    private let domesticExchanges: [Exchange] = [.upbit, .bithumb, .coinone, .korbit]
+    let coinViewState: KimchiPremiumCoinViewState
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            // Header
             HStack {
                 HStack(spacing: 6) {
-                    Text(coin.symbol)
+                    Text(coinViewState.symbol)
                         .font(.system(size: 14, weight: .heavy))
                         .foregroundColor(.themeText)
-                    Text(coin.name)
+                    Text(coinViewState.displayName)
                         .font(.system(size: 11))
                         .foregroundColor(.textMuted)
                 }
                 Spacer()
-                Text("기준: \(formattedPrice(binancePrice)) KRW")
+                Text(coinViewState.referenceLabel)
                     .font(.system(size: 11))
                     .foregroundColor(.textMuted)
             }
 
-            // 4-column grid
             HStack(spacing: 6) {
-                ForEach(domesticExchanges) { ex in
-                    let exPrice = vm.prices[coin.symbol]?[ex.rawValue]?.price
-                    let premium = premiumValue(domesticPrice: exPrice)
-                    let isUp = (premium ?? 0) >= 0
-
+                ForEach(coinViewState.cells) { cell in
                     VStack(spacing: 4) {
-                        ExchangeIcon(exchange: ex, size: 16)
+                        ExchangeIcon(exchange: cell.exchange, size: 16)
 
-                        Text(ex.displayName)
+                        Text(cell.exchange.displayName)
                             .font(.system(size: 10))
                             .foregroundColor(.textMuted)
 
-                        Text(formattedPremium(premium))
+                        Text(cell.premiumText)
                             .font(.mono(13, weight: .heavy))
-                            .foregroundColor(premium == nil ? .textMuted : (isUp ? .up : .down))
+                            .foregroundColor(textColor(for: cell))
 
-                        Text(formattedPrice(exPrice))
+                        Text(cell.domesticPriceText)
                             .font(.mono(9))
                             .foregroundColor(.textMuted)
+
+                        Text("환산 \(cell.referencePriceText)")
+                            .font(.system(size: 8, weight: .medium))
+                            .foregroundColor(.textSecondary)
+
+                        if let warningMessage = cell.warningMessage, !warningMessage.isEmpty {
+                            Text(warningMessage)
+                                .font(.system(size: 8))
+                                .foregroundColor(.accent)
+                                .lineLimit(1)
+                        }
                     }
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 8)
@@ -75,18 +73,10 @@ struct PremiumCard: View {
         )
     }
 
-    private func premiumValue(domesticPrice: Double?) -> Double? {
-        guard let binancePrice, let domesticPrice, binancePrice > 0 else { return nil }
-        return (domesticPrice - binancePrice) / binancePrice * 100
-    }
-
-    private func formattedPremium(_ premium: Double?) -> String {
-        guard let premium else { return "—" }
-        return String(format: "%@%.2f%%", premium >= 0 ? "+" : "", premium)
-    }
-
-    private func formattedPrice(_ price: Double?) -> String {
-        guard let price else { return "—" }
-        return PriceFormatter.formatPrice(price)
+    private func textColor(for cell: KimchiPremiumExchangeCellViewState) -> Color {
+        if cell.isStale {
+            return .accent
+        }
+        return cell.premiumText.hasPrefix("-") ? .down : .up
     }
 }

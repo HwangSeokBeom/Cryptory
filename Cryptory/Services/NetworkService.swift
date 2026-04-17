@@ -10,8 +10,9 @@ enum RequestAccessRequirement: String {
 enum NetworkServiceError: LocalizedError {
     case invalidURL(String)
     case invalidResponse
-    case httpError(Int, String)
+    case httpError(Int, String, RemoteErrorCategory)
     case authenticationRequired
+    case transportError(String, RemoteErrorCategory)
     case parsingFailed(String)
 
     var errorDescription: String? {
@@ -20,52 +21,441 @@ enum NetworkServiceError: LocalizedError {
             return "잘못된 서버 경로입니다: \(path)"
         case .invalidResponse:
             return "서버 응답을 확인할 수 없어요."
-        case .httpError(_, let message):
+        case .httpError(_, let message, _):
             return message
         case .authenticationRequired:
             return "로그인이 필요한 요청이에요."
+        case .transportError(let message, _):
+            return message
         case .parsingFailed(let message):
             return message
         }
     }
+
+    var errorCategory: RemoteErrorCategory {
+        switch self {
+        case .httpError(_, _, let category):
+            return category
+        case .transportError(_, let category):
+            return category
+        case .authenticationRequired:
+            return .authenticationFailed
+        default:
+            return .unknown
+        }
+    }
+}
+
+struct ResponseMeta: Equatable {
+    let fetchedAt: Date?
+    let isStale: Bool
+    let warningMessage: String?
+    let partialFailureMessage: String?
+
+    static let empty = ResponseMeta(
+        fetchedAt: nil,
+        isStale: false,
+        warningMessage: nil,
+        partialFailureMessage: nil
+    )
+}
+
+enum BuildConfiguration: String {
+    case debug
+    case release
+
+    static var current: BuildConfiguration {
+        #if DEBUG
+        return .debug
+        #else
+        return .release
+        #endif
+    }
+}
+
+enum AppEnvironment: String {
+    case local
+    case staging
+    case production
+
+    static func resolve(
+        environment: [String: String],
+        buildConfiguration: BuildConfiguration = .current
+    ) -> AppEnvironment {
+        if let configuredValue = environment["CRYPTORY_APP_ENV"]?.trimmedNonEmpty
+            ?? environment["CRYPTORY_ENVIRONMENT"]?.trimmedNonEmpty {
+            switch configuredValue.lowercased() {
+            case "local", "development", "debug":
+                return .local
+            case "staging", "stage":
+                return .staging
+            case "production", "prod", "release":
+                return .production
+            default:
+                break
+            }
+        }
+
+        switch buildConfiguration {
+        case .debug:
+            return .local
+        case .release:
+            return .production
+        }
+    }
+}
+
+struct AppRuntimeConfiguration {
+    let environment: AppEnvironment
+    let restBaseURL: URL
+    let webSocketBaseURL: URL
+    let publicMarketWebSocketURL: URL
+    let privateTradingWebSocketURL: URL
+
+    static let live: AppRuntimeConfiguration = resolve(environment: ProcessInfo.processInfo.environment)
+
+    static func resolve(
+        environment: [String: String],
+        buildConfiguration: BuildConfiguration = .current
+    ) -> AppRuntimeConfiguration {
+        let resolvedEnvironment = AppEnvironment.resolve(
+            environment: environment,
+            buildConfiguration: buildConfiguration
+        )
+        let publicWebSocketPath = environment["CRYPTORY_PUBLIC_WS_PATH"]?.trimmedNonEmpty ?? "/ws/market"
+        let privateWebSocketPath = environment["CRYPTORY_PRIVATE_WS_PATH"]?.trimmedNonEmpty ?? "/ws/trading"
+
+        let defaultRESTBaseURL = makeDefaultRESTBaseURL(
+            for: resolvedEnvironment,
+            environment: environment
+        )
+        let restBaseURL = sanitizedURL(
+            string: environment["CRYPTORY_API_BASE_URL"]?.trimmedNonEmpty
+                ?? environmentSpecificRESTBaseURLString(for: resolvedEnvironment, environment: environment),
+            fallback: defaultRESTBaseURL,
+            label: "REST base URL"
+        )
+        let defaultWebSocketBaseURL = deriveWebSocketBaseURL(from: restBaseURL)
+        let webSocketBaseURL = sanitizedURL(
+            string: environment["CRYPTORY_WS_BASE_URL"]?.trimmedNonEmpty
+                ?? environmentSpecificWebSocketBaseURLString(for: resolvedEnvironment, environment: environment),
+            fallback: defaultWebSocketBaseURL,
+            label: "WebSocket base URL"
+        )
+        let publicMarketWebSocketURL = sanitizedURL(
+            string: environment["CRYPTORY_PUBLIC_WS_URL"]?.trimmedNonEmpty,
+            fallback: webSocketBaseURL.appendingEndpointPath(publicWebSocketPath),
+            label: "Public WebSocket URL"
+        )
+        let privateTradingWebSocketURL = sanitizedURL(
+            string: environment["CRYPTORY_PRIVATE_WS_URL"]?.trimmedNonEmpty,
+            fallback: webSocketBaseURL.appendingEndpointPath(privateWebSocketPath),
+            label: "Private WebSocket URL"
+        )
+
+        let configuration = AppRuntimeConfiguration(
+            environment: resolvedEnvironment,
+            restBaseURL: restBaseURL,
+            webSocketBaseURL: webSocketBaseURL,
+            publicMarketWebSocketURL: publicMarketWebSocketURL,
+            privateTradingWebSocketURL: privateTradingWebSocketURL
+        )
+
+        AppLogger.debug(.network, "Environment -> \(configuration.environment.rawValue)")
+        AppLogger.debug(.network, "REST base URL -> \(configuration.restBaseURL.absoluteString)")
+        AppLogger.debug(.websocket, "Public WS URL -> \(configuration.publicMarketWebSocketURL.absoluteString)")
+        AppLogger.debug(.websocket, "Private WS URL -> \(configuration.privateTradingWebSocketURL.absoluteString)")
+
+        return configuration
+    }
+
+    private static func makeDefaultRESTBaseURL(
+        for environment: AppEnvironment,
+        environment values: [String: String]
+    ) -> URL {
+        let defaultString: String
+        switch environment {
+        case .local:
+            let host = values["CRYPTORY_LOCAL_SERVER_HOST"]?.trimmedNonEmpty ?? "127.0.0.1"
+            let port = values["CRYPTORY_LOCAL_SERVER_PORT"]?.trimmedNonEmpty ?? "3002"
+            defaultString = "http://\(host):\(port)"
+        case .staging:
+            defaultString = values["CRYPTORY_STAGING_API_BASE_URL"]?.trimmedNonEmpty
+                ?? values["CRYPTORY_PRODUCTION_API_BASE_URL"]?.trimmedNonEmpty
+                ?? "https://api.cryptomts.com"
+        case .production:
+            defaultString = values["CRYPTORY_PRODUCTION_API_BASE_URL"]?.trimmedNonEmpty
+                ?? "https://api.cryptomts.com"
+        }
+
+        return URL(string: defaultString) ?? URL(string: "https://api.cryptomts.com")!
+    }
+
+    private static func environmentSpecificRESTBaseURLString(
+        for environment: AppEnvironment,
+        environment values: [String: String]
+    ) -> String? {
+        switch environment {
+        case .local:
+            return values["CRYPTORY_LOCAL_API_BASE_URL"]?.trimmedNonEmpty
+        case .staging:
+            return values["CRYPTORY_STAGING_API_BASE_URL"]?.trimmedNonEmpty
+        case .production:
+            return values["CRYPTORY_PRODUCTION_API_BASE_URL"]?.trimmedNonEmpty
+        }
+    }
+
+    private static func environmentSpecificWebSocketBaseURLString(
+        for environment: AppEnvironment,
+        environment values: [String: String]
+    ) -> String? {
+        switch environment {
+        case .local:
+            return values["CRYPTORY_LOCAL_WS_BASE_URL"]?.trimmedNonEmpty
+        case .staging:
+            return values["CRYPTORY_STAGING_WS_BASE_URL"]?.trimmedNonEmpty
+        case .production:
+            return values["CRYPTORY_PRODUCTION_WS_BASE_URL"]?.trimmedNonEmpty
+        }
+    }
+
+    private static func deriveWebSocketBaseURL(from restBaseURL: URL) -> URL {
+        guard var components = URLComponents(url: restBaseURL, resolvingAgainstBaseURL: false) else {
+            return restBaseURL
+        }
+
+        switch components.scheme {
+        case "https":
+            components.scheme = "wss"
+        case "http":
+            components.scheme = "ws"
+        case nil:
+            components.scheme = "wss"
+        default:
+            break
+        }
+
+        return components.url ?? restBaseURL
+    }
+
+    private static func sanitizedURL(string: String?, fallback: URL, label: String) -> URL {
+        guard let string else { return fallback }
+        guard let url = URL(string: string) else {
+            AppLogger.debug(.network, "Invalid \(label) -> \(string). Fallback \(fallback.absoluteString)")
+            return fallback
+        }
+        return url
+    }
+}
+
+struct TransportFailureDetails {
+    let message: String
+    let category: RemoteErrorCategory
+    let shouldRetry: Bool
+}
+
+enum TransportFailureMapper {
+    static func map(_ error: Error) -> TransportFailureDetails {
+        if error is CancellationError {
+            return TransportFailureDetails(
+                message: "요청이 취소되었어요.",
+                category: .unknown,
+                shouldRetry: false
+            )
+        }
+
+        if let networkError = error as? NetworkServiceError {
+            return TransportFailureDetails(
+                message: networkError.errorDescription ?? "네트워크 요청에 실패했어요.",
+                category: networkError.errorCategory,
+                shouldRetry: false
+            )
+        }
+
+        let nsError = error as NSError
+        if nsError.domain == NSURLErrorDomain {
+            let code = URLError.Code(rawValue: nsError.code)
+            switch code {
+            case .badURL, .unsupportedURL, .cannotFindHost:
+                return TransportFailureDetails(
+                    message: "서버 주소를 확인할 수 없어요. 현재 앱 환경 설정을 확인해주세요.",
+                    category: .connectivity,
+                    shouldRetry: false
+                )
+            case .userAuthenticationRequired, .userCancelledAuthentication:
+                return TransportFailureDetails(
+                    message: "인증에 실패했어요. 다시 로그인해주세요.",
+                    category: .authenticationFailed,
+                    shouldRetry: false
+                )
+            case .timedOut:
+                return TransportFailureDetails(
+                    message: "서버 응답이 지연되고 있어요. 잠시 후 다시 시도해주세요.",
+                    category: .connectivity,
+                    shouldRetry: true
+                )
+            case .cancelled:
+                return TransportFailureDetails(
+                    message: "요청이 취소되었어요.",
+                    category: .unknown,
+                    shouldRetry: false
+                )
+            case .cannotConnectToHost, .notConnectedToInternet, .networkConnectionLost, .dnsLookupFailed:
+                return TransportFailureDetails(
+                    message: "서버에 연결할 수 없어요. 네트워크와 서버 주소를 확인해주세요.",
+                    category: .connectivity,
+                    shouldRetry: true
+                )
+            case .secureConnectionFailed,
+                 .serverCertificateHasBadDate,
+                 .serverCertificateUntrusted,
+                 .serverCertificateHasUnknownRoot,
+                 .serverCertificateNotYetValid,
+                 .clientCertificateRejected,
+                 .clientCertificateRequired:
+                return TransportFailureDetails(
+                    message: "보안 연결을 확인할 수 없어요. 서버 인증서를 확인해주세요.",
+                    category: .connectivity,
+                    shouldRetry: false
+                )
+            default:
+                return TransportFailureDetails(
+                    message: nsError.localizedDescription,
+                    category: .connectivity,
+                    shouldRetry: true
+                )
+            }
+        }
+
+        return TransportFailureDetails(
+            message: nsError.localizedDescription,
+            category: .unknown,
+            shouldRetry: true
+        )
+    }
+}
+
+struct MarketCatalogSnapshot {
+    let exchange: Exchange
+    let markets: [CoinInfo]
+    let supportedIntervalsBySymbol: [String: [String]]
+    let meta: ResponseMeta
+}
+
+struct MarketTickerSnapshot {
+    let exchange: Exchange
+    let tickers: [String: TickerData]
+    let meta: ResponseMeta
+}
+
+struct OrderbookSnapshot {
+    let exchange: Exchange
+    let symbol: String
+    let orderbook: OrderbookData
+    let meta: ResponseMeta
+}
+
+struct PublicTradesSnapshot {
+    let exchange: Exchange
+    let symbol: String
+    let trades: [PublicTrade]
+    let meta: ResponseMeta
+}
+
+struct CandleSnapshot {
+    let exchange: Exchange
+    let symbol: String
+    let interval: String
+    let candles: [CandleData]
+    let meta: ResponseMeta
+}
+
+struct OrderRecordsSnapshot {
+    let exchange: Exchange
+    let orders: [OrderRecord]
+    let meta: ResponseMeta
+}
+
+struct TradeFillsSnapshot {
+    let exchange: Exchange
+    let fills: [TradeFill]
+    let meta: ResponseMeta
+}
+
+struct PortfolioHistorySnapshot {
+    let exchange: Exchange
+    let items: [PortfolioHistoryItem]
+    let meta: ResponseMeta
+}
+
+struct ExchangeConnectionsSnapshot {
+    let connections: [ExchangeConnection]
+    let meta: ResponseMeta
 }
 
 struct APIConfiguration {
-    static let publicPrefix = "/api/v1/public"
-    static let privatePrefix = "/api/v1/private"
-
     let baseURL: String
     let loginPath: String
-    let tickersPath: String
-    let candlesPath: String
-    let orderbookPath: String
-    let tradesPath: String
-    let portfolioPath: String
-    let ordersPath: String
+    let marketMarketsPath: String
+    let marketTickersPath: String
+    let marketOrderbookPath: String
+    let marketTradesPath: String
+    let marketCandlesPath: String
+    let tradingChancePath: String
+    let tradingOrdersPath: String
+    let tradingOpenOrdersPath: String
+    let tradingFillsPath: String
+    let portfolioSummaryPath: String
+    let portfolioHistoryPath: String
+    let kimchiPremiumPath: String
     let exchangeConnectionsPath: String
     let exchangeConnectionsCreateEnabled: Bool
+    let exchangeConnectionsUpdateEnabled: Bool
     let exchangeConnectionsDeleteEnabled: Bool
 
     func exchangeConnectionPath(id: String) -> String {
         "\(exchangeConnectionsPath)/\(id)"
     }
 
-    static let live = APIConfiguration(
-        baseURL: ProcessInfo.processInfo.environment["CRYPTORY_API_BASE_URL"] ?? "https://api.cryptomts.com",
-        loginPath: ProcessInfo.processInfo.environment["CRYPTORY_LOGIN_PATH"] ?? "\(publicPrefix)/auth/login",
-        tickersPath: ProcessInfo.processInfo.environment["CRYPTORY_PUBLIC_TICKERS_PATH"] ?? "\(publicPrefix)/markets/tickers",
-        candlesPath: ProcessInfo.processInfo.environment["CRYPTORY_PUBLIC_CANDLES_PATH"] ?? "\(publicPrefix)/markets/candles",
-        orderbookPath: ProcessInfo.processInfo.environment["CRYPTORY_PUBLIC_ORDERBOOK_PATH"] ?? "\(publicPrefix)/markets/orderbook",
-        tradesPath: ProcessInfo.processInfo.environment["CRYPTORY_PUBLIC_TRADES_PATH"] ?? "\(publicPrefix)/markets/trades",
-        portfolioPath: ProcessInfo.processInfo.environment["CRYPTORY_PORTFOLIO_PATH"] ?? "\(privatePrefix)/portfolio",
-        ordersPath: ProcessInfo.processInfo.environment["CRYPTORY_ORDERS_PATH"] ?? "\(privatePrefix)/orders",
-        exchangeConnectionsPath: ProcessInfo.processInfo.environment["CRYPTORY_EXCHANGE_CONNECTIONS_PATH"] ?? "\(privatePrefix)/exchange-connections",
-        exchangeConnectionsCreateEnabled: ProcessInfo.processInfo.environment["CRYPTORY_EXCHANGE_CONNECTION_CREATE_ENABLED"] == "1",
-        exchangeConnectionsDeleteEnabled: ProcessInfo.processInfo.environment["CRYPTORY_EXCHANGE_CONNECTION_DELETE_ENABLED"] == "1"
-    )
+    func tradingOrderDetailPath(exchange: Exchange, orderID: String) -> String {
+        "\(tradingOrdersPath)/\(exchange.rawValue)/\(orderID)"
+    }
+
+    static let live: APIConfiguration = resolve(environment: ProcessInfo.processInfo.environment)
+
+    static func resolve(
+        environment: [String: String],
+        buildConfiguration: BuildConfiguration = .current
+    ) -> APIConfiguration {
+        let runtimeConfiguration = AppRuntimeConfiguration.resolve(
+            environment: environment,
+            buildConfiguration: buildConfiguration
+        )
+
+        return APIConfiguration(
+            baseURL: runtimeConfiguration.restBaseURL.absoluteString,
+            loginPath: environment["CRYPTORY_LOGIN_PATH"] ?? "/auth/login",
+            marketMarketsPath: environment["CRYPTORY_MARKET_MARKETS_PATH"] ?? "/market/markets",
+            marketTickersPath: environment["CRYPTORY_MARKET_TICKERS_PATH"] ?? "/market/tickers",
+            marketOrderbookPath: environment["CRYPTORY_MARKET_ORDERBOOK_PATH"] ?? "/market/orderbook",
+            marketTradesPath: environment["CRYPTORY_MARKET_TRADES_PATH"] ?? "/market/trades",
+            marketCandlesPath: environment["CRYPTORY_MARKET_CANDLES_PATH"] ?? "/market/candles",
+            tradingChancePath: environment["CRYPTORY_TRADING_CHANCE_PATH"] ?? "/trading/chance",
+            tradingOrdersPath: environment["CRYPTORY_TRADING_ORDERS_PATH"] ?? "/trading/orders",
+            tradingOpenOrdersPath: environment["CRYPTORY_TRADING_OPEN_ORDERS_PATH"] ?? "/trading/open-orders",
+            tradingFillsPath: environment["CRYPTORY_TRADING_FILLS_PATH"] ?? "/trading/fills",
+            portfolioSummaryPath: environment["CRYPTORY_PORTFOLIO_SUMMARY_PATH"] ?? "/portfolio/summary",
+            portfolioHistoryPath: environment["CRYPTORY_PORTFOLIO_HISTORY_PATH"] ?? "/portfolio/history",
+            kimchiPremiumPath: environment["CRYPTORY_KIMCHI_PREMIUM_PATH"] ?? "/kimchi-premium",
+            exchangeConnectionsPath: environment["CRYPTORY_EXCHANGE_CONNECTIONS_PATH"] ?? "/exchange-connections",
+            exchangeConnectionsCreateEnabled: environment["CRYPTORY_EXCHANGE_CONNECTION_CREATE_ENABLED"] != "0",
+            exchangeConnectionsUpdateEnabled: environment["CRYPTORY_EXCHANGE_CONNECTION_UPDATE_ENABLED"] != "0",
+            exchangeConnectionsDeleteEnabled: environment["CRYPTORY_EXCHANGE_CONNECTION_DELETE_ENABLED"] != "0"
+        )
+    }
 }
 
-struct OrderSubmissionRequest {
+struct TradingOrderCreateRequest {
     let symbol: String
     let exchange: Exchange
     let side: OrderSide
@@ -78,22 +468,39 @@ protocol AuthenticationServiceProtocol {
     func signIn(email: String, password: String) async throws -> AuthSession
 }
 
-protocol PublicMarketDataServiceProtocol {
-    func fetchTickers(exchange: Exchange) async throws -> [String: TickerData]
-    func fetchCandles(symbol: String, exchange: Exchange, period: String) async throws -> [CandleData]
-    func fetchOrderbook(symbol: String, exchange: Exchange) async throws -> OrderbookData
-    func fetchTrades(symbol: String, exchange: Exchange) async throws -> [PublicTrade]
+protocol MarketRepositoryProtocol {
+    func fetchMarkets(exchange: Exchange) async throws -> MarketCatalogSnapshot
+    func fetchTickers(exchange: Exchange) async throws -> MarketTickerSnapshot
+    func fetchOrderbook(symbol: String, exchange: Exchange) async throws -> OrderbookSnapshot
+    func fetchTrades(symbol: String, exchange: Exchange) async throws -> PublicTradesSnapshot
+    func fetchCandles(symbol: String, exchange: Exchange, interval: String) async throws -> CandleSnapshot
 }
 
-protocol AccountServiceProtocol {
-    var exchangeConnectionCRUDCapability: ExchangeConnectionCRUDCapability { get }
+protocol TradingRepositoryProtocol {
+    func fetchChance(session: AuthSession, exchange: Exchange, symbol: String) async throws -> TradingChance
+    func createOrder(session: AuthSession, request: TradingOrderCreateRequest) async throws -> OrderRecord
+    func cancelOrder(session: AuthSession, exchange: Exchange, orderID: String) async throws
+    func fetchOrderDetail(session: AuthSession, exchange: Exchange, orderID: String) async throws -> OrderRecord
+    func fetchOpenOrders(session: AuthSession, exchange: Exchange, symbol: String?) async throws -> OrderRecordsSnapshot
+    func fetchFills(session: AuthSession, exchange: Exchange, symbol: String?) async throws -> TradeFillsSnapshot
+}
 
-    func fetchPortfolio(session: AuthSession, exchange: Exchange) async throws -> PortfolioSnapshot
-    func fetchOrders(session: AuthSession, exchange: Exchange, symbol: String?) async throws -> [OrderRecord]
-    func fetchExchangeConnections(session: AuthSession) async throws -> [ExchangeConnection]
-    func submitOrder(session: AuthSession, request: OrderSubmissionRequest) async throws
-    func createExchangeConnection(session: AuthSession, request: ExchangeConnectionCreateRequest) async throws -> ExchangeConnection
-    func deleteExchangeConnection(session: AuthSession, connectionID: String) async throws
+protocol PortfolioRepositoryProtocol {
+    func fetchSummary(session: AuthSession, exchange: Exchange) async throws -> PortfolioSnapshot
+    func fetchHistory(session: AuthSession, exchange: Exchange) async throws -> PortfolioHistorySnapshot
+}
+
+protocol KimchiPremiumRepositoryProtocol {
+    func fetchSnapshot(symbols: [String]?) async throws -> KimchiPremiumSnapshot
+}
+
+protocol ExchangeConnectionsRepositoryProtocol {
+    var crudCapability: ExchangeConnectionCRUDCapability { get }
+
+    func fetchConnections(session: AuthSession) async throws -> ExchangeConnectionsSnapshot
+    func createConnection(session: AuthSession, request: ExchangeConnectionUpsertRequest) async throws -> ExchangeConnection
+    func updateConnection(session: AuthSession, request: ExchangeConnectionUpdateRequest) async throws -> ExchangeConnection
+    func deleteConnection(session: AuthSession, connectionID: String) async throws
 }
 
 final class APIClient {
@@ -167,15 +574,27 @@ final class APIClient {
             accessToken: accessToken
         )
 
-        let (data, response) = try await session.data(for: request)
+        let data: Data
+        let response: URLResponse
+
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch {
+            let failure = TransportFailureMapper.map(error)
+            AppLogger.debug(
+                .network,
+                "Transport error <- \(request.url?.absoluteString ?? path) [\(failure.category)] \(failure.message)"
+            )
+            throw NetworkServiceError.transportError(failure.message, failure.category)
+        }
         guard let httpResponse = response as? HTTPURLResponse else {
             throw NetworkServiceError.invalidResponse
         }
 
         guard (200...299).contains(httpResponse.statusCode) else {
-            let message = parseServerError(from: data) ?? "서버 요청에 실패했어요. (\(httpResponse.statusCode))"
+            let parsedError = parseServerError(from: data, statusCode: httpResponse.statusCode)
             AppLogger.debug(.network, "HTTP \(httpResponse.statusCode) <- \(request.url?.absoluteString ?? path)")
-            throw NetworkServiceError.httpError(httpResponse.statusCode, message)
+            throw NetworkServiceError.httpError(httpResponse.statusCode, parsedError.message, parsedError.category)
         }
 
         if data.isEmpty {
@@ -195,14 +614,40 @@ final class APIClient {
         return "\(trimmedBase)\(normalizedEndpoint)"
     }
 
-    private func parseServerError(from data: Data) -> String? {
-        guard
+    private func parseServerError(from data: Data, statusCode: Int) -> (message: String, category: RemoteErrorCategory) {
+        if
             let json = try? JSONSerialization.jsonObject(with: data) as? JSONObject
-        else {
-            return String(data: data, encoding: .utf8)
+        {
+            let message = json.string(["message", "error", "detail", "description"]) ?? "서버 요청에 실패했어요. (\(statusCode))"
+            let code = json.string(["code", "errorCode", "type"])?.lowercased()
+            let category = responseErrorCategory(statusCode: statusCode, code: code)
+            return (message, category)
         }
 
-        return json.string(["message", "error", "detail"])
+        let message = String(data: data, encoding: .utf8) ?? "서버 요청에 실패했어요. (\(statusCode))"
+        return (message, responseErrorCategory(statusCode: statusCode, code: nil))
+    }
+
+    private func responseErrorCategory(statusCode: Int, code: String?) -> RemoteErrorCategory {
+        if statusCode == 401 || code == "authentication_failed" {
+            return .authenticationFailed
+        }
+        if statusCode == 403 || code == "permission_denied" {
+            return .permissionDenied
+        }
+        if statusCode == 429 || code == "rate_limited" {
+            return .rateLimited
+        }
+        if statusCode == 503 || code == "maintenance" {
+            return .maintenance
+        }
+        if code == "stale_data" {
+            return .staleData
+        }
+        if statusCode >= 500 {
+            return .connectivity
+        }
+        return .unknown
     }
 }
 
@@ -242,93 +687,78 @@ final class LiveAuthenticationService: AuthenticationServiceProtocol {
     }
 }
 
-final class LivePublicMarketDataService: PublicMarketDataServiceProtocol {
+final class LiveMarketRepository: MarketRepositoryProtocol {
     private let client: APIClient
 
     init(client: APIClient = APIClient()) {
         self.client = client
     }
 
-    func fetchTickers(exchange: Exchange) async throws -> [String: TickerData] {
+    func fetchMarkets(exchange: Exchange) async throws -> MarketCatalogSnapshot {
         let json = try await client.requestJSON(
-            path: client.configuration.tickersPath,
+            path: client.configuration.marketMarketsPath,
             queryItems: [URLQueryItem(name: "exchange", value: exchange.rawValue)],
             accessRequirement: .publicAccess
         )
 
-        let payload = unwrapPayload(json)
+        let container = splitPayload(json)
+        let array = unwrapArray(container.payload) ?? []
+        var markets: [CoinInfo] = []
+        var intervalsBySymbol: [String: [String]] = [:]
+
+        for item in array {
+            guard let dictionary = item as? JSONObject else { continue }
+            guard let dto = MarketInfoDTO(dictionary: dictionary) else { continue }
+            markets.append(dto.coinInfo)
+            intervalsBySymbol[dto.coinInfo.symbol] = dto.supportedIntervals
+        }
+
+        return MarketCatalogSnapshot(
+            exchange: exchange,
+            markets: markets,
+            supportedIntervalsBySymbol: intervalsBySymbol,
+            meta: container.meta
+        )
+    }
+
+    func fetchTickers(exchange: Exchange) async throws -> MarketTickerSnapshot {
+        let json = try await client.requestJSON(
+            path: client.configuration.marketTickersPath,
+            queryItems: [URLQueryItem(name: "exchange", value: exchange.rawValue)],
+            accessRequirement: .publicAccess
+        )
+
+        let container = splitPayload(json)
         var tickers: [String: TickerData] = [:]
 
-        if let array = unwrapArray(payload) {
+        if let array = unwrapArray(container.payload) {
             for item in array {
                 guard let dictionary = item as? JSONObject else { continue }
-                if let parsed = parseTicker(dictionary, fallbackSymbol: nil) {
-                    tickers[parsed.symbol] = parsed.ticker
-                }
+                guard let dto = MarketTickerDTO(dictionary: dictionary, exchange: exchange) else { continue }
+                tickers[dto.symbol] = dto.entity(meta: container.meta)
             }
-        } else if let dictionary = payload as? JSONObject {
-            if let nestedArray = unwrapArray(dictionary["tickers"] ?? dictionary["items"]) {
+        } else if let dictionary = container.payload as? JSONObject {
+            if let nestedArray = unwrapArray(dictionary["items"] ?? dictionary["tickers"]) {
                 for item in nestedArray {
                     guard let tickerDictionary = item as? JSONObject else { continue }
-                    if let parsed = parseTicker(tickerDictionary, fallbackSymbol: nil) {
-                        tickers[parsed.symbol] = parsed.ticker
-                    }
+                    guard let dto = MarketTickerDTO(dictionary: tickerDictionary, exchange: exchange) else { continue }
+                    tickers[dto.symbol] = dto.entity(meta: container.meta)
                 }
             } else {
                 for (symbol, rawValue) in dictionary {
                     guard let tickerDictionary = rawValue as? JSONObject else { continue }
-                    if let parsed = parseTicker(tickerDictionary, fallbackSymbol: symbol) {
-                        tickers[parsed.symbol] = parsed.ticker
-                    }
+                    guard let dto = MarketTickerDTO(dictionary: tickerDictionary.merging(["symbol": symbol as Any], uniquingKeysWith: { left, _ in left }), exchange: exchange) else { continue }
+                    tickers[dto.symbol] = dto.entity(meta: container.meta)
                 }
             }
         }
 
-        return tickers
+        return MarketTickerSnapshot(exchange: exchange, tickers: tickers, meta: container.meta)
     }
 
-    func fetchCandles(symbol: String, exchange: Exchange, period: String) async throws -> [CandleData] {
+    func fetchOrderbook(symbol: String, exchange: Exchange) async throws -> OrderbookSnapshot {
         let json = try await client.requestJSON(
-            path: client.configuration.candlesPath,
-            queryItems: [
-                URLQueryItem(name: "symbol", value: symbol),
-                URLQueryItem(name: "exchange", value: exchange.rawValue),
-                URLQueryItem(name: "period", value: period)
-            ],
-            accessRequirement: .publicAccess
-        )
-
-        let payload = unwrapPayload(json)
-        let array = unwrapArray(payload) ?? []
-
-        return array.compactMap { item in
-            guard let dictionary = item as? JSONObject else { return nil }
-
-            let timestamp = dictionary.int(["time", "timestamp", "candleDateTimeKst", "candle_date_time_utc"]) ?? 0
-            guard
-                let open = dictionary.double(["open", "openingPrice", "opening_price"]),
-                let high = dictionary.double(["high", "highPrice", "high_price"]),
-                let low = dictionary.double(["low", "lowPrice", "low_price"]),
-                let close = dictionary.double(["close", "tradePrice", "trade_price"])
-            else {
-                return nil
-            }
-
-            return CandleData(
-                time: timestamp,
-                open: open,
-                high: high,
-                low: low,
-                close: close,
-                volume: dictionary.int(["volume", "candleAccTradeVolume", "candle_acc_trade_volume"]) ?? 0
-            )
-        }
-        .sorted { $0.time < $1.time }
-    }
-
-    func fetchOrderbook(symbol: String, exchange: Exchange) async throws -> OrderbookData {
-        let json = try await client.requestJSON(
-            path: client.configuration.orderbookPath,
+            path: client.configuration.marketOrderbookPath,
             queryItems: [
                 URLQueryItem(name: "symbol", value: symbol),
                 URLQueryItem(name: "exchange", value: exchange.rawValue)
@@ -336,50 +766,26 @@ final class LivePublicMarketDataService: PublicMarketDataServiceProtocol {
             accessRequirement: .publicAccess
         )
 
-        let payload = unwrapPayload(json)
-        guard let dictionary = payload as? JSONObject else {
+        let container = splitPayload(json)
+        guard let dictionary = container.payload as? JSONObject else {
             throw NetworkServiceError.parsingFailed("호가 응답을 해석하지 못했어요.")
         }
 
-        let asks = parseOrderbookEntries(dictionary["asks"] ?? dictionary["sell"], isBid: false)
-        let bids = parseOrderbookEntries(dictionary["bids"] ?? dictionary["buy"], isBid: true)
-
-        if !asks.isEmpty || !bids.isEmpty {
-            return OrderbookData(asks: asks, bids: bids)
+        guard let dto = OrderbookDTO(dictionary: dictionary) else {
+            throw NetworkServiceError.parsingFailed("호가 데이터가 비어 있어요.")
         }
 
-        if let units = unwrapArray(dictionary["orderbook_units"]) {
-            let parsedAsks = units.compactMap { item -> OrderbookEntry? in
-                guard let unit = item as? JSONObject else { return nil }
-                guard
-                    let price = unit.double(["ask_price", "askPrice"]),
-                    let quantity = unit.double(["ask_size", "askSize"])
-                else {
-                    return nil
-                }
-                return OrderbookEntry(price: price, qty: quantity)
-            }
-
-            let parsedBids = units.compactMap { item -> OrderbookEntry? in
-                guard let unit = item as? JSONObject else { return nil }
-                guard
-                    let price = unit.double(["bid_price", "bidPrice"]),
-                    let quantity = unit.double(["bid_size", "bidSize"])
-                else {
-                    return nil
-                }
-                return OrderbookEntry(price: price, qty: quantity)
-            }
-
-            return OrderbookData(asks: parsedAsks, bids: parsedBids)
-        }
-
-        throw NetworkServiceError.parsingFailed("호가 데이터가 비어 있어요.")
+        return OrderbookSnapshot(
+            exchange: exchange,
+            symbol: symbol,
+            orderbook: dto.entity(meta: container.meta),
+            meta: container.meta
+        )
     }
 
-    func fetchTrades(symbol: String, exchange: Exchange) async throws -> [PublicTrade] {
+    func fetchTrades(symbol: String, exchange: Exchange) async throws -> PublicTradesSnapshot {
         let json = try await client.requestJSON(
-            path: client.configuration.tradesPath,
+            path: client.configuration.marketTradesPath,
             queryItems: [
                 URLQueryItem(name: "symbol", value: symbol),
                 URLQueryItem(name: "exchange", value: exchange.rawValue)
@@ -387,122 +793,76 @@ final class LivePublicMarketDataService: PublicMarketDataServiceProtocol {
             accessRequirement: .publicAccess
         )
 
-        let payload = unwrapPayload(json)
-        let array = unwrapArray(payload) ?? []
-
-        return array.compactMap { item in
-            guard let dictionary = item as? JSONObject else { return nil }
-            guard let price = dictionary.double(["price", "tradePrice", "trade_price"]) else {
+        let container = splitPayload(json)
+        let array = unwrapArray(container.payload) ?? []
+        let trades = array.compactMap { item -> PublicTrade? in
+            guard let dictionary = item as? JSONObject, let dto = PublicTradeDTO(dictionary: dictionary) else {
                 return nil
             }
-
-            return PublicTrade(
-                id: dictionary.string(["id", "tradeId", "trade_id"]) ?? UUID().uuidString,
-                price: price,
-                quantity: dictionary.double(["qty", "size", "volume", "trade_volume"]) ?? 0,
-                side: dictionary.string(["side", "askBid", "ask_bid"]) ?? "buy",
-                executedAt: formatTimestamp(dictionary["time"] ?? dictionary["timestamp"] ?? dictionary["trade_timestamp"])
-            )
+            return dto.entity
         }
+
+        return PublicTradesSnapshot(exchange: exchange, symbol: symbol, trades: trades, meta: container.meta)
+    }
+
+    func fetchCandles(symbol: String, exchange: Exchange, interval: String) async throws -> CandleSnapshot {
+        let json = try await client.requestJSON(
+            path: client.configuration.marketCandlesPath,
+            queryItems: [
+                URLQueryItem(name: "symbol", value: symbol),
+                URLQueryItem(name: "exchange", value: exchange.rawValue),
+                URLQueryItem(name: "interval", value: interval)
+            ],
+            accessRequirement: .publicAccess
+        )
+
+        let container = splitPayload(json)
+        let array = unwrapArray(container.payload) ?? []
+        let candles = array.compactMap { item -> CandleData? in
+            guard let dictionary = item as? JSONObject, let dto = CandleDTO(dictionary: dictionary) else {
+                return nil
+            }
+            return dto.entity
+        }
+        .sorted { $0.time < $1.time }
+
+        return CandleSnapshot(
+            exchange: exchange,
+            symbol: symbol,
+            interval: interval,
+            candles: candles,
+            meta: container.meta
+        )
     }
 }
 
-final class LiveAccountService: AccountServiceProtocol {
+final class LiveTradingRepository: TradingRepositoryProtocol {
     private let client: APIClient
-
-    var exchangeConnectionCRUDCapability: ExchangeConnectionCRUDCapability {
-        ExchangeConnectionCRUDCapability(
-            canCreate: client.configuration.exchangeConnectionsCreateEnabled,
-            canDelete: client.configuration.exchangeConnectionsDeleteEnabled
-        )
-    }
 
     init(client: APIClient = APIClient()) {
         self.client = client
     }
 
-    func fetchPortfolio(session: AuthSession, exchange: Exchange) async throws -> PortfolioSnapshot {
+    func fetchChance(session: AuthSession, exchange: Exchange, symbol: String) async throws -> TradingChance {
         let json = try await client.requestJSON(
-            path: client.configuration.portfolioPath,
-            queryItems: [URLQueryItem(name: "exchange", value: exchange.rawValue)],
+            path: client.configuration.tradingChancePath,
+            queryItems: [
+                URLQueryItem(name: "exchange", value: exchange.rawValue),
+                URLQueryItem(name: "symbol", value: symbol)
+            ],
             accessRequirement: .authenticatedRequired,
             accessToken: session.accessToken
         )
 
         let payload = unwrapPayload(json)
-        guard let dictionary = payload as? JSONObject else {
-            throw NetworkServiceError.parsingFailed("포트폴리오 응답을 해석하지 못했어요.")
+        guard let dictionary = payload as? JSONObject, let dto = TradingChanceDTO(dictionary: dictionary, exchange: exchange, symbol: symbol) else {
+            throw NetworkServiceError.parsingFailed("주문 가능 정보를 해석하지 못했어요.")
         }
 
-        let holdingsArray = unwrapArray(dictionary["holdings"] ?? dictionary["assets"] ?? dictionary["balances"]) ?? []
-        let holdings = holdingsArray.compactMap { item -> Holding? in
-            guard let holdingDictionary = item as? JSONObject else { return nil }
-            guard let symbol = holdingDictionary.string(["symbol", "asset", "currency"]) else {
-                return nil
-            }
-
-            return Holding(
-                symbol: symbol.uppercased(),
-                qty: holdingDictionary.double(["qty", "quantity", "balance"]) ?? 0,
-                avgPrice: holdingDictionary.double(["avgPrice", "averagePrice", "avg_buy_price"]) ?? 0
-            )
-        }
-
-        let cash = dictionary.double(["cash", "availableCash", "krwBalance", "krw_balance"]) ?? 0
-        return PortfolioSnapshot(cash: cash, holdings: holdings)
+        return dto.entity
     }
 
-    func fetchOrders(session: AuthSession, exchange: Exchange, symbol: String?) async throws -> [OrderRecord] {
-        var queryItems = [URLQueryItem(name: "exchange", value: exchange.rawValue)]
-        if let symbol, !symbol.isEmpty {
-            queryItems.append(URLQueryItem(name: "symbol", value: symbol))
-        }
-
-        let json = try await client.requestJSON(
-            path: client.configuration.ordersPath,
-            queryItems: queryItems,
-            accessRequirement: .authenticatedRequired,
-            accessToken: session.accessToken
-        )
-
-        let payload = unwrapPayload(json)
-        let array = unwrapArray(payload) ?? []
-
-        return array.compactMap { item in
-            guard let dictionary = item as? JSONObject else { return nil }
-            let price = dictionary.double(["price", "avgPrice", "avg_price"]) ?? 0
-            let quantity = dictionary.double(["qty", "quantity", "volume"]) ?? 0
-            return OrderRecord(
-                id: dictionary.string(["id", "orderId", "order_id", "uuid"]) ?? UUID().uuidString,
-                symbol: dictionary.string(["symbol", "market", "asset"])?.uppercased() ?? "-",
-                side: dictionary.string(["side", "type"]) ?? "buy",
-                price: price,
-                qty: quantity,
-                total: dictionary.double(["total", "notional"]) ?? price * quantity,
-                time: formatTimestamp(dictionary["time"] ?? dictionary["timestamp"] ?? dictionary["createdAt"] ?? dictionary["created_at"]),
-                exchange: dictionary.string(["exchange"]) ?? exchange.displayName,
-                status: dictionary.string(["status", "state"]) ?? "unknown"
-            )
-        }
-    }
-
-    func fetchExchangeConnections(session: AuthSession) async throws -> [ExchangeConnection] {
-        let json = try await client.requestJSON(
-            path: client.configuration.exchangeConnectionsPath,
-            accessRequirement: .authenticatedRequired,
-            accessToken: session.accessToken
-        )
-
-        let payload = unwrapPayload(json)
-        let array = unwrapArray(payload) ?? []
-
-        return array.compactMap { item in
-            guard let dictionary = item as? JSONObject else { return nil }
-            return parseExchangeConnection(dictionary)
-        }
-    }
-
-    func submitOrder(session: AuthSession, request: OrderSubmissionRequest) async throws {
+    func createOrder(session: AuthSession, request: TradingOrderCreateRequest) async throws -> OrderRecord {
         var body: JSONObject = [
             "symbol": request.symbol,
             "exchange": request.exchange.rawValue,
@@ -510,37 +870,12 @@ final class LiveAccountService: AccountServiceProtocol {
             "type": request.type.rawValue,
             "quantity": request.quantity
         ]
-
         if let price = request.price {
             body["price"] = price
         }
 
-        _ = try await client.requestJSON(
-            path: client.configuration.ordersPath,
-            method: "POST",
-            body: body,
-            accessRequirement: .authenticatedRequired,
-            accessToken: session.accessToken
-        )
-    }
-
-    func createExchangeConnection(session: AuthSession, request: ExchangeConnectionCreateRequest) async throws -> ExchangeConnection {
-        guard exchangeConnectionCRUDCapability.canCreate else {
-            throw NetworkServiceError.httpError(405, "거래소 연결 생성 API가 아직 활성화되지 않았어요.")
-        }
-
-        var body: JSONObject = [
-            "exchange": request.exchange.rawValue,
-            "apiKey": request.apiKey,
-            "secret": request.secret,
-            "permission": request.permission.rawValue
-        ]
-        if let nickname = request.nickname, !nickname.isEmpty {
-            body["nickname"] = nickname
-        }
-
         let json = try await client.requestJSON(
-            path: client.configuration.exchangeConnectionsPath,
+            path: client.configuration.tradingOrdersPath,
             method: "POST",
             body: body,
             accessRequirement: .authenticatedRequired,
@@ -548,18 +883,277 @@ final class LiveAccountService: AccountServiceProtocol {
         )
 
         let payload = unwrapPayload(json)
-        guard
-            let dictionary = payload as? JSONObject,
-            let connection = parseExchangeConnection(dictionary)
-        else {
-            throw NetworkServiceError.parsingFailed("생성된 거래소 연결 응답을 해석하지 못했어요.")
+        guard let dictionary = payload as? JSONObject, let dto = TradingOrderDTO(dictionary: dictionary, exchange: request.exchange) else {
+            throw NetworkServiceError.parsingFailed("주문 생성 응답을 해석하지 못했어요.")
         }
-        return connection
+
+        return dto.entity
     }
 
-    func deleteExchangeConnection(session: AuthSession, connectionID: String) async throws {
-        guard exchangeConnectionCRUDCapability.canDelete else {
-            throw NetworkServiceError.httpError(405, "거래소 연결 삭제 API가 아직 활성화되지 않았어요.")
+    func cancelOrder(session: AuthSession, exchange: Exchange, orderID: String) async throws {
+        _ = try await client.requestJSON(
+            path: client.configuration.tradingOrderDetailPath(exchange: exchange, orderID: orderID),
+            method: "DELETE",
+            accessRequirement: .authenticatedRequired,
+            accessToken: session.accessToken
+        )
+    }
+
+    func fetchOrderDetail(session: AuthSession, exchange: Exchange, orderID: String) async throws -> OrderRecord {
+        let json = try await client.requestJSON(
+            path: client.configuration.tradingOrderDetailPath(exchange: exchange, orderID: orderID),
+            accessRequirement: .authenticatedRequired,
+            accessToken: session.accessToken
+        )
+
+        let payload = unwrapPayload(json)
+        guard let dictionary = payload as? JSONObject, let dto = TradingOrderDTO(dictionary: dictionary, exchange: exchange) else {
+            throw NetworkServiceError.parsingFailed("주문 상세 응답을 해석하지 못했어요.")
+        }
+
+        return dto.entity
+    }
+
+    func fetchOpenOrders(session: AuthSession, exchange: Exchange, symbol: String?) async throws -> OrderRecordsSnapshot {
+        var queryItems = [URLQueryItem(name: "exchange", value: exchange.rawValue)]
+        if let symbol, !symbol.isEmpty {
+            queryItems.append(URLQueryItem(name: "symbol", value: symbol))
+        }
+
+        let json = try await client.requestJSON(
+            path: client.configuration.tradingOpenOrdersPath,
+            queryItems: queryItems,
+            accessRequirement: .authenticatedRequired,
+            accessToken: session.accessToken
+        )
+
+        return try parseOrderRecordsSnapshot(json: json, exchange: exchange)
+    }
+
+    func fetchFills(session: AuthSession, exchange: Exchange, symbol: String?) async throws -> TradeFillsSnapshot {
+        var queryItems = [URLQueryItem(name: "exchange", value: exchange.rawValue)]
+        if let symbol, !symbol.isEmpty {
+            queryItems.append(URLQueryItem(name: "symbol", value: symbol))
+        }
+
+        let json = try await client.requestJSON(
+            path: client.configuration.tradingFillsPath,
+            queryItems: queryItems,
+            accessRequirement: .authenticatedRequired,
+            accessToken: session.accessToken
+        )
+
+        let container = splitPayload(json)
+        let array = unwrapArray(container.payload) ?? []
+        let fills = array.compactMap { item -> TradeFill? in
+            guard let dictionary = item as? JSONObject, let dto = TradingFillDTO(dictionary: dictionary, exchange: exchange) else {
+                return nil
+            }
+            return dto.entity
+        }
+
+        return TradeFillsSnapshot(exchange: exchange, fills: fills, meta: container.meta)
+    }
+
+    private func parseOrderRecordsSnapshot(json: Any, exchange: Exchange) throws -> OrderRecordsSnapshot {
+        let container = splitPayload(json)
+        let array = unwrapArray(container.payload) ?? []
+        let orders = array.compactMap { item -> OrderRecord? in
+            guard let dictionary = item as? JSONObject, let dto = TradingOrderDTO(dictionary: dictionary, exchange: exchange) else {
+                return nil
+            }
+            return dto.entity
+        }
+
+        return OrderRecordsSnapshot(exchange: exchange, orders: orders, meta: container.meta)
+    }
+}
+
+final class LivePortfolioRepository: PortfolioRepositoryProtocol {
+    private let client: APIClient
+
+    init(client: APIClient = APIClient()) {
+        self.client = client
+    }
+
+    func fetchSummary(session: AuthSession, exchange: Exchange) async throws -> PortfolioSnapshot {
+        let json = try await client.requestJSON(
+            path: client.configuration.portfolioSummaryPath,
+            queryItems: [URLQueryItem(name: "exchange", value: exchange.rawValue)],
+            accessRequirement: .authenticatedRequired,
+            accessToken: session.accessToken
+        )
+
+        let container = splitPayload(json)
+        guard let dictionary = container.payload as? JSONObject, let dto = PortfolioSummaryDTO(dictionary: dictionary, exchange: exchange, meta: container.meta) else {
+            throw NetworkServiceError.parsingFailed("포트폴리오 응답을 해석하지 못했어요.")
+        }
+
+        return dto.entity
+    }
+
+    func fetchHistory(session: AuthSession, exchange: Exchange) async throws -> PortfolioHistorySnapshot {
+        let json = try await client.requestJSON(
+            path: client.configuration.portfolioHistoryPath,
+            queryItems: [URLQueryItem(name: "exchange", value: exchange.rawValue)],
+            accessRequirement: .authenticatedRequired,
+            accessToken: session.accessToken
+        )
+
+        let container = splitPayload(json)
+        let array = unwrapArray(container.payload) ?? []
+        let items = array.compactMap { item -> PortfolioHistoryItem? in
+            guard let dictionary = item as? JSONObject, let dto = PortfolioHistoryItemDTO(dictionary: dictionary, exchange: exchange) else {
+                return nil
+            }
+            return dto.entity
+        }
+
+        return PortfolioHistorySnapshot(exchange: exchange, items: items, meta: container.meta)
+    }
+}
+
+final class LiveKimchiPremiumRepository: KimchiPremiumRepositoryProtocol {
+    private let client: APIClient
+
+    init(client: APIClient = APIClient()) {
+        self.client = client
+    }
+
+    func fetchSnapshot(symbols: [String]?) async throws -> KimchiPremiumSnapshot {
+        var queryItems: [URLQueryItem] = []
+        if let symbols, !symbols.isEmpty {
+            queryItems.append(URLQueryItem(name: "symbols", value: symbols.joined(separator: ",")))
+        }
+
+        let json = try await client.requestJSON(
+            path: client.configuration.kimchiPremiumPath,
+            queryItems: queryItems,
+            accessRequirement: .publicAccess
+        )
+
+        let container = splitPayload(json)
+        let payload = container.payload
+
+        let rows: [KimchiPremiumRow]
+        if let array = unwrapArray(payload) {
+            rows = array.compactMap { item -> KimchiPremiumRow? in
+                guard let dictionary = item as? JSONObject, let dto = KimchiPremiumRowDTO(dictionary: dictionary) else {
+                    return nil
+                }
+                return dto.entity
+            }
+        } else if let dictionary = payload as? JSONObject, let items = unwrapArray(dictionary["rows"] ?? dictionary["items"]) {
+            rows = items.compactMap { item -> KimchiPremiumRow? in
+                guard let rowDictionary = item as? JSONObject, let dto = KimchiPremiumRowDTO(dictionary: rowDictionary) else {
+                    return nil
+                }
+                return dto.entity
+            }
+        } else {
+            rows = []
+        }
+
+        let referenceExchangeRawValue = (payload as? JSONObject)?.string(["referenceExchange", "reference_exchange"]) ?? Exchange.binance.rawValue
+        let referenceExchange = Exchange(rawValue: referenceExchangeRawValue.lowercased()) ?? .binance
+
+        return KimchiPremiumSnapshot(
+            referenceExchange: referenceExchange,
+            rows: rows,
+            fetchedAt: container.meta.fetchedAt,
+            isStale: container.meta.isStale,
+            warningMessage: container.meta.warningMessage ?? container.meta.partialFailureMessage
+        )
+    }
+}
+
+final class LiveExchangeConnectionsRepository: ExchangeConnectionsRepositoryProtocol {
+    private let client: APIClient
+
+    var crudCapability: ExchangeConnectionCRUDCapability {
+        ExchangeConnectionCRUDCapability(
+            canCreate: client.configuration.exchangeConnectionsCreateEnabled,
+            canDelete: client.configuration.exchangeConnectionsDeleteEnabled,
+            canUpdate: client.configuration.exchangeConnectionsUpdateEnabled
+        )
+    }
+
+    init(client: APIClient = APIClient()) {
+        self.client = client
+    }
+
+    func fetchConnections(session: AuthSession) async throws -> ExchangeConnectionsSnapshot {
+        let json = try await client.requestJSON(
+            path: client.configuration.exchangeConnectionsPath,
+            accessRequirement: .authenticatedRequired,
+            accessToken: session.accessToken
+        )
+
+        let container = splitPayload(json)
+        let array = unwrapArray(container.payload) ?? []
+        let connections = array.compactMap { item -> ExchangeConnection? in
+            guard let dictionary = item as? JSONObject, let dto = ExchangeConnectionDTO(dictionary: dictionary) else {
+                return nil
+            }
+            return dto.entity
+        }
+
+        return ExchangeConnectionsSnapshot(connections: connections, meta: container.meta)
+    }
+
+    func createConnection(session: AuthSession, request: ExchangeConnectionUpsertRequest) async throws -> ExchangeConnection {
+        guard crudCapability.canCreate else {
+            throw NetworkServiceError.httpError(405, "거래소 연결 생성 API가 아직 활성화되지 않았어요.", .unknown)
+        }
+
+        AppLogger.debug(
+            .auth,
+            "Create exchange connection -> exchange=\(request.exchange.rawValue), metadata={\(AppLogger.sanitizedMetadata(request.credentials.mapKeys(\.requestKey)))}"
+        )
+
+        let json = try await client.requestJSON(
+            path: client.configuration.exchangeConnectionsPath,
+            method: "POST",
+            body: exchangeConnectionBody(request: request),
+            accessRequirement: .authenticatedRequired,
+            accessToken: session.accessToken
+        )
+
+        let payload = unwrapPayload(json)
+        guard let dictionary = payload as? JSONObject, let dto = ExchangeConnectionDTO(dictionary: dictionary) else {
+            throw NetworkServiceError.parsingFailed("생성된 거래소 연결 응답을 해석하지 못했어요.")
+        }
+        return dto.entity
+    }
+
+    func updateConnection(session: AuthSession, request: ExchangeConnectionUpdateRequest) async throws -> ExchangeConnection {
+        guard crudCapability.canUpdate else {
+            throw NetworkServiceError.httpError(405, "거래소 연결 수정 API가 아직 활성화되지 않았어요.", .unknown)
+        }
+
+        AppLogger.debug(
+            .auth,
+            "Update exchange connection -> id=\(request.id), metadata={\(AppLogger.sanitizedMetadata(request.credentials.mapKeys(\.requestKey)))}"
+        )
+
+        let json = try await client.requestJSON(
+            path: client.configuration.exchangeConnectionPath(id: request.id),
+            method: "PATCH",
+            body: exchangeConnectionBody(request: request),
+            accessRequirement: .authenticatedRequired,
+            accessToken: session.accessToken
+        )
+
+        let payload = unwrapPayload(json)
+        guard let dictionary = payload as? JSONObject, let dto = ExchangeConnectionDTO(dictionary: dictionary) else {
+            throw NetworkServiceError.parsingFailed("수정된 거래소 연결 응답을 해석하지 못했어요.")
+        }
+        return dto.entity
+    }
+
+    func deleteConnection(session: AuthSession, connectionID: String) async throws {
+        guard crudCapability.canDelete else {
+            throw NetworkServiceError.httpError(405, "거래소 연결 삭제 API가 아직 활성화되지 않았어요.", .unknown)
         }
 
         _ = try await client.requestJSON(
@@ -569,6 +1163,431 @@ final class LiveAccountService: AccountServiceProtocol {
             accessToken: session.accessToken
         )
     }
+
+    private func exchangeConnectionBody(request: ExchangeConnectionUpsertRequest) -> JSONObject {
+        var body: JSONObject = [
+            "exchange": request.exchange.rawValue,
+            "permission": request.permission.rawValue,
+            "credentials": request.credentials.mapKeys(\.requestKey)
+        ]
+        if let nickname = request.nickname?.trimmingCharacters(in: .whitespacesAndNewlines), !nickname.isEmpty {
+            body["nickname"] = nickname
+        }
+        return body
+    }
+
+    private func exchangeConnectionBody(request: ExchangeConnectionUpdateRequest) -> JSONObject {
+        var body: JSONObject = [:]
+        if let permission = request.permission {
+            body["permission"] = permission.rawValue
+        }
+        if let nickname = request.nickname?.trimmingCharacters(in: .whitespacesAndNewlines), !nickname.isEmpty {
+            body["nickname"] = nickname
+        }
+        if !request.credentials.isEmpty {
+            body["credentials"] = request.credentials.mapKeys(\.requestKey)
+        }
+        return body
+    }
+}
+
+private struct MarketInfoDTO {
+    let coinInfo: CoinInfo
+    let supportedIntervals: [String]
+
+    init?(dictionary: JSONObject) {
+        guard let symbol = dictionary.string(["symbol", "baseAsset", "asset", "market"]) else {
+            return nil
+        }
+
+        let displayName = dictionary.string(["displayName", "name", "koreanName"])
+        let englishName = dictionary.string(["displayNameEn", "englishName"])
+        self.coinInfo = CoinCatalog.coin(symbol: symbol, displayName: displayName, englishName: englishName)
+        self.supportedIntervals = dictionary.stringArray(["supportedIntervals", "intervals", "chartIntervals"]).map { $0.lowercased() }
+    }
+}
+
+private struct MarketTickerDTO {
+    let symbol: String
+    let price: Double
+    let changePercent: Double
+    let volume24h: Double
+    let high24: Double
+    let low24: Double
+    let timestamp: Date?
+    let isStale: Bool
+    let sourceExchange: Exchange
+
+    init?(dictionary: JSONObject, exchange: Exchange) {
+        guard let symbol = dictionary.string(["symbol", "market", "code"]) else {
+            return nil
+        }
+        guard let price = dictionary.double(["price", "lastPrice", "tradePrice", "closing_price"]) else {
+            return nil
+        }
+
+        self.symbol = symbol.uppercased()
+        self.price = price
+        let rawChangePercent = dictionary.double(["changePercent", "change24h", "signed_change_rate", "changeRate"]) ?? 0
+        self.changePercent = abs(rawChangePercent) <= 1 ? rawChangePercent * 100 : rawChangePercent
+        self.volume24h = dictionary.double(["volume24h", "quoteVolume", "acc_trade_price_24h", "volume"]) ?? 0
+        self.high24 = dictionary.double(["high24", "highPrice", "high_price"]) ?? price
+        self.low24 = dictionary.double(["low24", "lowPrice", "low_price"]) ?? price
+        self.timestamp = parseDateValue(dictionary["timestamp"] ?? dictionary["time"] ?? dictionary["updatedAt"])
+        self.isStale = dictionary.bool(["stale", "isStale"]) ?? false
+        self.sourceExchange = Exchange(rawValue: (dictionary.string(["sourceExchange", "exchange"]) ?? exchange.rawValue).lowercased()) ?? exchange
+    }
+
+    func entity(meta: ResponseMeta) -> TickerData {
+        TickerData(
+            price: price,
+            change: changePercent,
+            volume: volume24h,
+            high24: high24,
+            low24: low24,
+            timestamp: timestamp ?? meta.fetchedAt,
+            isStale: isStale || meta.isStale,
+            sourceExchange: sourceExchange
+        )
+    }
+}
+
+private struct OrderbookDTO {
+    let asks: [OrderbookEntry]
+    let bids: [OrderbookEntry]
+    let timestamp: Date?
+    let isStale: Bool
+
+    init?(dictionary: JSONObject) {
+        let parsedAsks = parseOrderbookEntries(dictionary["asks"] ?? dictionary["sell"], isBid: false)
+        let parsedBids = parseOrderbookEntries(dictionary["bids"] ?? dictionary["buy"], isBid: true)
+
+        if parsedAsks.isEmpty && parsedBids.isEmpty, let units = unwrapArray(dictionary["orderbook_units"]) {
+            self.asks = units.compactMap { item -> OrderbookEntry? in
+                guard let unit = item as? JSONObject else { return nil }
+                guard
+                    let price = unit.double(["ask_price", "askPrice"]),
+                    let quantity = unit.double(["ask_size", "askSize"])
+                else {
+                    return nil
+                }
+                return OrderbookEntry(price: price, qty: quantity)
+            }
+            self.bids = units.compactMap { item -> OrderbookEntry? in
+                guard let unit = item as? JSONObject else { return nil }
+                guard
+                    let price = unit.double(["bid_price", "bidPrice"]),
+                    let quantity = unit.double(["bid_size", "bidSize"])
+                else {
+                    return nil
+                }
+                return OrderbookEntry(price: price, qty: quantity)
+            }
+        } else {
+            self.asks = parsedAsks
+            self.bids = parsedBids
+        }
+
+        guard !asks.isEmpty || !bids.isEmpty else {
+            return nil
+        }
+
+        self.timestamp = parseDateValue(dictionary["timestamp"] ?? dictionary["updatedAt"])
+        self.isStale = dictionary.bool(["stale", "isStale"]) ?? false
+    }
+
+    func entity(meta: ResponseMeta) -> OrderbookData {
+        OrderbookData(asks: asks, bids: bids, timestamp: timestamp ?? meta.fetchedAt, isStale: isStale || meta.isStale)
+    }
+}
+
+private struct PublicTradeDTO {
+    let entity: PublicTrade
+
+    init?(dictionary: JSONObject) {
+        guard let price = dictionary.double(["price", "tradePrice", "trade_price"]) else {
+            return nil
+        }
+
+        let executedDate = parseDateValue(dictionary["executedAt"] ?? dictionary["timestamp"] ?? dictionary["time"])
+        self.entity = PublicTrade(
+            id: dictionary.string(["id", "tradeId", "trade_id"]) ?? UUID().uuidString,
+            price: price,
+            quantity: dictionary.double(["quantity", "qty", "volume", "size"]) ?? 0,
+            side: dictionary.string(["side", "askBid", "ask_bid"]) ?? "buy",
+            executedAt: formatTimestamp(executedDate),
+            executedDate: executedDate
+        )
+    }
+}
+
+private struct CandleDTO {
+    let entity: CandleData
+
+    init?(dictionary: JSONObject) {
+        guard
+            let open = dictionary.double(["open", "openingPrice", "opening_price"]),
+            let high = dictionary.double(["high", "highPrice", "high_price"]),
+            let low = dictionary.double(["low", "lowPrice", "low_price"]),
+            let close = dictionary.double(["close", "tradePrice", "trade_price"])
+        else {
+            return nil
+        }
+
+        let timestamp = parseDateValue(dictionary["timestamp"] ?? dictionary["time"] ?? dictionary["candleDateTimeKst"] ?? dictionary["candle_date_time_utc"])
+        self.entity = CandleData(
+            time: Int((timestamp ?? Date()).timeIntervalSince1970),
+            open: open,
+            high: high,
+            low: low,
+            close: close,
+            volume: dictionary.int(["volume", "candleAccTradeVolume", "candle_acc_trade_volume"]) ?? 0
+        )
+    }
+}
+
+private struct TradingChanceDTO {
+    let entity: TradingChance
+
+    init?(dictionary: JSONObject, exchange: Exchange, symbol: String) {
+        let supportedOrderTypes = dictionary.stringArray(["supportedOrderTypes", "orderTypes", "supported_types"])
+            .compactMap { OrderType(rawValue: $0.lowercased()) }
+        self.entity = TradingChance(
+            exchange: exchange,
+            symbol: symbol,
+            supportedOrderTypes: supportedOrderTypes.isEmpty ? [.limit, .market] : supportedOrderTypes,
+            minimumOrderAmount: dictionary.double(["minimumOrderAmount", "minTotal", "min_amount"]),
+            maximumOrderAmount: dictionary.double(["maximumOrderAmount", "maxTotal", "max_amount"]),
+            priceUnit: dictionary.double(["priceUnit", "tickSize", "price_unit"]),
+            quantityPrecision: dictionary.int(["quantityPrecision", "volumePrecision", "qtyPrecision"]),
+            bidBalance: dictionary.double(["bidBalance", "buyingBalance", "availableAskQuoteAmount", "cashBalance"]) ?? 0,
+            askBalance: dictionary.double(["askBalance", "availableBaseAmount", "availableBidBaseAmount", "assetBalance"]) ?? 0,
+            feeRate: dictionary.double(["feeRate", "makerFeeRate", "fee"]),
+            warningMessage: dictionary.string(["warningMessage", "message"])
+        )
+    }
+}
+
+private struct TradingOrderDTO {
+    let entity: OrderRecord
+
+    init?(dictionary: JSONObject, exchange: Exchange) {
+        let price = dictionary.double(["price", "limitPrice", "avgPrice", "avg_price"]) ?? 0
+        let quantity = dictionary.double(["quantity", "qty", "volume"]) ?? 0
+        let executedQuantity = dictionary.double(["executedQuantity", "filledQuantity", "executed_volume"]) ?? 0
+        let remainingQuantity = dictionary.double(["remainingQuantity", "remainingVolume", "remaining_qty"]) ?? max(quantity - executedQuantity, 0)
+        let createdAt = parseDateValue(dictionary["createdAt"] ?? dictionary["created_at"] ?? dictionary["timestamp"] ?? dictionary["time"])
+        let rawOrderType = dictionary.string(["orderType", "type", "ordType"])?.lowercased() ?? OrderType.limit.rawValue
+
+        self.entity = OrderRecord(
+            id: dictionary.string(["id", "orderId", "order_id", "uuid"]) ?? UUID().uuidString,
+            symbol: dictionary.string(["symbol", "market", "asset"])?.uppercased() ?? "-",
+            side: dictionary.string(["side"]) ?? "buy",
+            orderType: OrderType(rawValue: rawOrderType) ?? .limit,
+            price: price,
+            averageExecutedPrice: dictionary.double(["averageExecutedPrice", "avgExecutedPrice", "avg_price"]),
+            qty: quantity,
+            executedQuantity: executedQuantity,
+            remainingQuantity: remainingQuantity,
+            total: dictionary.double(["total", "notional"]) ?? price * quantity,
+            time: formatTimestamp(createdAt),
+            createdAt: createdAt,
+            exchange: dictionary.string(["exchange"]) ?? exchange.displayName,
+            status: dictionary.string(["status", "state"]) ?? "unknown",
+            canCancel: dictionary.bool(["canCancel", "cancelable", "isCancelable"]) ?? (remainingQuantity > 0)
+        )
+    }
+}
+
+private struct TradingFillDTO {
+    let entity: TradeFill
+
+    init?(dictionary: JSONObject, exchange: Exchange) {
+        guard let price = dictionary.double(["price", "executedPrice", "trade_price"]) else {
+            return nil
+        }
+
+        let executedAt = parseDateValue(dictionary["executedAt"] ?? dictionary["time"] ?? dictionary["timestamp"])
+        self.entity = TradeFill(
+            id: dictionary.string(["id", "fillId", "tradeId"]) ?? UUID().uuidString,
+            orderID: dictionary.string(["orderId", "order_id"]) ?? "-",
+            symbol: dictionary.string(["symbol", "market", "asset"])?.uppercased() ?? "-",
+            side: dictionary.string(["side"]) ?? "buy",
+            price: price,
+            quantity: dictionary.double(["quantity", "qty", "volume"]) ?? 0,
+            fee: dictionary.double(["fee", "paidFee", "fee_amount"]) ?? 0,
+            executedAtText: formatTimestamp(executedAt),
+            executedAt: executedAt,
+            exchange: exchange
+        )
+    }
+}
+
+private struct PortfolioSummaryDTO {
+    let entity: PortfolioSnapshot
+
+    init?(dictionary: JSONObject, exchange: Exchange, meta: ResponseMeta) {
+        let holdingsArray = unwrapArray(dictionary["holdings"] ?? dictionary["assets"] ?? dictionary["balances"]) ?? []
+        let holdings = holdingsArray.compactMap { item -> Holding? in
+            guard let holdingDictionary = item as? JSONObject else {
+                return nil
+            }
+
+            guard let symbol = holdingDictionary.string(["symbol", "asset", "currency"]) else {
+                return nil
+            }
+
+            let totalQuantity = holdingDictionary.double(["totalQuantity", "total", "balance", "qty", "quantity"]) ?? 0
+            let availableQuantity = holdingDictionary.double(["availableQuantity", "available", "free"]) ?? totalQuantity
+            let lockedQuantity = holdingDictionary.double(["lockedQuantity", "locked", "hold"]) ?? max(totalQuantity - availableQuantity, 0)
+            let averageBuyPrice = holdingDictionary.double(["averageBuyPrice", "avgPrice", "avg_buy_price"]) ?? 0
+            let evaluationAmount = holdingDictionary.double(["evaluationAmount", "evaluation", "marketValue"]) ?? 0
+            let profitLoss = holdingDictionary.double(["profitLoss", "pnl"]) ?? 0
+            let rawProfitLossRate = holdingDictionary.double(["profitLossRate", "pnlRate"]) ?? 0
+            let normalizedProfitLossRate = abs(rawProfitLossRate) <= 1 ? rawProfitLossRate * 100 : rawProfitLossRate
+
+            return Holding(
+                symbol: symbol.uppercased(),
+                totalQuantity: totalQuantity,
+                availableQuantity: availableQuantity,
+                lockedQuantity: lockedQuantity,
+                averageBuyPrice: averageBuyPrice,
+                evaluationAmount: evaluationAmount,
+                profitLoss: profitLoss,
+                profitLossRate: normalizedProfitLossRate
+            )
+        }
+
+        self.entity = PortfolioSnapshot(
+            exchange: exchange,
+            totalAsset: dictionary.double(["totalAsset", "totalEvaluationAmount", "total_asset"]) ?? holdings.reduce(0) { $0 + $1.evaluationAmount },
+            availableAsset: dictionary.double(["availableAsset", "availableEvaluationAmount", "available_asset"]) ?? holdings.reduce(0) { $0 + ($1.availableQuantity * $1.averageBuyPrice) },
+            lockedAsset: dictionary.double(["lockedAsset", "lockedEvaluationAmount", "locked_asset"]) ?? holdings.reduce(0) { $0 + ($1.lockedQuantity * $1.averageBuyPrice) },
+            cash: dictionary.double(["cash", "krwBalance", "availableCash", "cashBalance"]) ?? 0,
+            holdings: holdings,
+            fetchedAt: meta.fetchedAt,
+            isStale: meta.isStale || dictionary.bool(["stale", "isStale"]) == true,
+            partialFailureMessage: meta.partialFailureMessage ?? dictionary.string(["partialFailureMessage", "warningMessage"])
+        )
+    }
+}
+
+private struct PortfolioHistoryItemDTO {
+    let entity: PortfolioHistoryItem
+
+    init?(dictionary: JSONObject, exchange: Exchange) {
+        let occurredAt = parseDateValue(dictionary["occurredAt"] ?? dictionary["timestamp"] ?? dictionary["time"])
+        self.entity = PortfolioHistoryItem(
+            id: dictionary.string(["id", "historyId"]) ?? UUID().uuidString,
+            exchange: exchange,
+            symbol: dictionary.string(["symbol", "asset", "currency"])?.uppercased() ?? "-",
+            type: dictionary.string(["type", "eventType", "kind"]) ?? "-",
+            amount: dictionary.double(["amount", "quantity", "qty", "balance"]) ?? 0,
+            detail: dictionary.string(["detail", "description", "message"]) ?? "",
+            occurredAt: occurredAt,
+            status: dictionary.string(["status", "state"]) ?? "-"
+        )
+    }
+}
+
+private struct KimchiPremiumRowDTO {
+    let entity: KimchiPremiumRow
+
+    init?(dictionary: JSONObject) {
+        guard let symbol = dictionary.string(["symbol"]) else {
+            return nil
+        }
+        let exchange = Exchange(rawValue: (dictionary.string(["exchange", "domesticExchange"]) ?? "").lowercased()) ?? .upbit
+        let sourceExchange = Exchange(rawValue: (dictionary.string(["sourceExchange", "exchange"]) ?? exchange.rawValue).lowercased()) ?? exchange
+        self.entity = KimchiPremiumRow(
+            id: dictionary.string(["id"]) ?? "\(symbol)-\(exchange.rawValue)",
+            symbol: symbol.uppercased(),
+            exchange: exchange,
+            sourceExchange: sourceExchange,
+            domesticPrice: dictionary.double(["domesticPrice", "price", "localPrice"]),
+            referenceExchangePrice: dictionary.double(["referenceExchangePrice", "globalPrice", "foreignPrice"]),
+            premiumPercent: Self.normalizePercent(dictionary.double(["premiumPercent", "premium", "kimchiPremium"])),
+            krwConvertedReference: dictionary.double(["krwConvertedReference", "krwReferencePrice"]),
+            usdKrwRate: dictionary.double(["usdKrwRate", "fxRate", "usd_krw"]),
+            timestamp: parseDateValue(dictionary["timestamp"] ?? dictionary["updatedAt"]),
+            sourceExchangeTimestamp: parseDateValue(dictionary["sourceExchangeTimestamp"] ?? dictionary["localTimestamp"]),
+            referenceTimestamp: parseDateValue(dictionary["referenceTimestamp"] ?? dictionary["globalTimestamp"]),
+            isStale: dictionary.bool(["stale", "isStale"]) ?? false,
+            staleReason: dictionary.string(["staleReason", "warningMessage"])
+        )
+    }
+
+    private static func normalizePercent(_ value: Double?) -> Double? {
+        guard let value else { return nil }
+        return abs(value) <= 1 ? value * 100 : value
+    }
+}
+
+private struct ExchangeConnectionDTO {
+    let entity: ExchangeConnection
+
+    init?(dictionary: JSONObject) {
+        guard let rawExchange = dictionary.string(["exchange", "name"]) else {
+            return nil
+        }
+        guard let exchange = Exchange(rawValue: rawExchange.lowercased()) else {
+            return nil
+        }
+
+        let rawPermission = dictionary.string(["permission", "scope", "mode"])?.lowercased()
+        let permission: ExchangeConnectionPermission
+        if let canTrade = dictionary.bool(["canTrade", "can_trade"]) {
+            permission = canTrade ? .tradeEnabled : .readOnly
+        } else {
+            permission = rawPermission == ExchangeConnectionPermission.tradeEnabled.rawValue ? .tradeEnabled : .readOnly
+        }
+
+        let statusRawValue = dictionary.string(["status", "connectionStatus", "validationStatus"])?.lowercased()
+        let status: ExchangeConnectionStatus
+        switch statusRawValue {
+        case "connected", "active", "validated":
+            status = .connected
+        case "disconnected", "inactive":
+            status = .disconnected
+        case "validating", "pending":
+            status = .validating
+        case "failed", "error", "authentication_failed":
+            status = .failed
+        case "maintenance":
+            status = .maintenance
+        default:
+            status = .unknown
+        }
+
+        self.entity = ExchangeConnection(
+            id: dictionary.string(["id", "connectionId", "connection_id"]) ?? exchange.rawValue,
+            exchange: exchange,
+            permission: permission,
+            nickname: dictionary.string(["nickname", "label"]),
+            isActive: dictionary.bool(["isActive", "is_active", "enabled"]) ?? (status != .disconnected),
+            status: status,
+            statusMessage: dictionary.string(["statusMessage", "validationMessage", "message"]),
+            maskedCredentialSummary: dictionary.string(["maskedCredentialSummary", "maskedCredential", "credentialSummary"]),
+            lastValidatedAt: parseDateValue(dictionary["lastValidatedAt"] ?? dictionary["validatedAt"]),
+            updatedAt: parseDateValue(dictionary["updatedAt"] ?? dictionary["updated_at"])
+        )
+    }
+}
+
+private func splitPayload(_ json: Any) -> (payload: Any, meta: ResponseMeta) {
+    guard let dictionary = json as? JSONObject else {
+        return (json, .empty)
+    }
+
+    let payload = unwrapPayload(dictionary)
+    let meta = ResponseMeta(
+        fetchedAt: parseDateValue(dictionary["fetchedAt"] ?? dictionary["timestamp"] ?? dictionary["serverTime"]),
+        isStale: dictionary.bool(["stale", "isStale"]) ?? false,
+        warningMessage: dictionary.string(["warningMessage", "message"]),
+        partialFailureMessage: dictionary.string(["partialFailureMessage", "partialError", "partial_error"])
+    )
+
+    return (payload, meta)
 }
 
 private func unwrapPayload(_ json: Any) -> Any {
@@ -595,42 +1614,12 @@ private func unwrapArray(_ value: Any?) -> [Any]? {
     return nil
 }
 
-private func parseTicker(_ dictionary: JSONObject, fallbackSymbol: String?) -> (symbol: String, ticker: TickerData)? {
-    guard let symbol = dictionary.string(["symbol", "market", "code"]) ?? fallbackSymbol else {
-        return nil
-    }
-
-    guard let price = dictionary.double(["price", "lastPrice", "tradePrice", "trade_price", "closing_price"]) else {
-        return nil
-    }
-
-    let change =
-        dictionary.double(["change24h", "changePercent", "priceChangePercent", "signed_change_rate"]).map { abs($0) <= 1 ? $0 * 100 : $0 }
-        ?? dictionary.double(["change"]).map { abs($0) <= 1 ? $0 * 100 : $0 }
-        ?? 0
-
-    let volume = dictionary.double(["volume24h", "volume", "acc_trade_price_24h", "quoteVolume"]) ?? 0
-    let high24 = dictionary.double(["high24", "highPrice", "high_price"]) ?? price
-    let low24 = dictionary.double(["low24", "lowPrice", "low_price"]) ?? price
-
-    return (
-        symbol.uppercased(),
-        TickerData(
-            price: price,
-            change: change,
-            volume: volume,
-            high24: high24,
-            low24: low24,
-            sparkline: dictionary.doubleArray(["sparkline", "sparkLine"]),
-            flash: nil
-        )
-    )
-}
-
 private func parseOrderbookEntries(_ value: Any?, isBid: Bool) -> [OrderbookEntry] {
     let array = unwrapArray(value) ?? []
     return array.compactMap { item in
-        guard let dictionary = item as? JSONObject else { return nil }
+        guard let dictionary = item as? JSONObject else {
+            return nil
+        }
 
         let priceKeys = isBid ? ["price", "bidPrice", "bid_price"] : ["price", "askPrice", "ask_price"]
         let quantityKeys = isBid ? ["qty", "quantity", "size", "bidSize", "bid_size"] : ["qty", "quantity", "size", "askSize", "ask_size"]
@@ -643,50 +1632,53 @@ private func parseOrderbookEntries(_ value: Any?, isBid: Bool) -> [OrderbookEntr
     }
 }
 
-private func parseExchangeConnection(_ dictionary: JSONObject) -> ExchangeConnection? {
-    guard let rawExchange = dictionary.string(["exchange", "name"]) else { return nil }
-    guard let exchange = Exchange(rawValue: rawExchange.lowercased()) else { return nil }
-
-    let permission: ExchangeConnectionPermission
-    if let canTrade = dictionary.bool(["canTrade", "can_trade"]) {
-        permission = canTrade ? .tradeEnabled : .readOnly
-    } else {
-        let rawPermission = dictionary.string(["permission", "scope", "mode"])?.lowercased()
-        permission = rawPermission == ExchangeConnectionPermission.tradeEnabled.rawValue ? .tradeEnabled : .readOnly
-    }
-
-    return ExchangeConnection(
-        id: dictionary.string(["id", "connectionId", "connection_id"]) ?? exchange.rawValue,
-        exchange: exchange,
-        permission: permission,
-        nickname: dictionary.string(["nickname", "label"]),
-        isActive: dictionary.bool(["isActive", "is_active", "enabled"]) ?? true,
-        updatedAt: dictionary.string(["updatedAt", "updated_at"])
-    )
-}
-
-private func formatTimestamp(_ rawValue: Any?) -> String {
+private func parseDateValue(_ rawValue: Any?) -> Date? {
     switch rawValue {
     case let number as NSNumber:
         let timestamp = number.doubleValue > 1_000_000_000_000 ? number.doubleValue / 1000 : number.doubleValue
-        let date = Date(timeIntervalSince1970: timestamp)
-        return shortTimeFormatter.string(from: date)
+        return Date(timeIntervalSince1970: timestamp)
     case let string as String:
         if let timestamp = Double(string) {
             let seconds = timestamp > 1_000_000_000_000 ? timestamp / 1000 : timestamp
-            let date = Date(timeIntervalSince1970: seconds)
-            return shortTimeFormatter.string(from: date)
+            return Date(timeIntervalSince1970: seconds)
         }
-        return string
+        if let date = iso8601Formatter.date(from: string) {
+            return date
+        }
+        if let date = alternateISO8601Formatter.date(from: string) {
+            return date
+        }
+        return nil
     default:
-        return "-"
+        return nil
     }
+}
+
+private func formatTimestamp(_ date: Date?) -> String {
+    guard let date else { return "-" }
+    return shortTimeFormatter.string(from: date)
+}
+
+private func normalizePercent(_ value: Double) -> Double {
+    abs(value) <= 1 ? value * 100 : value
 }
 
 private let shortTimeFormatter: DateFormatter = {
     let formatter = DateFormatter()
     formatter.locale = Locale(identifier: "ko_KR")
     formatter.dateFormat = "HH:mm:ss"
+    return formatter
+}()
+
+private let iso8601Formatter: ISO8601DateFormatter = {
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return formatter
+}()
+
+private let alternateISO8601Formatter: ISO8601DateFormatter = {
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime]
     return formatter
 }()
 
@@ -743,9 +1735,9 @@ private extension Dictionary where Key == String, Value == Any {
             }
             if let value = self[key] as? String {
                 switch value.lowercased() {
-                case "true", "1", "yes", "enabled":
+                case "true", "1", "yes", "enabled", "active":
                     return true
-                case "false", "0", "no", "disabled":
+                case "false", "0", "no", "disabled", "inactive":
                     return false
                 default:
                     continue
@@ -755,18 +1747,49 @@ private extension Dictionary where Key == String, Value == Any {
         return nil
     }
 
-    func doubleArray(_ keys: [String]) -> [Double] {
+    func stringArray(_ keys: [String]) -> [String] {
         for key in keys {
-            if let array = self[key] as? [Double] {
+            if let array = self[key] as? [String] {
                 return array
             }
-            if let array = self[key] as? [NSNumber] {
-                return array.map(\.doubleValue)
-            }
-            if let array = self[key] as? [String] {
-                return array.compactMap(Double.init)
+            if let array = self[key] as? [Any] {
+                return array.compactMap { item -> String? in
+                    if let string = item as? String {
+                        return string
+                    }
+                    if let number = item as? NSNumber {
+                        return number.stringValue
+                    }
+                    return nil
+                }
             }
         }
         return []
+    }
+}
+
+private extension URL {
+    func appendingEndpointPath(_ endpointPath: String) -> URL {
+        guard var components = URLComponents(url: self, resolvingAgainstBaseURL: false) else {
+            return appendingPathComponent(endpointPath)
+        }
+
+        let trimmedBase = components.path.hasSuffix("/") ? String(components.path.dropLast()) : components.path
+        let normalizedEndpoint = endpointPath.hasPrefix("/") ? endpointPath : "/\(endpointPath)"
+        components.path = "\(trimmedBase)\(normalizedEndpoint)"
+        return components.url ?? appendingPathComponent(endpointPath)
+    }
+}
+
+private extension String {
+    var trimmedNonEmpty: String? {
+        let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+}
+
+private extension Dictionary where Key == ExchangeCredentialFieldKey, Value == String {
+    func mapKeys(_ transform: (ExchangeCredentialFieldKey) -> String) -> [String: String] {
+        Dictionary<String, String>(uniqueKeysWithValues: map { (transform($0.key), $0.value) })
     }
 }

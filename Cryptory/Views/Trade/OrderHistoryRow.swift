@@ -7,7 +7,6 @@ struct OrderHistoryRow: View {
 
     var body: some View {
         HStack {
-            // Left
             HStack(spacing: 8) {
                 Text(isBuy ? "매수" : "매도")
                     .font(.system(size: 10, weight: .bold))
@@ -19,18 +18,18 @@ struct OrderHistoryRow: View {
                             .fill(isBuy ? Color.up.opacity(0.1) : Color.down.opacity(0.1))
                     )
 
-                Text(order.symbol)
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundColor(.themeText)
-
-                Text(PriceFormatter.formatQty(order.qty))
-                    .font(.system(size: 11))
-                    .foregroundColor(.textMuted)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(order.symbol)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(.themeText)
+                    Text("\(order.orderType.title) · 잔량 \(PriceFormatter.formatQty(order.remainingQuantity))")
+                        .font(.system(size: 9))
+                        .foregroundColor(.textSecondary)
+                }
             }
 
             Spacer()
 
-            // Right
             VStack(alignment: .trailing, spacing: 2) {
                 Text(PriceFormatter.formatPrice(order.price))
                     .font(.mono(11))

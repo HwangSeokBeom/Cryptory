@@ -3,7 +3,21 @@ import SwiftUI
 struct ExchangeConnectionsView: View {
     @ObservedObject var vm: CryptoViewModel
     @Environment(\.dismiss) private var dismiss
-    @State private var isCreateSheetPresented = false
+    @State private var activeSheet: ActiveSheet?
+
+    private enum ActiveSheet: Identifiable {
+        case create(Exchange)
+        case edit(ExchangeConnection)
+
+        var id: String {
+            switch self {
+            case .create(let exchange):
+                return "create-\(exchange.rawValue)"
+            case .edit(let connection):
+                return "edit-\(connection.id)"
+            }
+        }
+    }
 
     var body: some View {
         ZStack {
@@ -25,11 +39,13 @@ struct ExchangeConnectionsView: View {
                 case .empty:
                     emptyState
 
-                case .loaded(let connections):
+                case .loaded(let cards):
                     ScrollView {
                         VStack(spacing: 12) {
-                            ForEach(connections) { connection in
-                                connectionCard(connection)
+                            readySoonNotice
+
+                            ForEach(cards) { card in
+                                connectionCard(card)
                             }
 
                             capabilityNotice
@@ -44,8 +60,13 @@ struct ExchangeConnectionsView: View {
         .task {
             await vm.loadExchangeConnections()
         }
-        .sheet(isPresented: $isCreateSheetPresented) {
-            CreateConnectionSheet(vm: vm)
+        .sheet(item: $activeSheet) { sheet in
+            switch sheet {
+            case .create(let exchange):
+                ConnectionFormSheet(vm: vm, formViewState: vm.makeExchangeConnectionFormViewState(exchange: exchange), connection: nil)
+            case .edit(let connection):
+                ConnectionFormSheet(vm: vm, formViewState: vm.makeExchangeConnectionFormViewState(exchange: connection.exchange, connection: connection), connection: connection)
+            }
         }
     }
 
@@ -63,8 +84,12 @@ struct ExchangeConnectionsView: View {
             Spacer()
 
             if vm.exchangeConnectionCRUDCapability.canCreate {
-                Button {
-                    isCreateSheetPresented = true
+                Menu {
+                    ForEach(Exchange.allCases.filter(\.supportsConnectionManagement)) { exchange in
+                        Button(exchange.displayName) {
+                            activeSheet = .create(exchange)
+                        }
+                    }
                 } label: {
                     Text("추가")
                         .font(.system(size: 12, weight: .bold))
@@ -97,48 +122,65 @@ struct ExchangeConnectionsView: View {
     }
 
     private var headerDescription: String {
-        if vm.exchangeConnectionCRUDCapability.canCreate || vm.exchangeConnectionCRUDCapability.canDelete {
-            return "읽기 전용/주문 가능 연결 정책과 생성/삭제 기능을 함께 관리할 수 있어요"
-        }
-        return "읽기 전용/주문 가능 연결 정책을 확인할 수 있어요"
+        "서버 exchange-connections API 로만 credential 연결/수정/삭제를 수행합니다."
     }
 
-    private func connectionCard(_ connection: ExchangeConnection) -> some View {
+    private func connectionCard(_ card: ExchangeConnectionCardViewState) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 10) {
-                ExchangeIcon(exchange: connection.exchange, size: 18)
+                ExchangeIcon(exchange: card.connection.exchange, size: 18)
 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(connection.nickname ?? connection.exchange.displayName)
+                    Text(card.connection.displayTitle)
                         .font(.system(size: 15, weight: .bold))
                         .foregroundColor(.themeText)
-                    Text(connection.exchange.displayName)
+                    Text(card.connection.exchange.displayName)
                         .font(.system(size: 11))
                         .foregroundColor(.textMuted)
                 }
 
                 Spacer()
 
-                Text(connection.permission.title)
+                Text(card.connection.permission.title)
                     .font(.system(size: 11, weight: .bold))
-                    .foregroundColor(connection.permission == .tradeEnabled ? .up : .accent)
+                    .foregroundColor(card.connection.permission == .tradeEnabled ? .up : .accent)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 5)
                     .background(
                         Capsule()
-                            .fill((connection.permission == .tradeEnabled ? Color.up : Color.accent).opacity(0.12))
+                            .fill((card.connection.permission == .tradeEnabled ? Color.up : Color.accent).opacity(0.12))
                     )
             }
 
-            Text(connection.permission.description)
+            Text(card.secondaryMessage)
                 .font(.system(size: 12))
                 .foregroundColor(.textSecondary)
 
-            HStack {
-                statusChip(connection.isActive ? "연결됨" : "비활성")
-                if let updatedAt = connection.updatedAt, !updatedAt.isEmpty {
-                    statusChip("업데이트 \(updatedAt)")
+            if !card.statusChips.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(card.statusChips, id: \.self) { chip in
+                            statusChip(chip)
+                        }
+                    }
                 }
+            }
+
+            if card.canEdit {
+                Button {
+                    activeSheet = .edit(card.connection)
+                } label: {
+                    Text("연결 수정")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundColor(.accent)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 8)
+                        .background(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .fill(Color.accent.opacity(0.12))
+                        )
+                }
+                .buttonStyle(.plain)
             }
         }
         .padding(14)
@@ -151,10 +193,10 @@ struct ExchangeConnectionsView: View {
                 )
         )
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-            if vm.exchangeConnectionCRUDCapability.canDelete {
+            if card.canDelete {
                 Button(role: .destructive) {
                     Task {
-                        await vm.deleteExchangeConnection(id: connection.id)
+                        await vm.deleteExchangeConnection(id: card.connection.id)
                     }
                 } label: {
                     Label("삭제", systemImage: "trash")
@@ -173,6 +215,27 @@ struct ExchangeConnectionsView: View {
                 Capsule()
                     .fill(Color.bgTertiary)
             )
+    }
+
+    private var readySoonNotice: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("준비 중")
+                .font(.system(size: 12, weight: .bold))
+                .foregroundColor(.themeText)
+            Text("바이낸스 연결 UI 는 감추고 서버 reference price provider 로만 사용합니다.")
+                .font(.system(size: 11))
+                .foregroundColor(.textSecondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color.bgSecondary)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .stroke(Color.themeBorder, lineWidth: 1)
+                )
+        )
     }
 
     private var emptyState: some View {
@@ -194,8 +257,12 @@ struct ExchangeConnectionsView: View {
                 .padding(.horizontal, 28)
 
             if vm.exchangeConnectionCRUDCapability.canCreate {
-                Button {
-                    isCreateSheetPresented = true
+                Menu {
+                    ForEach(Exchange.allCases.filter(\.supportsConnectionManagement)) { exchange in
+                        Button(exchange.displayName) {
+                            activeSheet = .create(exchange)
+                        }
+                    }
                 } label: {
                     Text("거래소 연결 추가")
                         .font(.system(size: 14, weight: .bold))
@@ -237,15 +304,15 @@ struct ExchangeConnectionsView: View {
     }
 
     private var capabilityDescription: String {
-        switch (vm.exchangeConnectionCRUDCapability.canCreate, vm.exchangeConnectionCRUDCapability.canDelete) {
-        case (true, true):
-            return "서버 contract가 생성/삭제를 모두 지원합니다."
-        case (true, false):
-            return "생성 API만 활성화되어 있고 삭제 API는 아직 비활성 상태입니다."
-        case (false, true):
-            return "삭제 API만 활성화되어 있고 생성 API는 아직 비활성 상태입니다."
-        case (false, false):
-            return "현재 앱은 조회 전용 연결 관리로 동작합니다. 서버 CRUD contract가 열리면 추가/삭제 UI를 그대로 활성화할 수 있습니다."
+        switch (vm.exchangeConnectionCRUDCapability.canCreate, vm.exchangeConnectionCRUDCapability.canUpdate, vm.exchangeConnectionCRUDCapability.canDelete) {
+        case (true, true, true):
+            return "서버 contract가 생성/수정/삭제를 모두 지원합니다."
+        case (true, true, false):
+            return "생성/수정 API는 열려 있고 삭제 API는 아직 비활성 상태입니다."
+        case (true, false, false):
+            return "생성 API만 활성화되어 있고 수정/삭제는 아직 비활성 상태입니다."
+        default:
+            return "현재 앱은 조회 전용 연결 관리로 동작합니다."
         }
     }
 
@@ -264,25 +331,28 @@ struct ExchangeConnectionsView: View {
 }
 
 extension ExchangeConnectionsView {
-    private struct CreateConnectionSheet: View {
+    private struct ConnectionFormSheet: View {
         @ObservedObject var vm: CryptoViewModel
+        let formViewState: ExchangeConnectionFormViewState
+        let connection: ExchangeConnection?
+
         @Environment(\.dismiss) private var dismiss
 
-        @State private var exchange: Exchange = .upbit
-        @State private var apiKey = ""
-        @State private var secret = ""
         @State private var nickname = ""
         @State private var permission: ExchangeConnectionPermission = .readOnly
+        @State private var credentialValues: [ExchangeCredentialFieldKey: String] = [:]
         @State private var isSubmitting = false
+        @State private var validationMessage: String?
 
         var body: some View {
             NavigationStack {
                 Form {
                     Section("거래소") {
-                        Picker("거래소", selection: $exchange) {
-                            ForEach(Exchange.allCases) { exchange in
-                                Text(exchange.displayName).tag(exchange)
-                            }
+                        HStack {
+                            Text("선택 거래소")
+                            Spacer()
+                            Text(formViewState.exchange.displayName)
+                                .foregroundColor(.textSecondary)
                         }
                     }
 
@@ -294,15 +364,41 @@ extension ExchangeConnectionsView {
                         }
                     }
 
-                    Section("인증 정보") {
+                    Section("표시 정보") {
                         TextField("닉네임(선택)", text: $nickname)
-                        TextField("API Key", text: $apiKey)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
-                        SecureField("Secret", text: $secret)
+                    }
+
+                    Section("인증 정보") {
+                        ForEach(formViewState.credentialFields) { field in
+                            if field.isSecureEntry {
+                                SecureField(field.placeholder, text: binding(for: field.fieldKey))
+                                    .textInputAutocapitalization(.never)
+                                    .autocorrectionDisabled()
+                            } else {
+                                TextField(field.placeholder, text: binding(for: field.fieldKey))
+                                    .textInputAutocapitalization(.never)
+                                    .autocorrectionDisabled()
+                            }
+                        }
+                    }
+
+                    if !formViewState.helperMessage.isEmpty {
+                        Section("안내") {
+                            Text(formViewState.helperMessage)
+                            if !formViewState.requiresSecretOnUpdateExplanation.isEmpty {
+                                Text(formViewState.requiresSecretOnUpdateExplanation)
+                            }
+                        }
+                    }
+
+                    if let validationMessage, !validationMessage.isEmpty {
+                        Section {
+                            Text(validationMessage)
+                                .foregroundColor(.down)
+                        }
                     }
                 }
-                .navigationTitle("거래소 연결 추가")
+                .navigationTitle(connection == nil ? "거래소 연결 추가" : "거래소 연결 수정")
                 .toolbar {
                     ToolbarItem(placement: .topBarLeading) {
                         Button("닫기") {
@@ -311,27 +407,61 @@ extension ExchangeConnectionsView {
                     }
 
                     ToolbarItem(placement: .topBarTrailing) {
-                        Button(isSubmitting ? "추가 중..." : "추가") {
+                        Button(isSubmitting ? "\(formViewState.submitTitle) 중..." : formViewState.submitTitle) {
                             Task {
-                                isSubmitting = true
-                                let created = await vm.createExchangeConnection(
-                                    ExchangeConnectionCreateRequest(
-                                        exchange: exchange,
-                                        apiKey: apiKey,
-                                        secret: secret,
-                                        permission: permission,
-                                        nickname: nickname.isEmpty ? nil : nickname
-                                    )
-                                )
-                                isSubmitting = false
-                                if created {
-                                    dismiss()
-                                }
+                                await submit()
                             }
                         }
-                        .disabled(isSubmitting || apiKey.isEmpty || secret.isEmpty)
+                        .disabled(isSubmitting)
                     }
                 }
+                .onAppear {
+                    nickname = connection?.nickname ?? ""
+                    permission = connection?.permission ?? .readOnly
+                }
+            }
+        }
+
+        private func binding(for fieldKey: ExchangeCredentialFieldKey) -> Binding<String> {
+            Binding(
+                get: { credentialValues[fieldKey, default: ""] },
+                set: { credentialValues[fieldKey] = $0 }
+            )
+        }
+
+        private func submit() async {
+            validationMessage = vm.validationMessageForExchangeConnectionForm(
+                exchange: formViewState.exchange,
+                nickname: nickname,
+                credentials: credentialValues,
+                mode: formViewState.mode
+            )
+
+            guard validationMessage == nil else { return }
+
+            isSubmitting = true
+
+            let didSucceed: Bool
+            if let connection {
+                didSucceed = await vm.updateExchangeConnection(
+                    connection: connection,
+                    nickname: nickname,
+                    permission: permission,
+                    credentials: credentialValues
+                )
+            } else {
+                didSucceed = await vm.createExchangeConnection(
+                    exchange: formViewState.exchange,
+                    nickname: nickname,
+                    permission: permission,
+                    credentials: credentialValues
+                )
+            }
+
+            isSubmitting = false
+
+            if didSucceed {
+                dismiss()
             }
         }
     }

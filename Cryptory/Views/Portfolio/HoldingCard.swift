@@ -4,50 +4,28 @@ struct HoldingCard: View {
     @ObservedObject var vm: CryptoViewModel
     let holding: Holding
 
-    private var coin: CoinInfo? {
-        COINS.first { $0.symbol == holding.symbol }
+    private var coin: CoinInfo {
+        CoinCatalog.coin(symbol: holding.symbol)
     }
 
-    private var currentPrice: Double {
-        vm.prices[holding.symbol]?[vm.exchange.rawValue]?.price ?? holding.avgPrice
-    }
-
-    private var evalAmount: Double {
-        currentPrice * holding.qty
-    }
-
-    private var pnl: Double {
-        (currentPrice - holding.avgPrice) * holding.qty
-    }
-
-    private var pnlPercent: Double {
-        guard holding.avgPrice > 0 else { return 0 }
-        return (currentPrice - holding.avgPrice) / holding.avgPrice * 100
-    }
-
-    private var isUp: Bool { pnl >= 0 }
+    private var isUp: Bool { holding.profitLoss >= 0 }
 
     var body: some View {
         Button {
-            if let coin = coin {
-                vm.selectCoinForTrade(coin)
-            }
+            vm.selectCoinForTrade(coin)
         } label: {
             VStack(spacing: 10) {
-                // Top row
                 HStack {
                     HStack(spacing: 6) {
                         Text(holding.symbol)
                             .font(.system(size: 14, weight: .heavy))
                             .foregroundColor(.themeText)
-                        Text(coin?.name ?? "")
+                        Text(coin.name)
                             .font(.system(size: 11))
                             .foregroundColor(.textMuted)
                     }
                     Spacer()
-                    // PnL badge
-                    let sign = pnlPercent >= 0 ? "+" : ""
-                    Text(String(format: "%@%.2f%%", sign, pnlPercent))
+                    Text(String(format: "%@%.2f%%", holding.profitLossRate >= 0 ? "+" : "", holding.profitLossRate))
                         .font(.system(size: 11, weight: .bold))
                         .foregroundColor(isUp ? .up : .down)
                         .padding(.horizontal, 8)
@@ -58,14 +36,14 @@ struct HoldingCard: View {
                         )
                 }
 
-                // 2x2 grid
                 LazyVGrid(columns: [
                     GridItem(.flexible(), alignment: .leading),
                     GridItem(.flexible(), alignment: .trailing)
                 ], spacing: 8) {
-                    statCell(label: "보유수량", value: PriceFormatter.formatQty(holding.qty))
-                    statCell(label: "평가금액", value: "₩" + PriceFormatter.formatInteger(evalAmount))
-                    statCell(label: "매수평균가", value: PriceFormatter.formatPrice(holding.avgPrice))
+                    statCell(label: "총수량", value: PriceFormatter.formatQty6(holding.totalQuantity))
+                    statCell(label: "평가금액", value: "₩" + PriceFormatter.formatInteger(holding.evaluationAmount))
+                    statCell(label: "가용/잠금", value: "\(PriceFormatter.formatQty(holding.availableQuantity)) / \(PriceFormatter.formatQty(holding.lockedQuantity))")
+                    statCell(label: "매수평균가", value: PriceFormatter.formatPrice(holding.averageBuyPrice))
                     pnlCell
                 }
             }
@@ -98,8 +76,7 @@ struct HoldingCard: View {
             Text("평가손익")
                 .font(.system(size: 11))
                 .foregroundColor(.textMuted)
-            let sign = pnl >= 0 ? "+" : ""
-            Text("\(sign)₩" + PriceFormatter.formatInteger(pnl))
+            Text("\(holding.profitLoss >= 0 ? "+" : "")₩" + PriceFormatter.formatInteger(holding.profitLoss))
                 .font(.mono(11, weight: .bold))
                 .foregroundColor(isUp ? .up : .down)
         }

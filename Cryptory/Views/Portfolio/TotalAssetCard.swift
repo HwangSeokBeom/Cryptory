@@ -7,7 +7,6 @@ struct TotalAssetCard: View {
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
-            // Decorative circle
             Circle()
                 .fill(
                     RadialGradient(
@@ -30,37 +29,29 @@ struct TotalAssetCard: View {
                     .foregroundColor(.themeText)
 
                 HStack(spacing: 16) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("평가손익")
-                            .font(.system(size: 10))
-                            .foregroundColor(.textMuted)
-                        let sign = isUp ? "+" : ""
-                        Text("\(sign)₩" + PriceFormatter.formatInteger(vm.totalPnl))
-                            .font(.mono(14, weight: .bold))
-                            .foregroundColor(isUp ? .up : .down)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    statColumn(
+                        label: "평가손익",
+                        value: "\(vm.totalPnl >= 0 ? "+" : "")₩" + PriceFormatter.formatInteger(vm.totalPnl),
+                        color: isUp ? .up : .down
+                    )
+                    statColumn(
+                        label: "수익률",
+                        value: String(format: "%@%.2f%%", vm.totalPnlPercent >= 0 ? "+" : "", vm.totalPnlPercent),
+                        color: isUp ? .up : .down
+                    )
 
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("수익률")
-                            .font(.system(size: 10))
-                            .foregroundColor(.textMuted)
-                        let sign = vm.totalPnlPercent >= 0 ? "+" : ""
-                        Text(String(format: "%@%.2f%%", sign, vm.totalPnlPercent))
-                            .font(.mono(14, weight: .bold))
-                            .foregroundColor(isUp ? .up : .down)
+                    if let snapshot = vm.portfolioState.value {
+                        statColumn(
+                            label: "가용자산",
+                            value: "₩" + PriceFormatter.formatInteger(snapshot.availableAsset),
+                            color: .accent
+                        )
+                        statColumn(
+                            label: "잠금자산",
+                            value: "₩" + PriceFormatter.formatInteger(snapshot.lockedAsset),
+                            color: .themeText
+                        )
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("보유현금")
-                            .font(.system(size: 10))
-                            .foregroundColor(.textMuted)
-                        Text("₩" + PriceFormatter.formatInteger(vm.cash))
-                            .font(.mono(14, weight: .bold))
-                            .foregroundColor(.accent)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
         }
@@ -80,5 +71,17 @@ struct TotalAssetCard: View {
                 )
         )
         .clipped()
+    }
+
+    private func statColumn(label: String, value: String, color: Color) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label)
+                .font(.system(size: 10))
+                .foregroundColor(.textMuted)
+            Text(value)
+                .font(.mono(14, weight: .bold))
+                .foregroundColor(color)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }

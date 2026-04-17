@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ContentView: View {
     @StateObject private var vm = CryptoViewModel()
+    @Environment(\.scenePhase) private var scenePhase
 
     private var tabSelection: Binding<Tab> {
         Binding(
@@ -97,6 +98,9 @@ struct ContentView: View {
         }
         .onAppear {
             vm.onAppear()
+        }
+        .onChange(of: scenePhase) { _, newValue in
+            vm.onScenePhaseChanged(newValue)
         }
         .fullScreenCover(isPresented: $vm.isLoginPresented) {
             LoginView(vm: vm)

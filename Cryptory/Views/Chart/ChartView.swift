@@ -4,10 +4,15 @@ struct ChartView: View {
     @ObservedObject var vm: CryptoViewModel
 
     var body: some View {
-        if let coin = vm.selectedCoin {
+        if vm.isSelectedExchangeChartUnsupported {
+            unsupportedState
+        } else if let coin = vm.selectedCoin {
             ScrollView {
                 VStack(spacing: 0) {
                     coinHeader(coin)
+                    ScreenStatusBannerView(viewState: vm.chartStatusViewState)
+                        .padding(.horizontal, 16)
+                        .padding(.top, 12)
                     PeriodSelector(vm: vm)
                     candleSection
                     stats24H
@@ -23,7 +28,6 @@ struct ChartView: View {
         }
     }
 
-    // MARK: - Empty State
     private var emptyState: some View {
         VStack(spacing: 12) {
             Spacer()
@@ -38,7 +42,24 @@ struct ChartView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    // MARK: - Coin Header
+    private var unsupportedState: some View {
+        VStack(spacing: 12) {
+            Spacer()
+            Image(systemName: "chart.xyaxis.line")
+                .font(.system(size: 40, weight: .semibold))
+                .foregroundColor(.textSecondary)
+            Text("이 거래소는 차트를 지원하지 않아요")
+                .font(.system(size: 16, weight: .bold))
+                .foregroundColor(.themeText)
+            Text("거래소 metadata 의 supportsChart 기반으로 차트 UI를 비활성화했어요.")
+                .font(.system(size: 12))
+                .foregroundColor(.textMuted)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 24)
+            Spacer()
+        }
+    }
+
     private func coinHeader(_ coin: CoinInfo) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
@@ -102,7 +123,6 @@ struct ChartView: View {
         )
     }
 
-    // MARK: - Candle Chart
     @ViewBuilder
     private var candleSection: some View {
         switch vm.candlesState {
@@ -136,7 +156,6 @@ struct ChartView: View {
         }
     }
 
-    // MARK: - 24H Stats
     private var stats24H: some View {
         HStack(spacing: 8) {
             let ticker = vm.currentTicker

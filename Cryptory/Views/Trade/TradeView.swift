@@ -8,6 +8,8 @@ struct TradeView: View {
             AuthGateView(feature: feature) {
                 vm.presentLogin(for: feature)
             }
+        } else if vm.isSelectedExchangeTradingUnsupported {
+            unsupportedState
         } else {
             content
         }
@@ -48,42 +50,85 @@ struct TradeView: View {
             ScrollView {
                 VStack(spacing: 12) {
                     connectionStatusCard
+                    ScreenStatusBannerView(viewState: vm.tradingStatusViewState)
 
                     if let coin = vm.selectedCoin {
                         selectedCoinCard(coin)
 
-                        if vm.hasTradeEnabledConnection {
-                            buySellToggle
-                            orderTypeToggle
+                        switch vm.tradingChanceState {
+                        case .idle, .loading:
+                            ProgressView("주문 가능 정보를 불러오는 중...")
+                                .tint(.accent)
+                                .padding(.vertical, 12)
 
-                            if vm.orderType == .limit {
-                                priceInput
-                            }
-
-                            qtyInput
-                            percentButtons
-                            orderSummary(coin)
-                            executeButton(coin)
-                        } else {
+                        case .failed(let message):
                             messageCard(
-                                title: "주문 가능 권한 연결이 없어요",
-                                detail: "현재 연결은 조회 전용이에요. 주문 가능 권한의 거래소 연결을 추가해야 주문을 실행할 수 있어요."
+                                title: "주문 가능 정보를 불러오지 못했어요",
+                                detail: message
                             )
+
+                        case .empty:
+                            messageCard(
+                                title: "주문 가능 정보가 없어요",
+                                detail: "선택 거래소의 주문 가능 정책 응답을 기다리는 중입니다."
+                            )
+
+                        case .loaded(let chance):
+                            chanceCard(chance)
+
+                            if vm.hasTradeEnabledConnection {
+                                buySellToggle
+                                orderTypeToggle
+
+                                if vm.orderType == .limit {
+                                    priceInput
+                                }
+
+                                qtyInput
+                                percentButtons
+                                orderSummary(coin, chance: chance)
+                                executeButton(coin)
+                            } else {
+                                messageCard(
+                                    title: "주문 가능 권한 연결이 없어요",
+                                    detail: "현재 연결은 조회 전용이에요. 주문 가능 권한의 거래소 연결을 추가해야 주문을 실행할 수 있어요."
+                                )
+                            }
                         }
+
+                        selectedOrderDetailSection
+                        openOrdersSection
+                        fillsSection
                     } else {
                         messageCard(
                             title: "시세 탭에서 코인을 선택해주세요",
                             detail: "공용 시세 화면에서 코인을 고르면 바로 이 주문 화면으로 이어서 사용할 수 있어요."
                         )
                     }
-
-                    orderHistorySection
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 12)
             }
             .scrollDismissesKeyboard(.interactively)
             .dismissKeyboardOnBackgroundTap()
+        }
+    }
+
+    private var unsupportedState: some View {
+        VStack(spacing: 14) {
+            Spacer()
+            Image(systemName: "exclamationmark.shield")
+                .font(.system(size: 42, weight: .semibold))
+                .foregroundColor(.textSecondary)
+            Text("이 거래소는 주문을 지원하지 않아요")
+                .font(.system(size: 18, weight: .bold))
+                .foregroundColor(.themeText)
+            Text("Exchange metadata 의 supportsOrder 기준으로 트레이딩 UI를 비활성화했어요.")
+                .font(.system(size: 13))
+                .foregroundColor(.textSecondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 28)
+            Spacer()
         }
     }
 
@@ -166,6 +211,56 @@ struct TradeView: View {
         )
     }
 
+    private func chanceCard(_ chance: TradingChance) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("주문 가능 정보")
+                .font(.system(size: 13, weight: .bold))
+                .foregroundColor(.themeText)
+
+            HStack(spacing: 8) {
+                statItem(label: "지원 타입", value: chance.supportedOrderTypes.map(\.title).joined(separator: ", "))
+                statItem(label: "최소 주문", value: chance.minimumOrderAmount.map { PriceFormatter.formatInteger($0) + " KRW" } ?? "—")
+            }
+
+            HStack(spacing: 8) {
+                statItem(label: "매수 가능", value: PriceFormatter.formatInteger(chance.bidBalance) + " KRW")
+                statItem(label: "매도 가능", value: PriceFormatter.formatQty6(chance.askBalance))
+            }
+
+            if let warningMessage = chance.warningMessage, !warningMessage.isEmpty {
+                Text(warningMessage)
+                    .font(.system(size: 11))
+                    .foregroundColor(.textSecondary)
+            }
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color.bgSecondary)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke(Color.themeBorder, lineWidth: 1)
+                )
+        )
+    }
+
+    private func statItem(label: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(label)
+                .font(.system(size: 10))
+                .foregroundColor(.textMuted)
+            Text(value)
+                .font(.mono(12, weight: .semibold))
+                .foregroundColor(.themeText)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(Color.bgTertiary)
+        )
+    }
+
     private var buySellToggle: some View {
         HStack(spacing: 0) {
             toggleButton(title: "매수", isSelected: vm.orderSide == .buy, color: .up) {
@@ -203,8 +298,9 @@ struct TradeView: View {
 
     private var orderTypeToggle: some View {
         HStack(spacing: 8) {
-            orderTypeButton("지정가", type: .limit)
-            orderTypeButton("시장가", type: .market)
+            ForEach(vm.currentSupportedOrderTypes, id: \.self) { type in
+                orderTypeButton(type.title, type: type)
+            }
         }
     }
 
@@ -322,7 +418,7 @@ struct TradeView: View {
         }
     }
 
-    private func orderSummary(_ coin: CoinInfo) -> some View {
+    private func orderSummary(_ coin: CoinInfo, chance: TradingChance) -> some View {
         let price: Double = {
             if vm.orderType == .market {
                 return vm.currentPrice
@@ -348,12 +444,11 @@ struct TradeView: View {
                     .foregroundColor(.textMuted)
                 Spacer()
                 if vm.orderSide == .buy {
-                    Text(PriceFormatter.formatInteger(vm.cash) + " KRW")
+                    Text(PriceFormatter.formatInteger(chance.bidBalance) + " KRW")
                         .font(.mono(13, weight: .bold))
                         .foregroundColor(.accent)
                 } else {
-                    let holding = vm.portfolio.first { $0.symbol == coin.symbol }
-                    Text(PriceFormatter.formatQty6(holding?.qty ?? 0) + " \(coin.symbol)")
+                    Text(PriceFormatter.formatQty6(chance.askBalance) + " \(coin.symbol)")
                         .font(.mono(13, weight: .bold))
                         .foregroundColor(.accent)
                 }
@@ -412,15 +507,48 @@ struct TradeView: View {
     }
 
     @ViewBuilder
-    private var orderHistorySection: some View {
+    private var selectedOrderDetailSection: some View {
+        switch vm.selectedOrderDetailState {
+        case .idle:
+            EmptyView()
+        case .loading:
+            ProgressView("주문 상세를 불러오는 중...")
+                .tint(.accent)
+                .padding(.vertical, 8)
+        case .failed(let message):
+            messageCard(title: "주문 상세를 불러오지 못했어요", detail: message)
+        case .empty:
+            EmptyView()
+        case .loaded(let order):
+            VStack(alignment: .leading, spacing: 8) {
+                Text("주문 상세")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundColor(.themeText)
+                statItem(label: "상태", value: order.status)
+                statItem(label: "체결/잔량", value: "\(PriceFormatter.formatQty(order.executedQuantity)) / \(PriceFormatter.formatQty(order.remainingQuantity))")
+            }
+            .padding(12)
+            .background(
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(Color.bgSecondary)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12)
+                            .stroke(Color.themeBorder, lineWidth: 1)
+                    )
+            )
+        }
+    }
+
+    @ViewBuilder
+    private var openOrdersSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("개인 체결/주문 내역")
+            Text("미체결 주문")
                 .font(.system(size: 13, weight: .bold))
                 .foregroundColor(.themeText)
 
             switch vm.orderHistoryState {
             case .idle, .loading:
-                ProgressView("내 주문 내역을 불러오는 중...")
+                ProgressView("미체결 주문을 불러오는 중...")
                     .tint(.accent)
                     .padding(.vertical, 12)
 
@@ -431,14 +559,105 @@ struct TradeView: View {
                     .padding(.vertical, 8)
 
             case .empty:
-                Text("개인 주문 내역이 아직 없어요.")
+                Text("미체결 주문이 없어요.")
                     .font(.system(size: 12))
                     .foregroundColor(.textMuted)
                     .padding(.vertical, 8)
 
-            case .loaded:
-                ForEach(vm.orderHistory.prefix(8)) { record in
-                    OrderHistoryRow(order: record)
+            case .loaded(let orders):
+                ForEach(orders.prefix(8)) { record in
+                    VStack(spacing: 8) {
+                        Button {
+                            Task {
+                                await vm.loadOrderDetail(orderID: record.id)
+                            }
+                        } label: {
+                            OrderHistoryRow(order: record)
+                        }
+                        .buttonStyle(.plain)
+
+                        if record.canCancel {
+                            Button {
+                                Task {
+                                    await vm.cancelOrder(record)
+                                }
+                            } label: {
+                                Text("주문 취소")
+                                    .font(.system(size: 11, weight: .bold))
+                                    .foregroundColor(.down)
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 8)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 8)
+                                            .fill(Color.down.opacity(0.1))
+                                    )
+                            }
+                            .buttonStyle(.plain)
+                            .frame(maxWidth: .infinity, alignment: .trailing)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var fillsSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("최근 체결")
+                .font(.system(size: 13, weight: .bold))
+                .foregroundColor(.themeText)
+
+            switch vm.fillsState {
+            case .idle, .loading:
+                ProgressView("체결 내역을 불러오는 중...")
+                    .tint(.accent)
+                    .padding(.vertical, 12)
+
+            case .failed(let message):
+                Text(message)
+                    .font(.system(size: 12))
+                    .foregroundColor(.down)
+                    .padding(.vertical, 8)
+
+            case .empty:
+                Text("최근 체결이 아직 없어요.")
+                    .font(.system(size: 12))
+                    .foregroundColor(.textMuted)
+                    .padding(.vertical, 8)
+
+            case .loaded(let fills):
+                ForEach(fills.prefix(8)) { fill in
+                    HStack {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(fill.symbol)
+                                .font(.system(size: 12, weight: .bold))
+                                .foregroundColor(.themeText)
+                            Text(fill.side == "buy" ? "매수 체결" : "매도 체결")
+                                .font(.system(size: 10))
+                                .foregroundColor(fill.side == "buy" ? .up : .down)
+                        }
+
+                        Spacer()
+
+                        VStack(alignment: .trailing, spacing: 4) {
+                            Text(PriceFormatter.formatPrice(fill.price))
+                                .font(.mono(12, weight: .semibold))
+                                .foregroundColor(.themeText)
+                            Text(fill.executedAtText)
+                                .font(.system(size: 10))
+                                .foregroundColor(.textMuted)
+                        }
+                    }
+                    .padding(12)
+                    .background(
+                        RoundedRectangle(cornerRadius: 12)
+                            .fill(Color.bgSecondary)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 12)
+                                    .stroke(Color.themeBorder, lineWidth: 1)
+                            )
+                    )
                 }
             }
         }
