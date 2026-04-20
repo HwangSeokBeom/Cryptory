@@ -1,0 +1,16 @@
+{
+  "source": "/Users/hwangseokbeom/Documents/GitHub/Cryptory/Cryptory/Views/Portfolio/HoldingCard.swift",
+  "tables": {
+    "Localizable": [
+      {
+        "comment": "",
+        "key": "평가손익",
+        "location": {
+          "startingColumn": 18,
+          "startingLine": 76
+        }
+      }
+    ]
+  },
+  "version": 1
+}

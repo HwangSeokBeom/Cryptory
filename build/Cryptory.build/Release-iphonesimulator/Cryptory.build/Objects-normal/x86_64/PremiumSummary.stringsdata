@@ -1,0 +1,16 @@
+{
+  "source": "/Users/hwangseokbeom/Documents/GitHub/Cryptory/Cryptory/Views/KimchiPremium/PremiumSummary.swift",
+  "tables": {
+    "Localizable": [
+      {
+        "comment": "",
+        "key": "김프 요약",
+        "location": {
+          "startingColumn": 22,
+          "startingLine": 17
+        }
+      }
+    ]
+  },
+  "version": 1
+}

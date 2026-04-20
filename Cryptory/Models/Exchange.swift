@@ -1,6 +1,6 @@
 import SwiftUI
 
-enum Exchange: String, CaseIterable, Identifiable {
+enum Exchange: String, CaseIterable, Identifiable, Codable {
     case upbit
     case bithumb
     case coinone

@@ -8,7 +8,7 @@ struct ExchangeDropdown: View {
             ForEach(Exchange.allCases) { ex in
                 Button {
                     withAnimation(.easeOut(duration: 0.2)) {
-                        vm.updateExchange(ex)
+                        vm.updateExchange(ex, source: "exchange_dropdown")
                         vm.showExchangeMenu = false
                     }
                 } label: {

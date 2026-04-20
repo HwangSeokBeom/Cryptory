@@ -1,6 +1,6 @@
 import Foundation
 
-struct PublicTrade: Identifiable {
+struct PublicTrade: Identifiable, Equatable {
     let id: String
     let price: Double
     let quantity: Double

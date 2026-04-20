@@ -55,6 +55,8 @@ struct HeaderView: View {
             brandMark
             brandText
         }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(BrandIdentity.accessibilityLabel)
     }
 
     private var brandMark: some View {
@@ -77,18 +79,18 @@ struct HeaderView: View {
 
     private var brandText: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text("크립토 MTS")
+            Text(BrandIdentity.koreanName)
                 .font(.system(size: 17, weight: .heavy))
                 .foregroundColor(.themeText)
                 .lineLimit(1)
                 .minimumScaleFactor(0.9)
 
-            Text("대한민국")
+            Text(BrandIdentity.englishName)
                 .font(.system(size: 11, weight: .medium))
                 .foregroundColor(.textSecondary)
                 .lineLimit(1)
 
-            Text("Investment Style")
+            Text(BrandIdentity.tagline)
                 .font(.system(size: 11, weight: .medium))
                 .foregroundColor(.textMuted)
                 .lineLimit(1)

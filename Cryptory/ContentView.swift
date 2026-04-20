@@ -1,8 +1,33 @@
 import SwiftUI
 
 struct ContentView: View {
-    @StateObject private var vm = CryptoViewModel()
+    @StateObject private var vm: CryptoViewModel
     @Environment(\.scenePhase) private var scenePhase
+    private let instanceID: Int
+    private let marketView: MarketView
+    private let chartView: ChartView
+    private let tradeView: TradeView
+    private let portfolioView: PortfolioView
+    private let kimchiView: KimchiView
+
+    init() {
+        #if DEBUG
+        let viewModel = UITestFixtureFactory.makeViewModelIfNeeded() ?? CryptoViewModel()
+        #else
+        let viewModel = CryptoViewModel()
+        #endif
+        _vm = StateObject(wrappedValue: viewModel)
+
+        self.marketView = MarketView(vm: viewModel)
+        self.chartView = ChartView(vm: viewModel)
+        self.tradeView = TradeView(vm: viewModel)
+        self.portfolioView = PortfolioView(vm: viewModel)
+        self.kimchiView = KimchiView(vm: viewModel)
+
+        let instanceID = AppLogger.nextInstanceID(scope: "ContentView")
+        self.instanceID = instanceID
+        AppLogger.debug(.lifecycle, "ContentView init #\(instanceID)")
+    }
 
     private var tabSelection: Binding<Tab> {
         Binding(
@@ -19,31 +44,31 @@ struct ContentView: View {
                 HeaderView(vm: vm)
 
                 TabView(selection: tabSelection) {
-                    MarketView(vm: vm)
+                    marketView
                         .tag(Tab.market)
                         .tabItem {
                             Label(Tab.market.title, systemImage: Tab.market.systemImage)
                         }
 
-                    ChartView(vm: vm)
+                    chartView
                         .tag(Tab.chart)
                         .tabItem {
                             Label(Tab.chart.title, systemImage: Tab.chart.systemImage)
                         }
 
-                    TradeView(vm: vm)
+                    tradeView
                         .tag(Tab.trade)
                         .tabItem {
                             Label(Tab.trade.title, systemImage: Tab.trade.systemImage)
                         }
 
-                    PortfolioView(vm: vm)
+                    portfolioView
                         .tag(Tab.portfolio)
                         .tabItem {
                             Label(Tab.portfolio.title, systemImage: Tab.portfolio.systemImage)
                         }
 
-                    KimchiView(vm: vm)
+                    kimchiView
                         .tag(Tab.kimchi)
                         .tabItem {
                             Label(Tab.kimchi.title, systemImage: Tab.kimchi.systemImage)
@@ -97,7 +122,11 @@ struct ContentView: View {
             }
         }
         .onAppear {
+            AppLogger.debug(.lifecycle, "ContentView onAppear #\(instanceID) tab=\(vm.activeTab.rawValue)")
             vm.onAppear()
+        }
+        .onDisappear {
+            AppLogger.debug(.lifecycle, "ContentView onDisappear #\(instanceID) tab=\(vm.activeTab.rawValue)")
         }
         .onChange(of: scenePhase) { _, newValue in
             vm.onScenePhaseChanged(newValue)

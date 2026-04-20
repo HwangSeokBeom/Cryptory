@@ -33,6 +33,7 @@ private struct KeyboardDismissGestureInstaller: UIViewRepresentable {
     }
 
     final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        private let instanceID = AppLogger.nextInstanceID(scope: "KeyboardDismissCoordinator")
         private weak var installedView: UIView?
         private lazy var recognizer: UITapGestureRecognizer = {
             let recognizer = UITapGestureRecognizer(target: self, action: #selector(handleTap))
@@ -41,11 +42,21 @@ private struct KeyboardDismissGestureInstaller: UIViewRepresentable {
             return recognizer
         }()
 
+        override init() {
+            super.init()
+            AppLogger.debug(.lifecycle, "KeyboardDismissCoordinator init #\(instanceID)")
+        }
+
+        deinit {
+            AppLogger.debug(.lifecycle, "KeyboardDismissCoordinator deinit #\(instanceID)")
+        }
+
         func installIfNeeded(from anchorView: UIView) {
             guard let targetView = anchorView.superview, installedView !== targetView else { return }
             installedView?.removeGestureRecognizer(recognizer)
             targetView.addGestureRecognizer(recognizer)
             installedView = targetView
+            AppLogger.debug(.lifecycle, "KeyboardDismissCoordinator install #\(instanceID)")
         }
 
         @objc private func handleTap() {

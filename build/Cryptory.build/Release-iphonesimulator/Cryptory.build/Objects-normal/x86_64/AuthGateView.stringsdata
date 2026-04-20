@@ -1,0 +1,16 @@
+{
+  "source": "/Users/hwangseokbeom/Documents/GitHub/Cryptory/Cryptory/Views/Components/AuthGateView.swift",
+  "tables": {
+    "Localizable": [
+      {
+        "comment": "",
+        "key": "로그인하기",
+        "location": {
+          "startingColumn": 22,
+          "startingLine": 29
+        }
+      }
+    ]
+  },
+  "version": 1
+}

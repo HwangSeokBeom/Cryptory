@@ -46,7 +46,7 @@ enum NetworkServiceError: LocalizedError {
     }
 }
 
-struct ResponseMeta: Equatable {
+struct ResponseMeta: Equatable, Codable {
     let fetchedAt: Date?
     let isStale: Bool
     let warningMessage: String?
@@ -335,17 +335,48 @@ enum TransportFailureMapper {
     }
 }
 
-struct MarketCatalogSnapshot {
+struct MarketCatalogSnapshot: Codable {
     let exchange: Exchange
     let markets: [CoinInfo]
     let supportedIntervalsBySymbol: [String: [String]]
     let meta: ResponseMeta
+    let filteredSymbols: [String]
+
+    init(
+        exchange: Exchange,
+        markets: [CoinInfo],
+        supportedIntervalsBySymbol: [String: [String]],
+        meta: ResponseMeta,
+        filteredSymbols: [String] = []
+    ) {
+        self.exchange = exchange
+        self.markets = markets
+        self.supportedIntervalsBySymbol = supportedIntervalsBySymbol
+        self.meta = meta
+        self.filteredSymbols = filteredSymbols
+    }
 }
 
-struct MarketTickerSnapshot {
+struct MarketTickerSnapshot: Codable {
     let exchange: Exchange
+    let coins: [CoinInfo]
     let tickers: [String: TickerData]
     let meta: ResponseMeta
+    let filteredSymbols: [String]
+
+    init(
+        exchange: Exchange,
+        coins: [CoinInfo] = [],
+        tickers: [String: TickerData],
+        meta: ResponseMeta,
+        filteredSymbols: [String] = []
+    ) {
+        self.exchange = exchange
+        self.coins = coins
+        self.tickers = tickers
+        self.meta = meta
+        self.filteredSymbols = filteredSymbols
+    }
 }
 
 struct OrderbookSnapshot {
@@ -391,6 +422,74 @@ struct PortfolioHistorySnapshot {
 struct ExchangeConnectionsSnapshot {
     let connections: [ExchangeConnection]
     let meta: ResponseMeta
+}
+
+protocol MarketSnapshotCacheStoring {
+    func loadCatalogSnapshot(for exchange: Exchange) -> MarketCatalogSnapshot?
+    func saveCatalogSnapshot(_ snapshot: MarketCatalogSnapshot)
+    func loadTickerSnapshot(for exchange: Exchange) -> MarketTickerSnapshot?
+    func saveTickerSnapshot(_ snapshot: MarketTickerSnapshot)
+}
+
+final class UserDefaultsMarketSnapshotCacheStore: MarketSnapshotCacheStoring {
+    private let defaults: UserDefaults
+    private let encoder = JSONEncoder()
+    private let decoder = JSONDecoder()
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+    }
+
+    func loadCatalogSnapshot(for exchange: Exchange) -> MarketCatalogSnapshot? {
+        decode(MarketCatalogSnapshot.self, forKey: key(prefix: "market.catalog", exchange: exchange))
+    }
+
+    func saveCatalogSnapshot(_ snapshot: MarketCatalogSnapshot) {
+        encode(snapshot, forKey: key(prefix: "market.catalog", exchange: snapshot.exchange))
+    }
+
+    func loadTickerSnapshot(for exchange: Exchange) -> MarketTickerSnapshot? {
+        decode(MarketTickerSnapshot.self, forKey: key(prefix: "market.tickers", exchange: exchange))
+    }
+
+    func saveTickerSnapshot(_ snapshot: MarketTickerSnapshot) {
+        let sanitizedTickers = snapshot.tickers.mapValues { ticker -> TickerData in
+            var sanitizedTicker = ticker
+            sanitizedTicker.flash = nil
+            sanitizedTicker.delivery = .snapshot
+            return sanitizedTicker
+        }
+        encode(
+            MarketTickerSnapshot(
+                exchange: snapshot.exchange,
+                coins: snapshot.coins,
+                tickers: sanitizedTickers,
+                meta: snapshot.meta,
+                filteredSymbols: snapshot.filteredSymbols
+            ),
+            forKey: key(prefix: "market.tickers", exchange: snapshot.exchange)
+        )
+    }
+
+    private func key(prefix: String, exchange: Exchange) -> String {
+        "\(prefix).\(exchange.rawValue)"
+    }
+
+    private func decode<T: Decodable>(_ type: T.Type, forKey key: String) -> T? {
+        guard let data = defaults.data(forKey: key) else {
+            return nil
+        }
+
+        return try? decoder.decode(type, from: data)
+    }
+
+    private func encode<T: Encodable>(_ value: T, forKey key: String) {
+        guard let data = try? encoder.encode(value) else {
+            return
+        }
+
+        defaults.set(data, forKey: key)
+    }
 }
 
 struct APIConfiguration {
@@ -469,6 +568,8 @@ protocol AuthenticationServiceProtocol {
 }
 
 protocol MarketRepositoryProtocol {
+    var marketCandlesEndpointPath: String { get }
+
     func fetchMarkets(exchange: Exchange) async throws -> MarketCatalogSnapshot
     func fetchTickers(exchange: Exchange) async throws -> MarketTickerSnapshot
     func fetchOrderbook(symbol: String, exchange: Exchange) async throws -> OrderbookSnapshot
@@ -491,7 +592,7 @@ protocol PortfolioRepositoryProtocol {
 }
 
 protocol KimchiPremiumRepositoryProtocol {
-    func fetchSnapshot(symbols: [String]?) async throws -> KimchiPremiumSnapshot
+    func fetchSnapshot(exchange: Exchange, symbols: [String]) async throws -> KimchiPremiumSnapshot
 }
 
 protocol ExchangeConnectionsRepositoryProtocol {
@@ -694,6 +795,10 @@ final class LiveMarketRepository: MarketRepositoryProtocol {
         self.client = client
     }
 
+    var marketCandlesEndpointPath: String {
+        client.configuration.marketCandlesPath
+    }
+
     func fetchMarkets(exchange: Exchange) async throws -> MarketCatalogSnapshot {
         let json = try await client.requestJSON(
             path: client.configuration.marketMarketsPath,
@@ -702,22 +807,39 @@ final class LiveMarketRepository: MarketRepositoryProtocol {
         )
 
         let container = splitPayload(json)
-        let array = unwrapArray(container.payload) ?? []
+        let payload = container.payload
+        let array: [Any]
+        if let directArray = unwrapArray(payload) {
+            array = directArray
+        } else if let dictionary = payload as? JSONObject {
+            array = unwrapArray(dictionary["items"] ?? dictionary["markets"] ?? dictionary["symbols"]) ?? []
+        } else {
+            array = []
+        }
         var markets: [CoinInfo] = []
         var intervalsBySymbol: [String: [String]] = [:]
+        var seenSymbols = Set<String>()
 
         for item in array {
             guard let dictionary = item as? JSONObject else { continue }
-            guard let dto = MarketInfoDTO(dictionary: dictionary) else { continue }
+            guard let dto = MarketInfoDTO(dictionary: dictionary, exchange: exchange) else { continue }
+            guard seenSymbols.insert(dto.coinInfo.symbol).inserted else { continue }
             markets.append(dto.coinInfo)
             intervalsBySymbol[dto.coinInfo.symbol] = dto.supportedIntervals
         }
 
+        let resolvedUniverse = resolveMarketUniverse(
+            parsedCoins: markets,
+            payload: payload,
+            exchange: exchange
+        )
+
         return MarketCatalogSnapshot(
             exchange: exchange,
-            markets: markets,
+            markets: resolvedUniverse.coins,
             supportedIntervalsBySymbol: intervalsBySymbol,
-            meta: container.meta
+            meta: container.meta,
+            filteredSymbols: resolvedUniverse.filteredSymbols
         )
     }
 
@@ -729,13 +851,24 @@ final class LiveMarketRepository: MarketRepositoryProtocol {
         )
 
         let container = splitPayload(json)
+        if exchange == .coinone {
+            AppLogger.debug(
+                .network,
+                "Coinone ticker payload -> \(debugJSONString(container.payload))"
+            )
+        }
         var tickers: [String: TickerData] = [:]
+        var coins: [CoinInfo] = []
+        var seenSymbols = Set<String>()
 
         if let array = unwrapArray(container.payload) {
             for item in array {
                 guard let dictionary = item as? JSONObject else { continue }
                 guard let dto = MarketTickerDTO(dictionary: dictionary, exchange: exchange) else { continue }
                 tickers[dto.symbol] = dto.entity(meta: container.meta)
+                if seenSymbols.insert(dto.coinInfo.symbol).inserted {
+                    coins.append(dto.coinInfo)
+                }
             }
         } else if let dictionary = container.payload as? JSONObject {
             if let nestedArray = unwrapArray(dictionary["items"] ?? dictionary["tickers"]) {
@@ -743,17 +876,45 @@ final class LiveMarketRepository: MarketRepositoryProtocol {
                     guard let tickerDictionary = item as? JSONObject else { continue }
                     guard let dto = MarketTickerDTO(dictionary: tickerDictionary, exchange: exchange) else { continue }
                     tickers[dto.symbol] = dto.entity(meta: container.meta)
+                    if seenSymbols.insert(dto.coinInfo.symbol).inserted {
+                        coins.append(dto.coinInfo)
+                    }
                 }
             } else {
                 for (symbol, rawValue) in dictionary {
                     guard let tickerDictionary = rawValue as? JSONObject else { continue }
                     guard let dto = MarketTickerDTO(dictionary: tickerDictionary.merging(["symbol": symbol as Any], uniquingKeysWith: { left, _ in left }), exchange: exchange) else { continue }
                     tickers[dto.symbol] = dto.entity(meta: container.meta)
+                    if seenSymbols.insert(dto.coinInfo.symbol).inserted {
+                        coins.append(dto.coinInfo)
+                    }
                 }
             }
         }
 
-        return MarketTickerSnapshot(exchange: exchange, tickers: tickers, meta: container.meta)
+        let resolvedUniverse = resolveMarketUniverse(
+            parsedCoins: coins,
+            payload: container.payload,
+            exchange: exchange
+        )
+        let allowedSymbols = Set(resolvedUniverse.coins.map(\.symbol))
+        let filteredTickers: [String: TickerData]
+        if allowedSymbols.isEmpty {
+            filteredTickers = tickers
+        } else {
+            filteredTickers = tickers.filter { allowedSymbols.contains($0.key) }
+        }
+
+        if exchange == .coinone {
+            AppLogger.debug(.network, "Coinone ticker parsed count -> \(filteredTickers.count)")
+        }
+        return MarketTickerSnapshot(
+            exchange: exchange,
+            coins: resolvedUniverse.coins,
+            tickers: filteredTickers,
+            meta: container.meta,
+            filteredSymbols: resolvedUniverse.filteredSymbols
+        )
     }
 
     func fetchOrderbook(symbol: String, exchange: Exchange) async throws -> OrderbookSnapshot {
@@ -806,6 +967,11 @@ final class LiveMarketRepository: MarketRepositoryProtocol {
     }
 
     func fetchCandles(symbol: String, exchange: Exchange, interval: String) async throws -> CandleSnapshot {
+        let startedAt = Date()
+        AppLogger.debug(
+            .network,
+            "[ChartPipeline] exchange=\(exchange.rawValue) symbol=\(symbol) interval=\(interval.uppercased()) phase=request_dispatch endpoint=\(client.configuration.marketCandlesPath)"
+        )
         let json = try await client.requestJSON(
             path: client.configuration.marketCandlesPath,
             queryItems: [
@@ -825,6 +991,19 @@ final class LiveMarketRepository: MarketRepositoryProtocol {
             return dto.entity
         }
         .sorted { $0.time < $1.time }
+
+        let elapsedMs = Int(Date().timeIntervalSince(startedAt) * 1000)
+        if candles.isEmpty {
+            AppLogger.debug(
+                .network,
+                "[ChartPipeline] exchange=\(exchange.rawValue) symbol=\(symbol) interval=\(interval.uppercased()) phase=response_empty elapsedMs=\(elapsedMs)"
+            )
+        } else {
+            AppLogger.debug(
+                .network,
+                "[ChartPipeline] exchange=\(exchange.rawValue) symbol=\(symbol) interval=\(interval.uppercased()) phase=response_success candles=\(candles.count) elapsedMs=\(elapsedMs)"
+            )
+        }
 
         return CandleSnapshot(
             exchange: exchange,
@@ -1020,11 +1199,11 @@ final class LiveKimchiPremiumRepository: KimchiPremiumRepositoryProtocol {
         self.client = client
     }
 
-    func fetchSnapshot(symbols: [String]?) async throws -> KimchiPremiumSnapshot {
-        var queryItems: [URLQueryItem] = []
-        if let symbols, !symbols.isEmpty {
-            queryItems.append(URLQueryItem(name: "symbols", value: symbols.joined(separator: ",")))
-        }
+    func fetchSnapshot(exchange: Exchange, symbols: [String]) async throws -> KimchiPremiumSnapshot {
+        let queryItems: [URLQueryItem] = [
+            URLQueryItem(name: "exchange", value: exchange.rawValue),
+            URLQueryItem(name: "symbols", value: symbols.joined(separator: ","))
+        ]
 
         let json = try await client.requestJSON(
             path: client.configuration.kimchiPremiumPath,
@@ -1056,13 +1235,31 @@ final class LiveKimchiPremiumRepository: KimchiPremiumRepositoryProtocol {
 
         let referenceExchangeRawValue = (payload as? JSONObject)?.string(["referenceExchange", "reference_exchange"]) ?? Exchange.binance.rawValue
         let referenceExchange = Exchange(rawValue: referenceExchangeRawValue.lowercased()) ?? .binance
+        let payloadDictionary = payload as? JSONObject
+        let failedSymbols = Set(
+            (payloadDictionary?.stringArray(["failedSymbols", "unsupportedSymbols", "excludedSymbols"]) ?? []).map { $0.uppercased() }
+            + ((payloadDictionary?["partialFailures"] as? [Any]) ?? []).compactMap { item -> String? in
+                if let dictionary = item as? JSONObject {
+                    return dictionary.string(["symbol", "asset", "market"])?.uppercased()
+                }
+                if let symbol = item as? String {
+                    return symbol.uppercased()
+                }
+                return nil
+            }
+        ).sorted()
+        let partialFailureMessage = container.meta.partialFailureMessage
+            ?? payloadDictionary?.string(["partialFailureMessage", "partialError", "partial_error"])
+            ?? (failedSymbols.isEmpty ? nil : "일부 비교 종목이 제외되었어요.")
 
         return KimchiPremiumSnapshot(
             referenceExchange: referenceExchange,
             rows: rows,
             fetchedAt: container.meta.fetchedAt,
             isStale: container.meta.isStale,
-            warningMessage: container.meta.warningMessage ?? container.meta.partialFailureMessage
+            warningMessage: container.meta.warningMessage,
+            partialFailureMessage: partialFailureMessage,
+            failedSymbols: failedSymbols
         )
     }
 }
@@ -1195,44 +1392,141 @@ private struct MarketInfoDTO {
     let coinInfo: CoinInfo
     let supportedIntervals: [String]
 
-    init?(dictionary: JSONObject) {
-        guard let symbol = dictionary.string(["symbol", "baseAsset", "asset", "market"]) else {
+    init?(dictionary: JSONObject, exchange: Exchange) {
+        guard let symbol = normalizeMarketSymbol(from: dictionary) else {
             return nil
         }
 
         let displayName = dictionary.string(["displayName", "name", "koreanName"])
         let englishName = dictionary.string(["displayNameEn", "englishName"])
-        self.coinInfo = CoinCatalog.coin(symbol: symbol, displayName: displayName, englishName: englishName)
+        let imageURL = marketImageURL(from: dictionary)
+        let canonicalAssetKey = marketCanonicalAssetKey(from: dictionary)
+        let isTradable = dictionary.bool([
+            "tradable",
+            "isTradable",
+            "tradeable",
+            "enabled",
+            "isActive"
+        ]) ?? true
+        let isKimchiComparable = dictionary.bool([
+            "kimchiComparable",
+            "kimchi_comparable",
+            "isKimchiComparable",
+            "supportsKimchiPremium",
+            "comparable"
+        ]) ?? (exchange.isDomestic && exchange.supportsKimchiPremium && isTradable)
+
+        self.coinInfo = CoinCatalog.coin(
+            symbol: symbol,
+            displayName: displayName,
+            englishName: englishName,
+            imageURL: imageURL,
+            isTradable: isTradable,
+            isKimchiComparable: isKimchiComparable
+        )
+        AppLogger.debug(
+            .network,
+            "[ImageDebug] symbol=\(symbol) action=url_received value=\(imageURL ?? "<nil>") canonicalAssetKey=\(canonicalAssetKey ?? "<nil>")"
+        )
         self.supportedIntervals = dictionary.stringArray(["supportedIntervals", "intervals", "chartIntervals"]).map { $0.lowercased() }
     }
 }
 
+private struct ResolvedMarketUniverse {
+    let coins: [CoinInfo]
+    let filteredSymbols: [String]
+}
+
+private struct MarketUniverseHints {
+    let listedCoins: [CoinInfo]
+    let listedSymbols: [String]
+    let supportedSymbols: Set<String>
+    let excludedSymbols: Set<String>
+}
+
 private struct MarketTickerDTO {
     let symbol: String
+    let coinInfo: CoinInfo
     let price: Double
     let changePercent: Double
     let volume24h: Double
     let high24: Double
     let low24: Double
+    let sparkline: [Double]
+    let sparklinePointCount: Int?
     let timestamp: Date?
     let isStale: Bool
     let sourceExchange: Exchange
 
     init?(dictionary: JSONObject, exchange: Exchange) {
-        guard let symbol = dictionary.string(["symbol", "market", "code"]) else {
+        guard let symbol = normalizeMarketSymbol(from: dictionary) else {
             return nil
         }
-        guard let price = dictionary.double(["price", "lastPrice", "tradePrice", "closing_price"]) else {
+        guard let price = dictionary.double([
+            "price",
+            "lastPrice",
+            "tradePrice",
+            "closing_price",
+            "last",
+            "close",
+            "close_price"
+        ]) else {
             return nil
         }
 
-        self.symbol = symbol.uppercased()
+        self.symbol = symbol
+        let displayName = dictionary.string(["displayName", "name", "koreanName", "assetName"])
+        let englishName = dictionary.string(["displayNameEn", "englishName", "nameEn"])
+        let imageURL = marketImageURL(from: dictionary)
+        let canonicalAssetKey = marketCanonicalAssetKey(from: dictionary)
+        let isTradable = dictionary.bool([
+            "tradable",
+            "isTradable",
+            "tradeable",
+            "enabled",
+            "isActive"
+        ]) ?? true
+        let isKimchiComparable = dictionary.bool([
+            "kimchiComparable",
+            "kimchi_comparable",
+            "isKimchiComparable",
+            "supportsKimchiPremium",
+            "comparable"
+        ]) ?? (exchange.isDomestic && exchange.supportsKimchiPremium && isTradable)
+        self.coinInfo = CoinCatalog.coin(
+            symbol: symbol,
+            displayName: displayName,
+            englishName: englishName,
+            imageURL: imageURL,
+            isTradable: isTradable,
+            isKimchiComparable: isKimchiComparable
+        )
+        AppLogger.debug(
+            .network,
+            "[ImageDebug] symbol=\(symbol) action=url_received value=\(imageURL ?? "<nil>") canonicalAssetKey=\(canonicalAssetKey ?? "<nil>")"
+        )
         self.price = price
-        let rawChangePercent = dictionary.double(["changePercent", "change24h", "signed_change_rate", "changeRate"]) ?? 0
+        let rawChangePercent = dictionary.double([
+            "changePercent",
+            "change24h",
+            "signed_change_rate",
+            "changeRate",
+            "change_rate",
+            "change"
+        ]) ?? 0
         self.changePercent = abs(rawChangePercent) <= 1 ? rawChangePercent * 100 : rawChangePercent
-        self.volume24h = dictionary.double(["volume24h", "quoteVolume", "acc_trade_price_24h", "volume"]) ?? 0
-        self.high24 = dictionary.double(["high24", "highPrice", "high_price"]) ?? price
-        self.low24 = dictionary.double(["low24", "lowPrice", "low_price"]) ?? price
+        self.volume24h = dictionary.double([
+            "volume24h",
+            "quoteVolume",
+            "acc_trade_price_24h",
+            "volume",
+            "target_volume",
+            "quote_volume"
+        ]) ?? 0
+        self.high24 = dictionary.double(["high24", "highPrice", "high_price", "high", "high_price_24h"]) ?? price
+        self.low24 = dictionary.double(["low24", "lowPrice", "low_price", "low", "low_price_24h"]) ?? price
+        self.sparkline = parseSparklinePoints(from: dictionary)
+        self.sparklinePointCount = parseSparklinePointCount(from: dictionary)
         self.timestamp = parseDateValue(dictionary["timestamp"] ?? dictionary["time"] ?? dictionary["updatedAt"])
         self.isStale = dictionary.bool(["stale", "isStale"]) ?? false
         self.sourceExchange = Exchange(rawValue: (dictionary.string(["sourceExchange", "exchange"]) ?? exchange.rawValue).lowercased()) ?? exchange
@@ -1245,11 +1539,250 @@ private struct MarketTickerDTO {
             volume: volume24h,
             high24: high24,
             low24: low24,
+            sparkline: sparkline,
+            sparklinePointCount: sparklinePointCount,
+            hasServerSparkline: sparkline.count >= 2,
             timestamp: timestamp ?? meta.fetchedAt,
             isStale: isStale || meta.isStale,
-            sourceExchange: sourceExchange
+            sourceExchange: sourceExchange,
+            delivery: .snapshot
         )
     }
+}
+
+private func resolveMarketUniverse(
+    parsedCoins: [CoinInfo],
+    payload: Any,
+    exchange: Exchange
+) -> ResolvedMarketUniverse {
+    let hints = marketUniverseHints(from: payload, exchange: exchange)
+    let baseCoins: [CoinInfo]
+
+    if !hints.listedCoins.isEmpty {
+        baseCoins = deduplicatedCoins(hints.listedCoins)
+    } else if !hints.listedSymbols.isEmpty {
+        let parsedCoinsBySymbol = Dictionary(uniqueKeysWithValues: deduplicatedCoins(parsedCoins).map { ($0.symbol, $0) })
+        baseCoins = hints.listedSymbols.map { symbol in
+            parsedCoinsBySymbol[symbol] ?? CoinCatalog.coin(symbol: symbol)
+        }
+    } else {
+        baseCoins = deduplicatedCoins(parsedCoins)
+    }
+
+    let filteredSymbols = deduplicatedSymbols(
+        baseCoins.compactMap { coin -> String? in
+            let isUnsupported = hints.supportedSymbols.isEmpty == false && hints.supportedSymbols.contains(coin.symbol) == false
+            let isExcluded = hints.excludedSymbols.contains(coin.symbol)
+            return (isUnsupported || isExcluded) ? coin.symbol : nil
+        }
+    )
+
+    let filteredCoins = baseCoins.filter { coin in
+        (hints.supportedSymbols.isEmpty || hints.supportedSymbols.contains(coin.symbol))
+            && hints.excludedSymbols.contains(coin.symbol) == false
+    }
+
+    return ResolvedMarketUniverse(
+        coins: filteredCoins,
+        filteredSymbols: filteredSymbols
+    )
+}
+
+private func marketUniverseHints(from payload: Any, exchange: Exchange) -> MarketUniverseHints {
+    guard let dictionary = payload as? JSONObject else {
+        return MarketUniverseHints(
+            listedCoins: [],
+            listedSymbols: [],
+            supportedSymbols: [],
+            excludedSymbols: []
+        )
+    }
+
+    let listedCoins = parseCoinInfoArray(
+        from: dictionary["listedItems"]
+            ?? dictionary["listedMarkets"]
+            ?? dictionary["marketListings"]
+            ?? dictionary["listings"],
+        exchange: exchange
+    )
+    let listedSymbols = deduplicatedSymbols(
+        dictionary.stringArray([
+            "listedSymbols",
+            "canonicalListedSymbols",
+            "marketSymbols"
+        ]).map(normalizeMarketSymbol)
+    )
+    let supportedSymbols = Set(
+        dictionary.stringArray([
+            "supportedSymbols",
+            "supported_symbols",
+            "symbols"
+        ]).map(normalizeMarketSymbol)
+    )
+    let excludedSymbols = Set(
+        dictionary.stringArray([
+            "capabilityExcludedSymbols",
+            "excludedSymbols",
+            "unsupportedSymbols",
+            "unsupported_symbols"
+        ]).map(normalizeMarketSymbol)
+    )
+
+    return MarketUniverseHints(
+        listedCoins: listedCoins,
+        listedSymbols: listedSymbols,
+        supportedSymbols: supportedSymbols,
+        excludedSymbols: excludedSymbols
+    )
+}
+
+private func parseCoinInfoArray(from rawValue: Any?, exchange: Exchange) -> [CoinInfo] {
+    let array = unwrapArray(rawValue) ?? []
+    return deduplicatedCoins(
+        array.compactMap { item -> CoinInfo? in
+            if let symbol = item as? String {
+                return CoinCatalog.coin(symbol: symbol)
+            }
+
+            guard let dictionary = item as? JSONObject else {
+                return nil
+            }
+
+            return MarketInfoDTO(dictionary: dictionary, exchange: exchange)?.coinInfo
+                ?? MarketTickerDTO(dictionary: dictionary, exchange: exchange)?.coinInfo
+        }
+    )
+}
+
+private func deduplicatedCoins(_ coins: [CoinInfo]) -> [CoinInfo] {
+    var mergedCoinsBySymbol = [String: CoinInfo]()
+    var orderedSymbols = [String]()
+
+    for coin in coins {
+        if let existing = mergedCoinsBySymbol[coin.symbol] {
+            mergedCoinsBySymbol[coin.symbol] = existing.merged(with: coin)
+        } else {
+            mergedCoinsBySymbol[coin.symbol] = coin
+            orderedSymbols.append(coin.symbol)
+        }
+    }
+
+    return orderedSymbols.compactMap { mergedCoinsBySymbol[$0] }
+}
+
+private func deduplicatedSymbols(_ symbols: [String]) -> [String] {
+    var seenSymbols = Set<String>()
+    return symbols.filter { symbol in
+        seenSymbols.insert(symbol).inserted
+    }
+}
+
+private func marketImageURL(from dictionary: JSONObject) -> String? {
+    let directValue = dictionary.string([
+        "assetImageUrl",
+        "assetImageURL",
+        "asset_image_url",
+        "coinGeckoImageUrl",
+        "coingeckoImageUrl",
+        "coingecko_image_url",
+        "imageUrl",
+        "imageURL",
+        "image_url",
+        "iconUrl",
+        "iconURL",
+        "icon_url",
+        "logoUrl",
+        "logoURL",
+        "logo_url",
+        "thumbnail",
+        "thumb",
+        "image"
+    ])
+
+    let nestedAssetValue = (dictionary["asset"] as? JSONObject)?.string([
+        "assetImageUrl",
+        "assetImageURL",
+        "asset_image_url",
+        "imageUrl",
+        "imageURL",
+        "image_url",
+        "iconUrl",
+        "iconURL",
+        "icon_url",
+        "logoUrl",
+        "logoURL",
+        "logo_url"
+    ])
+
+    let nestedMetadataValue = (dictionary["metadata"] as? JSONObject)?.string([
+        "assetImageUrl",
+        "assetImageURL",
+        "asset_image_url",
+        "imageUrl",
+        "imageURL",
+        "image_url"
+    ])
+
+    return normalizedMarketImageURLString(
+        directValue ?? nestedAssetValue ?? nestedMetadataValue
+    )
+}
+
+private func marketCanonicalAssetKey(from dictionary: JSONObject) -> String? {
+    let directValue = dictionary.string([
+        "canonicalAssetKey",
+        "canonical_asset_key",
+        "assetKey",
+        "asset_key",
+        "coingeckoId",
+        "coinGeckoId",
+        "coingecko_id"
+    ])
+    let nestedValue = (dictionary["asset"] as? JSONObject)?.string([
+        "canonicalAssetKey",
+        "canonical_asset_key",
+        "assetKey",
+        "asset_key",
+        "coingeckoId",
+        "coinGeckoId",
+        "coingecko_id"
+    ])
+
+    let value = (directValue ?? nestedValue)?.trimmingCharacters(in: .whitespacesAndNewlines)
+    if let value, !value.isEmpty {
+        return value
+    }
+    return nil
+}
+
+private func normalizedMarketImageURLString(_ rawValue: String?) -> String? {
+    guard var normalizedValue = rawValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+          !normalizedValue.isEmpty else {
+        return nil
+    }
+
+    if normalizedValue.hasPrefix("//") {
+        normalizedValue = "https:\(normalizedValue)"
+    } else if normalizedValue.contains("://") == false,
+              normalizedValue.hasPrefix("www.") || normalizedValue.contains("assets.coingecko.com") {
+        normalizedValue = "https://\(normalizedValue)"
+    }
+
+    if let components = URLComponents(string: normalizedValue),
+       components.scheme != nil,
+       components.host != nil {
+        return components.string
+    }
+
+    let allowedCharacters = CharacterSet.urlFragmentAllowed
+    if let encodedValue = normalizedValue.addingPercentEncoding(withAllowedCharacters: allowedCharacters),
+       let components = URLComponents(string: encodedValue),
+       components.scheme != nil,
+       components.host != nil {
+        return components.string
+    }
+
+    return nil
 }
 
 private struct OrderbookDTO {
@@ -1309,14 +1842,23 @@ private struct PublicTradeDTO {
             return nil
         }
 
-        let executedDate = parseDateValue(dictionary["executedAt"] ?? dictionary["timestamp"] ?? dictionary["time"])
+        let tradeTime = TradeTimestampParser.parse(
+            candidates: [
+                ("executedAt", dictionary["executedAt"]),
+                ("tradeTimestamp", dictionary["tradeTimestamp"] ?? dictionary["trade_timestamp"]),
+                ("createdAt", dictionary["createdAt"] ?? dictionary["created_at"]),
+                ("timestamp", dictionary["timestamp"]),
+                ("time", dictionary["time"])
+            ],
+            logContext: "rest_public_trade"
+        )
         self.entity = PublicTrade(
             id: dictionary.string(["id", "tradeId", "trade_id"]) ?? UUID().uuidString,
             price: price,
             quantity: dictionary.double(["quantity", "qty", "volume", "size"]) ?? 0,
             side: dictionary.string(["side", "askBid", "ask_bid"]) ?? "buy",
-            executedAt: formatTimestamp(executedDate),
-            executedDate: executedDate
+            executedAt: tradeTime.displayText,
+            executedDate: tradeTime.date
         )
     }
 }
@@ -1494,14 +2036,32 @@ private struct KimchiPremiumRowDTO {
     let entity: KimchiPremiumRow
 
     init?(dictionary: JSONObject) {
-        guard let symbol = dictionary.string(["symbol"]) else {
+        guard let symbol = normalizeKimchiPremiumSymbol(from: dictionary) else {
             return nil
         }
         let exchange = Exchange(rawValue: (dictionary.string(["exchange", "domesticExchange"]) ?? "").lowercased()) ?? .upbit
         let sourceExchange = Exchange(rawValue: (dictionary.string(["sourceExchange", "exchange"]) ?? exchange.rawValue).lowercased()) ?? exchange
+        let timestamp = parseDateValue(dictionary["timestamp"] ?? dictionary["updatedAt"])
+        let sourceExchangeTimestamp = parseDateValue(dictionary["sourceExchangeTimestamp"] ?? dictionary["localTimestamp"])
+        let referenceTimestamp = parseDateValue(dictionary["referenceTimestamp"] ?? dictionary["globalTimestamp"])
+        let explicitFreshness = dictionary.string([
+            "freshnessState",
+            "freshness",
+            "dataFreshness",
+            "freshnessStatus",
+            "status"
+        ])
+        let freshnessState = explicitFreshness.map { KimchiPremiumFreshnessState(rawServerValue: $0) }
+        let freshnessReason = dictionary.string([
+            "freshnessReason",
+            "staleReason",
+            "delayReason",
+            "warningMessage",
+            "reason"
+        ])
         self.entity = KimchiPremiumRow(
             id: dictionary.string(["id"]) ?? "\(symbol)-\(exchange.rawValue)",
-            symbol: symbol.uppercased(),
+            symbol: symbol,
             exchange: exchange,
             sourceExchange: sourceExchange,
             domesticPrice: dictionary.double(["domesticPrice", "price", "localPrice"]),
@@ -1509,11 +2069,17 @@ private struct KimchiPremiumRowDTO {
             premiumPercent: Self.normalizePercent(dictionary.double(["premiumPercent", "premium", "kimchiPremium"])),
             krwConvertedReference: dictionary.double(["krwConvertedReference", "krwReferencePrice"]),
             usdKrwRate: dictionary.double(["usdKrwRate", "fxRate", "usd_krw"]),
-            timestamp: parseDateValue(dictionary["timestamp"] ?? dictionary["updatedAt"]),
-            sourceExchangeTimestamp: parseDateValue(dictionary["sourceExchangeTimestamp"] ?? dictionary["localTimestamp"]),
-            referenceTimestamp: parseDateValue(dictionary["referenceTimestamp"] ?? dictionary["globalTimestamp"]),
+            timestamp: timestamp,
+            sourceExchangeTimestamp: sourceExchangeTimestamp,
+            referenceTimestamp: referenceTimestamp,
             isStale: dictionary.bool(["stale", "isStale"]) ?? false,
-            staleReason: dictionary.string(["staleReason", "warningMessage"])
+            staleReason: dictionary.string(["staleReason", "warningMessage"]),
+            freshnessState: freshnessState,
+            freshnessReason: freshnessReason,
+            updatedAt: parseDateValue(dictionary["updatedAt"] ?? dictionary["asOf"] ?? dictionary["updated_at"])
+                ?? timestamp
+                ?? sourceExchangeTimestamp
+                ?? referenceTimestamp
         )
     }
 
@@ -1521,6 +2087,33 @@ private struct KimchiPremiumRowDTO {
         guard let value else { return nil }
         return abs(value) <= 1 ? value * 100 : value
     }
+}
+
+private func normalizeKimchiPremiumSymbol(from dictionary: JSONObject) -> String? {
+    if let canonicalSymbol = dictionary.string([
+        "canonicalSymbol",
+        "canonical_symbol",
+        "compareSymbol",
+        "compare_symbol"
+    ]) {
+        return normalizeMarketSymbol(canonicalSymbol)
+    }
+
+    if let rawSymbol = dictionary.string([
+        "symbol",
+        "market",
+        "code",
+        "sourceSymbol",
+        "source_symbol",
+        "referenceSymbol",
+        "reference_symbol",
+        "baseAsset",
+        "asset"
+    ]) {
+        return normalizeMarketSymbol(rawSymbol)
+    }
+
+    return nil
 }
 
 private struct ExchangeConnectionDTO {
@@ -1580,9 +2173,10 @@ private func splitPayload(_ json: Any) -> (payload: Any, meta: ResponseMeta) {
     }
 
     let payload = unwrapPayload(dictionary)
+    let freshness = dictionary.string(["freshness", "dataFreshness", "status"])?.lowercased()
     let meta = ResponseMeta(
-        fetchedAt: parseDateValue(dictionary["fetchedAt"] ?? dictionary["timestamp"] ?? dictionary["serverTime"]),
-        isStale: dictionary.bool(["stale", "isStale"]) ?? false,
+        fetchedAt: parseDateValue(dictionary["asOf"] ?? dictionary["fetchedAt"] ?? dictionary["timestamp"] ?? dictionary["serverTime"]),
+        isStale: dictionary.bool(["stale", "isStale"]) ?? (freshness == "stale"),
         warningMessage: dictionary.string(["warningMessage", "message"]),
         partialFailureMessage: dictionary.string(["partialFailureMessage", "partialError", "partial_error"])
     )
@@ -1612,6 +2206,74 @@ private func unwrapArray(_ value: Any?) -> [Any]? {
         }
     }
     return nil
+}
+
+private func normalizeMarketSymbol(from dictionary: JSONObject) -> String? {
+    let rawSymbol = dictionary.string([
+        "symbol",
+        "market",
+        "code",
+        "baseAsset",
+        "asset",
+        "currency",
+        "target_currency",
+        "targetCurrency"
+    ])
+
+    guard let rawSymbol else {
+        return nil
+    }
+
+    return normalizeMarketSymbol(rawSymbol)
+}
+
+private func normalizeMarketSymbol(_ rawSymbol: String) -> String {
+    let normalized = rawSymbol
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+        .uppercased()
+
+    guard !normalized.isEmpty else {
+        return normalized
+    }
+
+    let separators = CharacterSet(charactersIn: "-_:/")
+    let parts = normalized
+        .components(separatedBy: separators)
+        .filter { !$0.isEmpty }
+
+    let quoteCurrencies = Set(["KRW", "USD", "USDT", "BTC", "ETH"])
+    if parts.count >= 2 {
+        if quoteCurrencies.contains(parts[0]) {
+            return parts[1]
+        }
+        if let lastPart = parts.last, quoteCurrencies.contains(lastPart) {
+            return parts[0]
+        }
+    }
+
+    for quoteCurrency in ["KRW", "USDT", "USD", "BTC", "ETH"] {
+        if normalized.hasPrefix(quoteCurrency), normalized.count > quoteCurrency.count {
+            return String(normalized.dropFirst(quoteCurrency.count))
+        }
+        if normalized.hasSuffix(quoteCurrency), normalized.count > quoteCurrency.count {
+            return String(normalized.dropLast(quoteCurrency.count))
+        }
+    }
+
+    return normalized
+}
+
+private func debugJSONString(_ value: Any, limit: Int = 1_200) -> String {
+    guard JSONSerialization.isValidJSONObject(value),
+          let data = try? JSONSerialization.data(withJSONObject: value, options: [.fragmentsAllowed]),
+          var string = String(data: data, encoding: .utf8) else {
+        return String(describing: value)
+    }
+
+    if string.count > limit {
+        string = String(string.prefix(limit)) + "…"
+    }
+    return string
 }
 
 private func parseOrderbookEntries(_ value: Any?, isBid: Bool) -> [OrderbookEntry] {
@@ -1652,6 +2314,67 @@ private func parseDateValue(_ rawValue: Any?) -> Date? {
     default:
         return nil
     }
+}
+
+private func parseSparklinePoints(from dictionary: JSONObject) -> [Double] {
+    for key in ["sparkline", "sparklinePoints", "sparkline_points", "trend", "history", "prices"] {
+        if let points = parseDoubleArray(dictionary[key]) {
+            return points
+        }
+
+        if let nested = dictionary[key] as? JSONObject {
+            for nestedKey in ["points", "values", "prices", "items"] {
+                if let points = parseDoubleArray(nested[nestedKey]) {
+                    return points
+                }
+            }
+        }
+    }
+
+    return []
+}
+
+private func parseSparklinePointCount(from dictionary: JSONObject) -> Int? {
+    if let pointCount = dictionary.int([
+        "sparklinePointCount",
+        "sparkline_point_count",
+        "sparklinePointsCount",
+        "sparkline_points_count",
+        "pointCount",
+        "point_count"
+    ]) {
+        return pointCount
+    }
+
+    for key in ["sparkline", "sparklinePoints", "sparkline_points", "trend", "history", "prices"] {
+        if let nested = dictionary[key] as? JSONObject,
+           let pointCount = nested.int(["pointCount", "point_count", "count"]) {
+            return pointCount
+        }
+    }
+
+    return nil
+}
+
+private func parseDoubleArray(_ rawValue: Any?) -> [Double]? {
+    guard let array = unwrapArray(rawValue) else {
+        return nil
+    }
+
+    let points = array.compactMap { item -> Double? in
+        if let value = item as? Double {
+            return value
+        }
+        if let value = item as? NSNumber {
+            return value.doubleValue
+        }
+        if let value = item as? String {
+            return Double(value.replacingOccurrences(of: ",", with: ""))
+        }
+        return nil
+    }
+
+    return points.count >= 2 ? points : nil
 }
 
 private func formatTimestamp(_ date: Date?) -> String {

@@ -68,6 +68,7 @@ struct PremiumSummary: View {
             coinViewState.cells.first { $0.exchange == exchange }
         }
         .compactMap { cell in
+            guard cell.premiumIsPlaceholder == false else { return nil }
             let normalized = cell.premiumText.replacingOccurrences(of: "%", with: "").replacingOccurrences(of: "+", with: "")
             return Double(normalized)
         }

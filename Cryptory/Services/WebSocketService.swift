@@ -131,7 +131,8 @@ enum MarketWebSocketMessageParser {
                 low24: websocketDouble(payload, keys: ["low24", "lowPrice"]) ?? price,
                 timestamp: websocketDate(payload["timestamp"] ?? payload["time"] ?? payload["updatedAt"]),
                 isStale: websocketBool(payload, keys: ["stale", "isStale"]) ?? false,
-                sourceExchange: Exchange(rawValue: exchange)
+                sourceExchange: Exchange(rawValue: exchange),
+                delivery: .live
             )
 
             return .ticker(TickerStreamPayload(symbol: symbol, exchange: exchange, ticker: ticker))
@@ -158,14 +159,23 @@ enum MarketWebSocketMessageParser {
             let trades = rawTrades.compactMap { item -> PublicTrade? in
                 guard let dictionary = item as? [String: Any] else { return nil }
                 guard let price = websocketDouble(dictionary, keys: ["price", "tradePrice"]) else { return nil }
-                let executedDate = websocketDate(dictionary["executedAt"] ?? dictionary["timestamp"] ?? dictionary["time"])
+                let tradeTime = TradeTimestampParser.parse(
+                    candidates: [
+                        ("executedAt", dictionary["executedAt"]),
+                        ("tradeTimestamp", dictionary["tradeTimestamp"] ?? dictionary["trade_timestamp"]),
+                        ("createdAt", dictionary["createdAt"] ?? dictionary["created_at"]),
+                        ("timestamp", dictionary["timestamp"]),
+                        ("time", dictionary["time"])
+                    ],
+                    logContext: "ws_public_trade"
+                )
                 return PublicTrade(
                     id: websocketString(dictionary, keys: ["id", "tradeId"]) ?? UUID().uuidString,
                     price: price,
                     quantity: websocketDouble(dictionary, keys: ["quantity", "qty", "volume"]) ?? 0,
                     side: websocketString(dictionary, keys: ["side"]) ?? "buy",
-                    executedAt: websocketTimeString(executedDate),
-                    executedDate: executedDate
+                    executedAt: tradeTime.displayText,
+                    executedDate: tradeTime.date
                 )
             }
 
@@ -268,6 +278,7 @@ protocol PrivateWebSocketServicing: AnyObject {
 }
 
 final class WebSocketService: PublicWebSocketServicing {
+    private let instanceID = AppLogger.nextInstanceID(scope: "PublicWebSocketService")
     var onConnectionStateChange: ((PublicWebSocketConnectionState) -> Void)?
     var onTickerReceived: ((TickerStreamPayload) -> Void)?
     var onOrderbookReceived: ((OrderbookStreamPayload) -> Void)?
@@ -297,6 +308,11 @@ final class WebSocketService: PublicWebSocketServicing {
     ) {
         self.session = session
         self.urls = [runtimeConfiguration.publicMarketWebSocketURL]
+        AppLogger.debug(.lifecycle, "PublicWebSocketService init #\(instanceID)")
+    }
+
+    deinit {
+        AppLogger.debug(.lifecycle, "PublicWebSocketService deinit #\(instanceID)")
     }
 
     func connect() {
@@ -326,19 +342,50 @@ final class WebSocketService: PublicWebSocketServicing {
     func updateSubscriptions(_ subscriptions: Set<PublicMarketSubscription>) {
         let removedSubscriptions = self.subscriptions.subtracting(subscriptions)
         let addedSubscriptions = subscriptions.subtracting(self.subscriptions)
+        let previousCount = self.subscriptions.count
         self.subscriptions = subscriptions
+
+        if addedSubscriptions.isEmpty, removedSubscriptions.isEmpty {
+            AppLogger.debug(.websocket, "Public subscriptions unchanged #\(instanceID) total=\(subscriptions.count)")
+        } else {
+            AppLogger.debug(
+                .websocket,
+                "Public subscriptions update #\(instanceID) old=\(previousCount) new=\(subscriptions.count)"
+            )
+        }
+
+        if subscriptions.isEmpty {
+            if webSocketTask != nil {
+                removedSubscriptions.forEach {
+                    AppLogger.debug(.websocket, "Public unsubscribe #\(instanceID) -> \(describe($0))")
+                    send(subscriptionMessage(for: $0, action: "unsubscribe"))
+                }
+                AppLogger.debug(.websocket, "Public websocket idle -> disconnect #\(instanceID)")
+                disconnect()
+            }
+            return
+        }
 
         if webSocketTask == nil {
             connect()
             return
         }
 
-        removedSubscriptions.forEach { send(subscriptionMessage(for: $0, action: "unsubscribe")) }
-        addedSubscriptions.forEach { send(subscriptionMessage(for: $0, action: "subscribe")) }
+        removedSubscriptions.forEach {
+            AppLogger.debug(.websocket, "Public unsubscribe #\(instanceID) -> \(describe($0))")
+            send(subscriptionMessage(for: $0, action: "unsubscribe"))
+        }
+        addedSubscriptions.forEach {
+            AppLogger.debug(.websocket, "Public subscribe #\(instanceID) -> \(describe($0))")
+            send(subscriptionMessage(for: $0, action: "subscribe"))
+        }
     }
 
     private func flushSubscriptions() {
-        subscriptions.forEach { send(subscriptionMessage(for: $0, action: "subscribe")) }
+        subscriptions.forEach {
+            AppLogger.debug(.websocket, "Public subscribe #\(instanceID) -> \(describe($0))")
+            send(subscriptionMessage(for: $0, action: "subscribe"))
+        }
     }
 
     private func receiveMessage() {
@@ -457,9 +504,17 @@ final class WebSocketService: PublicWebSocketServicing {
             return "failed(\(message))"
         }
     }
+
+    private func describe(_ subscription: PublicMarketSubscription) -> String {
+        let exchange = subscription.exchange ?? "*"
+        let symbol = subscription.symbol ?? "*"
+        let interval = subscription.interval ?? "-"
+        return "channel=\(subscription.channel.rawValue) exchange=\(exchange) symbol=\(symbol) interval=\(interval)"
+    }
 }
 
 final class PrivateWebSocketService: PrivateWebSocketServicing {
+    private let instanceID = AppLogger.nextInstanceID(scope: "PrivateWebSocketService")
     var onConnectionStateChange: ((PrivateWebSocketConnectionState) -> Void)?
     var onOrderReceived: ((OrderStreamPayload) -> Void)?
     var onFillReceived: ((FillStreamPayload) -> Void)?
@@ -487,6 +542,11 @@ final class PrivateWebSocketService: PrivateWebSocketServicing {
     ) {
         self.session = session
         self.url = runtimeConfiguration.privateTradingWebSocketURL
+        AppLogger.debug(.lifecycle, "PrivateWebSocketService init #\(instanceID)")
+    }
+
+    deinit {
+        AppLogger.debug(.lifecycle, "PrivateWebSocketService deinit #\(instanceID)")
     }
 
     func connect(accessToken: String) {
@@ -518,19 +578,50 @@ final class PrivateWebSocketService: PrivateWebSocketServicing {
     func updateSubscriptions(_ subscriptions: Set<PrivateTradingSubscription>) {
         let removedSubscriptions = self.subscriptions.subtracting(subscriptions)
         let addedSubscriptions = subscriptions.subtracting(self.subscriptions)
+        let previousCount = self.subscriptions.count
         self.subscriptions = subscriptions
+
+        if addedSubscriptions.isEmpty, removedSubscriptions.isEmpty {
+            AppLogger.debug(.websocket, "Private subscriptions unchanged #\(instanceID) total=\(subscriptions.count)")
+        } else {
+            AppLogger.debug(
+                .websocket,
+                "Private subscriptions update #\(instanceID) old=\(previousCount) new=\(subscriptions.count)"
+            )
+        }
+
+        if subscriptions.isEmpty {
+            if webSocketTask != nil {
+                removedSubscriptions.forEach {
+                    AppLogger.debug(.websocket, "Private unsubscribe #\(instanceID) -> \(describe($0))")
+                    send(subscriptionMessage(for: $0, action: "unsubscribe"))
+                }
+                AppLogger.debug(.websocket, "Private websocket idle -> disconnect #\(instanceID)")
+                disconnect()
+            }
+            return
+        }
 
         if webSocketTask == nil, let accessToken {
             connect(accessToken: accessToken)
             return
         }
 
-        removedSubscriptions.forEach { send(subscriptionMessage(for: $0, action: "unsubscribe")) }
-        addedSubscriptions.forEach { send(subscriptionMessage(for: $0, action: "subscribe")) }
+        removedSubscriptions.forEach {
+            AppLogger.debug(.websocket, "Private unsubscribe #\(instanceID) -> \(describe($0))")
+            send(subscriptionMessage(for: $0, action: "unsubscribe"))
+        }
+        addedSubscriptions.forEach {
+            AppLogger.debug(.websocket, "Private subscribe #\(instanceID) -> \(describe($0))")
+            send(subscriptionMessage(for: $0, action: "subscribe"))
+        }
     }
 
     private func flushSubscriptions() {
-        subscriptions.forEach { send(subscriptionMessage(for: $0, action: "subscribe")) }
+        subscriptions.forEach {
+            AppLogger.debug(.websocket, "Private subscribe #\(instanceID) -> \(describe($0))")
+            send(subscriptionMessage(for: $0, action: "subscribe"))
+        }
     }
 
     private func receiveMessage() {
@@ -641,6 +732,12 @@ final class PrivateWebSocketService: PrivateWebSocketServicing {
         case .failed(let message):
             return "failed(\(message))"
         }
+    }
+
+    private func describe(_ subscription: PrivateTradingSubscription) -> String {
+        let exchange = subscription.exchange ?? "*"
+        let symbol = subscription.symbol ?? "*"
+        return "channel=\(subscription.channel.rawValue) exchange=\(exchange) symbol=\(symbol)"
     }
 }
 

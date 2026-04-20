@@ -1,0 +1,36 @@
+{
+  "" : {
+    "const-values" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/CryptoryTests.build/Objects-normal/arm64/CryptoryTests-primary.swiftconstvalues",
+    "dependencies" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/CryptoryTests.build/Objects-normal/arm64/CryptoryTests-primary.d",
+    "diagnostics" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/CryptoryTests.build/Objects-normal/arm64/CryptoryTests-primary.dia",
+    "emit-module-dependencies" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/CryptoryTests.build/Objects-normal/arm64/CryptoryTests-primary-emit-module.d",
+    "emit-module-diagnostics" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/CryptoryTests.build/Objects-normal/arm64/CryptoryTests-primary-emit-module.dia",
+    "pch" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/CryptoryTests.build/Objects-normal/arm64/CryptoryTests-primary-Bridging-header.pch",
+    "swift-dependencies" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/CryptoryTests.build/Objects-normal/arm64/CryptoryTests-primary.swiftdeps"
+  },
+  "/Users/hwangseokbeom/Documents/GitHub/Cryptory/CryptoryTests/FormAndViewStateTests.swift" : {
+    "index-unit-output-path" : "/Cryptory.build/Release-iphonesimulator/CryptoryTests.build/Objects-normal/arm64/FormAndViewStateTests.o",
+    "llvm-bc" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/CryptoryTests.build/Objects-normal/arm64/FormAndViewStateTests.bc",
+    "object" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/CryptoryTests.build/Objects-normal/arm64/FormAndViewStateTests.o"
+  },
+  "/Users/hwangseokbeom/Documents/GitHub/Cryptory/CryptoryTests/NetworkAndAuthTests.swift" : {
+    "index-unit-output-path" : "/Cryptory.build/Release-iphonesimulator/CryptoryTests.build/Objects-normal/arm64/NetworkAndAuthTests.o",
+    "llvm-bc" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/CryptoryTests.build/Objects-normal/arm64/NetworkAndAuthTests.bc",
+    "object" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/CryptoryTests.build/Objects-normal/arm64/NetworkAndAuthTests.o"
+  },
+  "/Users/hwangseokbeom/Documents/GitHub/Cryptory/CryptoryTests/TestDoubles.swift" : {
+    "index-unit-output-path" : "/Cryptory.build/Release-iphonesimulator/CryptoryTests.build/Objects-normal/arm64/TestDoubles.o",
+    "llvm-bc" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/CryptoryTests.build/Objects-normal/arm64/TestDoubles.bc",
+    "object" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/CryptoryTests.build/Objects-normal/arm64/TestDoubles.o"
+  },
+  "/Users/hwangseokbeom/Documents/GitHub/Cryptory/CryptoryTests/ViewModelStateTests.swift" : {
+    "index-unit-output-path" : "/Cryptory.build/Release-iphonesimulator/CryptoryTests.build/Objects-normal/arm64/ViewModelStateTests.o",
+    "llvm-bc" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/CryptoryTests.build/Objects-normal/arm64/ViewModelStateTests.bc",
+    "object" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/CryptoryTests.build/Objects-normal/arm64/ViewModelStateTests.o"
+  },
+  "/Users/hwangseokbeom/Documents/GitHub/Cryptory/CryptoryTests/WebSocketParserTests.swift" : {
+    "index-unit-output-path" : "/Cryptory.build/Release-iphonesimulator/CryptoryTests.build/Objects-normal/arm64/WebSocketParserTests.o",
+    "llvm-bc" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/CryptoryTests.build/Objects-normal/arm64/WebSocketParserTests.bc",
+    "object" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/CryptoryTests.build/Objects-normal/arm64/WebSocketParserTests.o"
+  }
+}

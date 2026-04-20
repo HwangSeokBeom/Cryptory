@@ -1,17 +1,51 @@
 import Foundation
 
-struct CoinInfo: Identifiable, Equatable {
-    var id: String { symbol }
+struct CoinInfo: Identifiable, Equatable, Codable {
+    nonisolated var id: String { symbol }
 
     let symbol: String
     let name: String
     let nameEn: String
+    let imageURL: String?
+    let isTradable: Bool
+    let isKimchiComparable: Bool
+
+    nonisolated init(
+        symbol: String,
+        name: String,
+        nameEn: String,
+        imageURL: String? = nil,
+        isTradable: Bool = true,
+        isKimchiComparable: Bool = true
+    ) {
+        self.symbol = symbol
+        self.name = name
+        self.nameEn = nameEn
+        self.imageURL = imageURL
+        self.isTradable = isTradable
+        self.isKimchiComparable = isKimchiComparable
+    }
+
+    nonisolated func merged(with supplementary: CoinInfo?) -> CoinInfo {
+        guard let supplementary, supplementary.symbol == symbol else {
+            return self
+        }
+
+        return CoinInfo(
+            symbol: symbol,
+            name: name.isEmpty ? supplementary.name : name,
+            nameEn: nameEn.isEmpty ? supplementary.nameEn : nameEn,
+            imageURL: imageURL ?? supplementary.imageURL,
+            isTradable: isTradable || supplementary.isTradable,
+            isKimchiComparable: isKimchiComparable || supplementary.isKimchiComparable
+        )
+    }
 }
 
 enum CoinCatalog {
-    static let fallbackTopSymbols = ["BTC", "ETH", "XRP", "SOL", "DOGE", "ADA", "AVAX", "LINK"]
+    nonisolated static let fallbackTopSymbols = ["BTC", "ETH", "XRP", "SOL", "DOGE", "ADA", "AVAX", "LINK"]
 
-    private static let knownCoins: [String: CoinInfo] = {
+    nonisolated private static let knownCoins: [String: CoinInfo] = {
         let coins = [
             CoinInfo(symbol: "BTC", name: "비트코인", nameEn: "Bitcoin"),
             CoinInfo(symbol: "ETH", name: "이더리움", nameEn: "Ethereum"),
@@ -33,14 +67,17 @@ enum CoinCatalog {
         return Dictionary(uniqueKeysWithValues: coins.map { ($0.symbol, $0) })
     }()
 
-    static var allKnownCoins: [CoinInfo] {
+    nonisolated static var allKnownCoins: [CoinInfo] {
         knownCoins.values.sorted { $0.symbol < $1.symbol }
     }
 
-    static func coin(
+    nonisolated static func coin(
         symbol: String,
         displayName: String? = nil,
-        englishName: String? = nil
+        englishName: String? = nil,
+        imageURL: String? = nil,
+        isTradable: Bool = true,
+        isKimchiComparable: Bool = true
     ) -> CoinInfo {
         let normalizedSymbol = symbol.uppercased()
 
@@ -48,14 +85,20 @@ enum CoinCatalog {
             return CoinInfo(
                 symbol: normalizedSymbol,
                 name: displayName ?? knownCoin.name,
-                nameEn: englishName ?? knownCoin.nameEn
+                nameEn: englishName ?? knownCoin.nameEn,
+                imageURL: imageURL ?? knownCoin.imageURL,
+                isTradable: isTradable,
+                isKimchiComparable: isKimchiComparable
             )
         }
 
         return CoinInfo(
             symbol: normalizedSymbol,
             name: displayName ?? normalizedSymbol,
-            nameEn: englishName ?? normalizedSymbol
+            nameEn: englishName ?? normalizedSymbol,
+            imageURL: imageURL,
+            isTradable: isTradable,
+            isKimchiComparable: isKimchiComparable
         )
     }
 }

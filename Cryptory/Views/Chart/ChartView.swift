@@ -2,6 +2,14 @@ import SwiftUI
 
 struct ChartView: View {
     @ObservedObject var vm: CryptoViewModel
+    private let instanceID: Int
+
+    init(vm: CryptoViewModel) {
+        self.vm = vm
+        let instanceID = AppLogger.nextInstanceID(scope: "ChartView")
+        self.instanceID = instanceID
+        AppLogger.debug(.lifecycle, "[ViewIdentity] ChartView stableOwner=\(vm.debugOwnerID) viewInstance=\(instanceID)")
+    }
 
     var body: some View {
         if vm.isSelectedExchangeChartUnsupported {
@@ -20,8 +28,11 @@ struct ChartView: View {
                     tradesSection
                 }
             }
-            .task(id: "\(coin.symbol)-\(vm.exchange.rawValue)-\(vm.chartPeriod)") {
-                await vm.loadChartData()
+            .onAppear {
+                AppLogger.debug(.lifecycle, "ChartView onAppear #\(instanceID) symbol=\(coin.symbol) exchange=\(vm.exchange.rawValue) interval=\(vm.chartPeriod)")
+            }
+            .onDisappear {
+                AppLogger.debug(.lifecycle, "ChartView onDisappear #\(instanceID)")
             }
         } else {
             emptyState
@@ -51,7 +62,7 @@ struct ChartView: View {
             Text("이 거래소는 차트를 지원하지 않아요")
                 .font(.system(size: 16, weight: .bold))
                 .foregroundColor(.themeText)
-            Text("거래소 metadata 의 supportsChart 기반으로 차트 UI를 비활성화했어요.")
+            Text("선택한 거래소에서 차트 데이터를 아직 제공하지 않아요.")
                 .font(.system(size: 12))
                 .foregroundColor(.textMuted)
                 .multilineTextAlignment(.center)
@@ -141,7 +152,7 @@ struct ChartView: View {
             stateMessage("캔들 데이터가 아직 없어요.")
                 .frame(height: 220)
 
-        case .loaded:
+        case .loaded, .staleCache, .refreshing:
             GeometryReader { geo in
                 CandleChartView(
                     candles: vm.candles,
@@ -181,11 +192,6 @@ struct ChartView: View {
                 .padding(.top, 18)
                 .padding(.bottom, 20)
 
-        case .empty:
-            stateMessage("호가 데이터가 아직 없어요.")
-                .padding(.top, 18)
-                .padding(.bottom, 20)
-
         case .loaded:
             OrderbookView(orderbook: vm.orderbook, currentPrice: vm.currentPrice)
                 .padding(.top, 12)
@@ -206,11 +212,9 @@ struct ChartView: View {
                 .padding(.top, 14)
                 .padding(.bottom, 20)
 
-        case .empty:
-            RecentTradesView(trades: [])
-
-        case .loaded:
-            RecentTradesView(trades: vm.recentTrades)
+        case .loaded(let trades):
+            RecentTradesView(trades: trades)
+                .padding(.top, 14)
         }
     }
 

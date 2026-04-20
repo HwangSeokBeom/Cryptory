@@ -1,0 +1,40 @@
+{
+  "source": "/Users/hwangseokbeom/Documents/GitHub/Cryptory/Cryptory/Views/Auth/LoginView.swift",
+  "tables": {
+    "Localizable": [
+      {
+        "comment": "",
+        "key": "로그인",
+        "location": {
+          "startingColumn": 26,
+          "startingLine": 38
+        }
+      },
+      {
+        "comment": "",
+        "key": "로그인 후 내 자산, 주문, 거래소 연결을 확인할 수 있어요.",
+        "location": {
+          "startingColumn": 26,
+          "startingLine": 42
+        }
+      },
+      {
+        "comment": "",
+        "key": "로그인 중...",
+        "location": {
+          "startingColumn": 44,
+          "startingLine": 84
+        }
+      },
+      {
+        "comment": "",
+        "key": "로그인",
+        "location": {
+          "startingColumn": 65,
+          "startingLine": 84
+        }
+      }
+    ]
+  },
+  "version": 1
+}

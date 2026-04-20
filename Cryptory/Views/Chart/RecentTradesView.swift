@@ -4,7 +4,7 @@ struct RecentTradesView: View {
     let trades: [PublicTrade]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 12) {
             Text("실시간 체결")
                 .font(.system(size: 13, weight: .bold))
                 .foregroundColor(.themeText)
@@ -36,7 +36,7 @@ struct RecentTradesView: View {
                             .foregroundColor(.textMuted)
                             .frame(width: 58, alignment: .trailing)
                     }
-                    .padding(.vertical, 6)
+                    .padding(.vertical, 7)
                     .padding(.horizontal, 10)
                     .background(
                         RoundedRectangle(cornerRadius: 8)
@@ -50,6 +50,7 @@ struct RecentTradesView: View {
             }
         }
         .padding(.horizontal, 16)
+        .padding(.top, 8)
         .padding(.bottom, 20)
     }
 }

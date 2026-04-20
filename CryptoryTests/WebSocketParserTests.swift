@@ -93,6 +93,35 @@ final class WebSocketParserTests: XCTestCase {
         XCTAssertEqual(payload.trades.first?.side, "buy")
     }
 
+    func testMarketWebSocketTradesParserPreservesClockTextTimeField() {
+        let message = """
+        {
+          "type": "trades",
+          "exchange": "upbit",
+          "symbol": "BTC",
+          "data": {
+            "trades": [
+              {
+                "id": "trade-2",
+                "price": 125000000,
+                "quantity": 0.01,
+                "side": "sell",
+                "time": "14:03:09"
+              }
+            ]
+          }
+        }
+        """
+
+        guard case .some(.trades(let payload)) = MarketWebSocketMessageParser.parse(message) else {
+            return XCTFail("Expected trades payload")
+        }
+
+        XCTAssertEqual(payload.trades.first?.id, "trade-2")
+        XCTAssertEqual(payload.trades.first?.executedAt, "14:03:09")
+        XCTAssertNotEqual(payload.trades.first?.executedAt, "09:00:00")
+    }
+
     func testMarketWebSocketCandleParserMatchesContract() {
         let message = """
         {

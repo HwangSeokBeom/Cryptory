@@ -1,0 +1,48 @@
+{
+  "source": "/Users/hwangseokbeom/Documents/GitHub/Cryptory/Cryptory/Views/KimchiPremium/KimchiView.swift",
+  "tables": {
+    "Localizable": [
+      {
+        "comment": "",
+        "key": "김치 프리미엄을 불러오는 중...",
+        "location": {
+          "startingColumn": 34,
+          "startingLine": 29
+        }
+      },
+      {
+        "comment": "",
+        "key": "서버 canonical model 기준으로 국내 거래소 현재가와 바이낸스 환산가를 비교합니다.",
+        "location": {
+          "startingColumn": 18,
+          "startingLine": 76
+        }
+      },
+      {
+        "comment": "",
+        "key": "국내 거래소를 바꾸면 같은 응답 안에서 즉시 비교 대상을 전환합니다.",
+        "location": {
+          "startingColumn": 18,
+          "startingLine": 79
+        }
+      },
+      {
+        "comment": "",
+        "key": "김치 프리미엄 비교",
+        "location": {
+          "startingColumn": 22,
+          "startingLine": 72
+        }
+      },
+      {
+        "comment": "",
+        "key": "국내 거래소 선택",
+        "location": {
+          "startingColumn": 18,
+          "startingLine": 99
+        }
+      }
+    ]
+  },
+  "version": 1
+}

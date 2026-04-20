@@ -1,0 +1,12 @@
+{
+  "/Users/hwangseokbeom/Documents/GitHub/Cryptory/Cryptory/Models/AuthSession.swift" : {
+    "abi-baseline-json" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/x86_64/Cryptory.abi.json",
+    "const-values" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/x86_64/Cryptory-primary.swiftconstvalues",
+    "dependencies" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/x86_64/Cryptory-primary.d",
+    "diagnostics" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/x86_64/Cryptory-primary.dia",
+    "objc-header" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/x86_64/Cryptory-Swift.h",
+    "swiftdoc" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/x86_64/Cryptory.swiftdoc",
+    "swiftmodule" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/x86_64/Cryptory.swiftmodule",
+    "swiftsourceinfo" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/x86_64/Cryptory.swiftsourceinfo"
+  }
+}

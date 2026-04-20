@@ -1,0 +1,271 @@
+{
+  "" : {
+    "const-values" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/Cryptory-primary.swiftconstvalues",
+    "dependencies" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/Cryptory-primary.d",
+    "diagnostics" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/Cryptory-primary.dia",
+    "emit-module-dependencies" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/Cryptory-primary-emit-module.d",
+    "emit-module-diagnostics" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/Cryptory-primary-emit-module.dia",
+    "pch" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/Cryptory-primary-Bridging-header.pch",
+    "swift-dependencies" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/Cryptory-primary.swiftdeps"
+  },
+  "/Users/hwangseokbeom/Documents/GitHub/Cryptory/Cryptory/ContentView.swift" : {
+    "index-unit-output-path" : "/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/ContentView.o",
+    "llvm-bc" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/ContentView.bc",
+    "object" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/ContentView.o"
+  },
+  "/Users/hwangseokbeom/Documents/GitHub/Cryptory/Cryptory/CryptoryApp.swift" : {
+    "index-unit-output-path" : "/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/CryptoryApp.o",
+    "llvm-bc" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/CryptoryApp.bc",
+    "object" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/CryptoryApp.o"
+  },
+  "/Users/hwangseokbeom/Documents/GitHub/Cryptory/Cryptory/Models/AuthSession.swift" : {
+    "index-unit-output-path" : "/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/AuthSession.o",
+    "llvm-bc" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/AuthSession.bc",
+    "object" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/AuthSession.o"
+  },
+  "/Users/hwangseokbeom/Documents/GitHub/Cryptory/Cryptory/Models/CandleData.swift" : {
+    "index-unit-output-path" : "/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/CandleData.o",
+    "llvm-bc" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/CandleData.bc",
+    "object" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/CandleData.o"
+  },
+  "/Users/hwangseokbeom/Documents/GitHub/Cryptory/Cryptory/Models/CoinInfo.swift" : {
+    "index-unit-output-path" : "/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/CoinInfo.o",
+    "llvm-bc" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/CoinInfo.bc",
+    "object" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/CoinInfo.o"
+  },
+  "/Users/hwangseokbeom/Documents/GitHub/Cryptory/Cryptory/Models/Exchange.swift" : {
+    "index-unit-output-path" : "/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/Exchange.o",
+    "llvm-bc" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/Exchange.bc",
+    "object" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/Exchange.o"
+  },
+  "/Users/hwangseokbeom/Documents/GitHub/Cryptory/Cryptory/Models/ExchangeConnection.swift" : {
+    "index-unit-output-path" : "/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/ExchangeConnection.o",
+    "llvm-bc" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/ExchangeConnection.bc",
+    "object" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/ExchangeConnection.o"
+  },
+  "/Users/hwangseokbeom/Documents/GitHub/Cryptory/Cryptory/Models/Holding.swift" : {
+    "index-unit-output-path" : "/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/Holding.o",
+    "llvm-bc" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/Holding.bc",
+    "object" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/Holding.o"
+  },
+  "/Users/hwangseokbeom/Documents/GitHub/Cryptory/Cryptory/Models/KimchiPremiumSnapshot.swift" : {
+    "index-unit-output-path" : "/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/KimchiPremiumSnapshot.o",
+    "llvm-bc" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/KimchiPremiumSnapshot.bc",
+    "object" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/KimchiPremiumSnapshot.o"
+  },
+  "/Users/hwangseokbeom/Documents/GitHub/Cryptory/Cryptory/Models/Loadable.swift" : {
+    "index-unit-output-path" : "/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/Loadable.o",
+    "llvm-bc" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/Loadable.bc",
+    "object" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/Loadable.o"
+  },
+  "/Users/hwangseokbeom/Documents/GitHub/Cryptory/Cryptory/Models/OrderRecord.swift" : {
+    "index-unit-output-path" : "/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/OrderRecord.o",
+    "llvm-bc" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/OrderRecord.bc",
+    "object" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/OrderRecord.o"
+  },
+  "/Users/hwangseokbeom/Documents/GitHub/Cryptory/Cryptory/Models/OrderbookData.swift" : {
+    "index-unit-output-path" : "/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/OrderbookData.o",
+    "llvm-bc" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/OrderbookData.bc",
+    "object" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/OrderbookData.o"
+  },
+  "/Users/hwangseokbeom/Documents/GitHub/Cryptory/Cryptory/Models/PortfolioSnapshot.swift" : {
+    "index-unit-output-path" : "/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/PortfolioSnapshot.o",
+    "llvm-bc" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/PortfolioSnapshot.bc",
+    "object" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/PortfolioSnapshot.o"
+  },
+  "/Users/hwangseokbeom/Documents/GitHub/Cryptory/Cryptory/Models/PublicTrade.swift" : {
+    "index-unit-output-path" : "/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/PublicTrade.o",
+    "llvm-bc" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/PublicTrade.bc",
+    "object" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/PublicTrade.o"
+  },
+  "/Users/hwangseokbeom/Documents/GitHub/Cryptory/Cryptory/Models/TickerData.swift" : {
+    "index-unit-output-path" : "/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/TickerData.o",
+    "llvm-bc" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/TickerData.bc",
+    "object" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/TickerData.o"
+  },
+  "/Users/hwangseokbeom/Documents/GitHub/Cryptory/Cryptory/Models/ViewStates.swift" : {
+    "index-unit-output-path" : "/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/ViewStates.o",
+    "llvm-bc" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/ViewStates.bc",
+    "object" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/ViewStates.o"
+  },
+  "/Users/hwangseokbeom/Documents/GitHub/Cryptory/Cryptory/Services/AppLogger.swift" : {
+    "index-unit-output-path" : "/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/AppLogger.o",
+    "llvm-bc" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/AppLogger.bc",
+    "object" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/AppLogger.o"
+  },
+  "/Users/hwangseokbeom/Documents/GitHub/Cryptory/Cryptory/Services/Formatters.swift" : {
+    "index-unit-output-path" : "/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/Formatters.o",
+    "llvm-bc" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/Formatters.bc",
+    "object" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/Formatters.o"
+  },
+  "/Users/hwangseokbeom/Documents/GitHub/Cryptory/Cryptory/Services/NetworkService.swift" : {
+    "index-unit-output-path" : "/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/NetworkService.o",
+    "llvm-bc" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/NetworkService.bc",
+    "object" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/NetworkService.o"
+  },
+  "/Users/hwangseokbeom/Documents/GitHub/Cryptory/Cryptory/Services/UseCases.swift" : {
+    "index-unit-output-path" : "/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/UseCases.o",
+    "llvm-bc" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/UseCases.bc",
+    "object" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/UseCases.o"
+  },
+  "/Users/hwangseokbeom/Documents/GitHub/Cryptory/Cryptory/Services/WebSocketService.swift" : {
+    "index-unit-output-path" : "/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/WebSocketService.o",
+    "llvm-bc" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/WebSocketService.bc",
+    "object" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/WebSocketService.o"
+  },
+  "/Users/hwangseokbeom/Documents/GitHub/Cryptory/Cryptory/Theme/Colors.swift" : {
+    "index-unit-output-path" : "/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/Colors.o",
+    "llvm-bc" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/Colors.bc",
+    "object" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/Colors.o"
+  },
+  "/Users/hwangseokbeom/Documents/GitHub/Cryptory/Cryptory/Theme/Fonts.swift" : {
+    "index-unit-output-path" : "/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/Fonts.o",
+    "llvm-bc" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/Fonts.bc",
+    "object" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/Fonts.o"
+  },
+  "/Users/hwangseokbeom/Documents/GitHub/Cryptory/Cryptory/ViewModels/CryptoViewModel.swift" : {
+    "index-unit-output-path" : "/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/CryptoViewModel.o",
+    "llvm-bc" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/CryptoViewModel.bc",
+    "object" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/CryptoViewModel.o"
+  },
+  "/Users/hwangseokbeom/Documents/GitHub/Cryptory/Cryptory/Views/Auth/LoginView.swift" : {
+    "index-unit-output-path" : "/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/LoginView.o",
+    "llvm-bc" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/LoginView.bc",
+    "object" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/LoginView.o"
+  },
+  "/Users/hwangseokbeom/Documents/GitHub/Cryptory/Cryptory/Views/Chart/CandleChartView.swift" : {
+    "index-unit-output-path" : "/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/CandleChartView.o",
+    "llvm-bc" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/CandleChartView.bc",
+    "object" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/CandleChartView.o"
+  },
+  "/Users/hwangseokbeom/Documents/GitHub/Cryptory/Cryptory/Views/Chart/ChartView.swift" : {
+    "index-unit-output-path" : "/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/ChartView.o",
+    "llvm-bc" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/ChartView.bc",
+    "object" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/ChartView.o"
+  },
+  "/Users/hwangseokbeom/Documents/GitHub/Cryptory/Cryptory/Views/Chart/OrderbookView.swift" : {
+    "index-unit-output-path" : "/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/OrderbookView.o",
+    "llvm-bc" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/OrderbookView.bc",
+    "object" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/OrderbookView.o"
+  },
+  "/Users/hwangseokbeom/Documents/GitHub/Cryptory/Cryptory/Views/Chart/PeriodSelector.swift" : {
+    "index-unit-output-path" : "/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/PeriodSelector.o",
+    "llvm-bc" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/PeriodSelector.bc",
+    "object" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/PeriodSelector.o"
+  },
+  "/Users/hwangseokbeom/Documents/GitHub/Cryptory/Cryptory/Views/Chart/RecentTradesView.swift" : {
+    "index-unit-output-path" : "/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/RecentTradesView.o",
+    "llvm-bc" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/RecentTradesView.bc",
+    "object" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/RecentTradesView.o"
+  },
+  "/Users/hwangseokbeom/Documents/GitHub/Cryptory/Cryptory/Views/Components/AuthGateView.swift" : {
+    "index-unit-output-path" : "/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/AuthGateView.o",
+    "llvm-bc" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/AuthGateView.bc",
+    "object" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/AuthGateView.o"
+  },
+  "/Users/hwangseokbeom/Documents/GitHub/Cryptory/Cryptory/Views/Components/ExchangeDropdown.swift" : {
+    "index-unit-output-path" : "/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/ExchangeDropdown.o",
+    "llvm-bc" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/ExchangeDropdown.bc",
+    "object" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/ExchangeDropdown.o"
+  },
+  "/Users/hwangseokbeom/Documents/GitHub/Cryptory/Cryptory/Views/Components/KeyboardDismissOnTap.swift" : {
+    "index-unit-output-path" : "/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/KeyboardDismissOnTap.o",
+    "llvm-bc" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/KeyboardDismissOnTap.bc",
+    "object" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/KeyboardDismissOnTap.o"
+  },
+  "/Users/hwangseokbeom/Documents/GitHub/Cryptory/Cryptory/Views/Components/MarketSegmentedControl.swift" : {
+    "index-unit-output-path" : "/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/MarketSegmentedControl.o",
+    "llvm-bc" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/MarketSegmentedControl.bc",
+    "object" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/MarketSegmentedControl.o"
+  },
+  "/Users/hwangseokbeom/Documents/GitHub/Cryptory/Cryptory/Views/Components/ScreenStatusBannerView.swift" : {
+    "index-unit-output-path" : "/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/ScreenStatusBannerView.o",
+    "llvm-bc" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/ScreenStatusBannerView.bc",
+    "object" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/ScreenStatusBannerView.o"
+  },
+  "/Users/hwangseokbeom/Documents/GitHub/Cryptory/Cryptory/Views/Components/SearchBar.swift" : {
+    "index-unit-output-path" : "/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/SearchBar.o",
+    "llvm-bc" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/SearchBar.bc",
+    "object" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/SearchBar.o"
+  },
+  "/Users/hwangseokbeom/Documents/GitHub/Cryptory/Cryptory/Views/Components/TabBarView.swift" : {
+    "index-unit-output-path" : "/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/TabBarView.o",
+    "llvm-bc" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/TabBarView.bc",
+    "object" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/TabBarView.o"
+  },
+  "/Users/hwangseokbeom/Documents/GitHub/Cryptory/Cryptory/Views/Components/ToastView.swift" : {
+    "index-unit-output-path" : "/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/ToastView.o",
+    "llvm-bc" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/ToastView.bc",
+    "object" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/ToastView.o"
+  },
+  "/Users/hwangseokbeom/Documents/GitHub/Cryptory/Cryptory/Views/Exchange/ExchangeConnectionsView.swift" : {
+    "index-unit-output-path" : "/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/ExchangeConnectionsView.o",
+    "llvm-bc" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/ExchangeConnectionsView.bc",
+    "object" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/ExchangeConnectionsView.o"
+  },
+  "/Users/hwangseokbeom/Documents/GitHub/Cryptory/Cryptory/Views/HeaderView.swift" : {
+    "index-unit-output-path" : "/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/HeaderView.o",
+    "llvm-bc" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/HeaderView.bc",
+    "object" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/HeaderView.o"
+  },
+  "/Users/hwangseokbeom/Documents/GitHub/Cryptory/Cryptory/Views/KimchiPremium/KimchiView.swift" : {
+    "index-unit-output-path" : "/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/KimchiView.o",
+    "llvm-bc" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/KimchiView.bc",
+    "object" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/KimchiView.o"
+  },
+  "/Users/hwangseokbeom/Documents/GitHub/Cryptory/Cryptory/Views/KimchiPremium/PremiumCard.swift" : {
+    "index-unit-output-path" : "/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/PremiumCard.o",
+    "llvm-bc" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/PremiumCard.bc",
+    "object" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/PremiumCard.o"
+  },
+  "/Users/hwangseokbeom/Documents/GitHub/Cryptory/Cryptory/Views/KimchiPremium/PremiumSummary.swift" : {
+    "index-unit-output-path" : "/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/PremiumSummary.o",
+    "llvm-bc" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/PremiumSummary.bc",
+    "object" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/PremiumSummary.o"
+  },
+  "/Users/hwangseokbeom/Documents/GitHub/Cryptory/Cryptory/Views/Market/CoinRowView.swift" : {
+    "index-unit-output-path" : "/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/CoinRowView.o",
+    "llvm-bc" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/CoinRowView.bc",
+    "object" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/CoinRowView.o"
+  },
+  "/Users/hwangseokbeom/Documents/GitHub/Cryptory/Cryptory/Views/Market/MarketView.swift" : {
+    "index-unit-output-path" : "/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/MarketView.o",
+    "llvm-bc" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/MarketView.bc",
+    "object" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/MarketView.o"
+  },
+  "/Users/hwangseokbeom/Documents/GitHub/Cryptory/Cryptory/Views/Market/SparklineView.swift" : {
+    "index-unit-output-path" : "/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/SparklineView.o",
+    "llvm-bc" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/SparklineView.bc",
+    "object" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/SparklineView.o"
+  },
+  "/Users/hwangseokbeom/Documents/GitHub/Cryptory/Cryptory/Views/Portfolio/HoldingCard.swift" : {
+    "index-unit-output-path" : "/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/HoldingCard.o",
+    "llvm-bc" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/HoldingCard.bc",
+    "object" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/HoldingCard.o"
+  },
+  "/Users/hwangseokbeom/Documents/GitHub/Cryptory/Cryptory/Views/Portfolio/PortfolioView.swift" : {
+    "index-unit-output-path" : "/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/PortfolioView.o",
+    "llvm-bc" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/PortfolioView.bc",
+    "object" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/PortfolioView.o"
+  },
+  "/Users/hwangseokbeom/Documents/GitHub/Cryptory/Cryptory/Views/Portfolio/TotalAssetCard.swift" : {
+    "index-unit-output-path" : "/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/TotalAssetCard.o",
+    "llvm-bc" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/TotalAssetCard.bc",
+    "object" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/TotalAssetCard.o"
+  },
+  "/Users/hwangseokbeom/Documents/GitHub/Cryptory/Cryptory/Views/Trade/OrderHistoryRow.swift" : {
+    "index-unit-output-path" : "/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/OrderHistoryRow.o",
+    "llvm-bc" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/OrderHistoryRow.bc",
+    "object" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/OrderHistoryRow.o"
+  },
+  "/Users/hwangseokbeom/Documents/GitHub/Cryptory/Cryptory/Views/Trade/TradeView.swift" : {
+    "index-unit-output-path" : "/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/TradeView.o",
+    "llvm-bc" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/TradeView.bc",
+    "object" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/TradeView.o"
+  },
+  "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/DerivedSources/GeneratedAssetSymbols.swift" : {
+    "index-unit-output-path" : "/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/GeneratedAssetSymbols.o",
+    "llvm-bc" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/GeneratedAssetSymbols.bc",
+    "object" : "/Users/hwangseokbeom/Documents/GitHub/Cryptory/build/Cryptory.build/Release-iphonesimulator/Cryptory.build/Objects-normal/arm64/GeneratedAssetSymbols.o"
+  }
+}

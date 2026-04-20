@@ -1,0 +1,32 @@
+{
+  "source": "/Users/hwangseokbeom/Documents/GitHub/Cryptory/Cryptory/Views/Chart/OrderbookView.swift",
+  "tables": {
+    "Localizable": [
+      {
+        "comment": "",
+        "key": "호가창",
+        "location": {
+          "startingColumn": 18,
+          "startingLine": 9
+        }
+      },
+      {
+        "comment": "",
+        "key": "호가(KRW)",
+        "location": {
+          "startingColumn": 30,
+          "startingLine": 18
+        }
+      },
+      {
+        "comment": "",
+        "key": "잔량",
+        "location": {
+          "startingColumn": 30,
+          "startingLine": 20
+        }
+      }
+    ]
+  },
+  "version": 1
+}

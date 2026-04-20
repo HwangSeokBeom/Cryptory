@@ -1,0 +1,16 @@
+{
+  "source": "/Users/hwangseokbeom/Documents/GitHub/Cryptory/Cryptory/Views/Portfolio/TotalAssetCard.swift",
+  "tables": {
+    "Localizable": [
+      {
+        "comment": "",
+        "key": "총 보유자산",
+        "location": {
+          "startingColumn": 22,
+          "startingLine": 23
+        }
+      }
+    ]
+  },
+  "version": 1
+}

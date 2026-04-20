@@ -23,14 +23,21 @@ final class CryptoryUITests: XCTestCase {
     }
 
     @MainActor
-    func testExample() throws {
-        // UI tests must launch the application that they test.
+    func testKimchiFreshnessBadgesAreVisibleWithFixtureData() throws {
         let app = XCUIApplication()
+        app.launchEnvironment["CRYPTORY_UI_TEST_SCENARIO"] = "kimchi_freshness"
         app.launch()
 
-        // Use XCTAssert and related functions to verify your tests produce the correct results.
-        // XCUIAutomation Documentation
-        // https://developer.apple.com/documentation/xcuiautomation
+        app.tabBars.buttons["김프"].tap()
+
+        XCTAssertTrue(app.staticTexts["업비트 기준 빠른 비교"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.staticTexts["약간 지연"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.staticTexts["일부 지연"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.staticTexts["업데이트 방금 전"].exists || app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "업데이트")).firstMatch.exists)
+        XCTAssertFalse(app.staticTexts["fx_rate_delayed"].exists)
+        XCTAssertFalse(app.staticTexts["timestamp_skew_detected"].exists)
+        XCTAssertFalse(app.staticTexts["freshness_threshold_exceeded"].exists)
+        XCTAssertFalse(app.staticTexts["fallback_source"].exists)
     }
 
     @MainActor

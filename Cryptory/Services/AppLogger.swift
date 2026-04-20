@@ -1,6 +1,7 @@
 import Foundation
 
 enum AppLogCategory: String {
+    case lifecycle = "LIFECYCLE"
     case route = "ROUTE"
     case auth = "AUTH"
     case network = "NETWORK"
@@ -8,10 +9,22 @@ enum AppLogCategory: String {
 }
 
 enum AppLogger {
-    static func debug(_ category: AppLogCategory, _ message: String) {
+    nonisolated(unsafe) private static let counterLock = NSLock()
+    nonisolated(unsafe) private static var instanceCounters: [String: Int] = [:]
+
+    nonisolated static func debug(_ category: AppLogCategory, _ message: String) {
         #if DEBUG
         print("[\(category.rawValue)] \(message)")
         #endif
+    }
+
+    nonisolated static func nextInstanceID(scope: String) -> Int {
+        counterLock.lock()
+        defer { counterLock.unlock() }
+
+        let nextValue = (instanceCounters[scope] ?? 0) + 1
+        instanceCounters[scope] = nextValue
+        return nextValue
     }
 
     static func masked(_ value: String?) -> String {
