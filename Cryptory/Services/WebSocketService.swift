@@ -29,15 +29,38 @@ enum PrivateWebSocketConnectionState: Equatable {
 
 struct PublicMarketSubscription: Hashable {
     let channel: PublicStreamChannel
+    let marketIdentity: MarketIdentity?
     let exchange: String?
+    let marketId: String?
     let symbol: String?
     let interval: String?
 
-    init(channel: PublicStreamChannel, exchange: String?, symbol: String?, interval: String? = nil) {
+    init(
+        channel: PublicStreamChannel,
+        marketIdentity: MarketIdentity? = nil,
+        exchange: String? = nil,
+        symbol: String? = nil,
+        interval: String? = nil
+    ) {
         self.channel = channel
-        self.exchange = exchange
-        self.symbol = symbol
+        self.marketIdentity = marketIdentity
+        self.exchange = marketIdentity?.exchange.rawValue ?? exchange
+        self.marketId = marketIdentity?.marketId
+        self.symbol = marketIdentity?.symbol ?? symbol
         self.interval = interval
+    }
+
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(channel)
+        hasher.combine(marketIdentity?.cacheKey ?? "\(exchange ?? "*")|\(marketId ?? symbol ?? "*")")
+        hasher.combine(interval ?? "-")
+    }
+
+    static func == (lhs: PublicMarketSubscription, rhs: PublicMarketSubscription) -> Bool {
+        lhs.channel == rhs.channel
+            && (lhs.marketIdentity?.cacheKey ?? "\(lhs.exchange ?? "*")|\(lhs.marketId ?? lhs.symbol ?? "*")")
+                == (rhs.marketIdentity?.cacheKey ?? "\(rhs.exchange ?? "*")|\(rhs.marketId ?? rhs.symbol ?? "*")")
+            && lhs.interval == rhs.interval
     }
 }
 
@@ -507,9 +530,10 @@ final class WebSocketService: PublicWebSocketServicing {
 
     private func describe(_ subscription: PublicMarketSubscription) -> String {
         let exchange = subscription.exchange ?? "*"
+        let marketId = subscription.marketId ?? "*"
         let symbol = subscription.symbol ?? "*"
         let interval = subscription.interval ?? "-"
-        return "channel=\(subscription.channel.rawValue) exchange=\(exchange) symbol=\(symbol) interval=\(interval)"
+        return "channel=\(subscription.channel.rawValue) exchange=\(exchange) marketId=\(marketId) symbol=\(symbol) interval=\(interval)"
     }
 }
 

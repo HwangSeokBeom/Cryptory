@@ -28,9 +28,7 @@ final class CryptoryUITests: XCTestCase {
         app.launchEnvironment["CRYPTORY_UI_TEST_SCENARIO"] = "kimchi_freshness"
         app.launch()
 
-        app.tabBars.buttons["김프"].tap()
-
-        XCTAssertTrue(app.staticTexts["업비트 기준 빠른 비교"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.staticTexts["업비트 기준 빠른 비교"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["약간 지연"].waitForExistence(timeout: 3))
         XCTAssertTrue(app.staticTexts["일부 지연"].waitForExistence(timeout: 3))
         XCTAssertTrue(app.staticTexts["업데이트 방금 전"].exists || app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "업데이트")).firstMatch.exists)

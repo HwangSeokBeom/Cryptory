@@ -201,16 +201,22 @@ final class SequencedCandleMarketRepository: MarketRepositoryProtocol {
     var marketCatalogSnapshot: MarketCatalogSnapshot
     var tickerSnapshot: MarketTickerSnapshot
     var candleResultsBySymbol: [String: [Result<CandleSnapshot, Error>]]
+    var orderbookResultsBySymbol: [String: [Result<OrderbookSnapshot, Error>]]
+    var tradeResultsBySymbol: [String: [Result<PublicTradesSnapshot, Error>]]
     private(set) var fetchedCandles: [(symbol: String, exchange: Exchange, interval: String)] = []
 
     init(
         marketCatalogSnapshot: MarketCatalogSnapshot,
         tickerSnapshot: MarketTickerSnapshot,
-        candleResultsBySymbol: [String: [Result<CandleSnapshot, Error>]]
+        candleResultsBySymbol: [String: [Result<CandleSnapshot, Error>]],
+        orderbookResultsBySymbol: [String: [Result<OrderbookSnapshot, Error>]] = [:],
+        tradeResultsBySymbol: [String: [Result<PublicTradesSnapshot, Error>]] = [:]
     ) {
         self.marketCatalogSnapshot = marketCatalogSnapshot
         self.tickerSnapshot = tickerSnapshot
         self.candleResultsBySymbol = candleResultsBySymbol
+        self.orderbookResultsBySymbol = orderbookResultsBySymbol
+        self.tradeResultsBySymbol = tradeResultsBySymbol
     }
 
     func fetchMarkets(exchange: Exchange) async throws -> MarketCatalogSnapshot {
@@ -222,11 +228,31 @@ final class SequencedCandleMarketRepository: MarketRepositoryProtocol {
     }
 
     func fetchOrderbook(symbol: String, exchange: Exchange) async throws -> OrderbookSnapshot {
-        OrderbookSnapshot(exchange: exchange, symbol: symbol, orderbook: OrderbookData(asks: [], bids: []), meta: .empty)
+        guard var results = orderbookResultsBySymbol[symbol], results.isEmpty == false else {
+            return OrderbookSnapshot(exchange: exchange, symbol: symbol, orderbook: OrderbookData(asks: [], bids: []), meta: .empty)
+        }
+        let result = results.removeFirst()
+        orderbookResultsBySymbol[symbol] = results
+        switch result {
+        case .success(let snapshot):
+            return snapshot
+        case .failure(let error):
+            throw error
+        }
     }
 
     func fetchTrades(symbol: String, exchange: Exchange) async throws -> PublicTradesSnapshot {
-        PublicTradesSnapshot(exchange: exchange, symbol: symbol, trades: [], meta: .empty)
+        guard var results = tradeResultsBySymbol[symbol], results.isEmpty == false else {
+            return PublicTradesSnapshot(exchange: exchange, symbol: symbol, trades: [], meta: .empty)
+        }
+        let result = results.removeFirst()
+        tradeResultsBySymbol[symbol] = results
+        switch result {
+        case .success(let snapshot):
+            return snapshot
+        case .failure(let error):
+            throw error
+        }
     }
 
     func fetchCandles(symbol: String, exchange: Exchange, interval: String) async throws -> CandleSnapshot {
@@ -537,6 +563,10 @@ struct FailingKimchiPremiumRepository: KimchiPremiumRepositoryProtocol {
 struct StubAuthenticationService: AuthenticationServiceProtocol {
     func signIn(email: String, password: String) async throws -> AuthSession {
         AuthSession(accessToken: "token", refreshToken: nil, userID: "user-1", email: email)
+    }
+
+    func signUp(request: SignUpRequest) async throws -> AuthSession {
+        AuthSession(accessToken: "token", refreshToken: nil, userID: "user-1", email: request.email)
     }
 }
 

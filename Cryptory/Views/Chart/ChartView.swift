@@ -29,7 +29,10 @@ struct ChartView: View {
                 }
             }
             .onAppear {
-                AppLogger.debug(.lifecycle, "ChartView onAppear #\(instanceID) symbol=\(coin.symbol) exchange=\(vm.exchange.rawValue) interval=\(vm.chartPeriod)")
+                AppLogger.debug(
+                    .lifecycle,
+                    "ChartView onAppear #\(instanceID) \(coin.marketIdentity(exchange: vm.exchange).logFields) interval=\(vm.chartPeriod)"
+                )
             }
             .onDisappear {
                 AppLogger.debug(.lifecycle, "ChartView onDisappear #\(instanceID)")
@@ -74,9 +77,29 @@ struct ChartView: View {
     private func coinHeader(_ coin: CoinInfo) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
+                SymbolImageView(
+                    marketIdentity: coin.marketIdentity(exchange: vm.exchange),
+                    symbol: coin.symbol,
+                    canonicalSymbol: coin.canonicalSymbol,
+                    imageURL: coin.iconURL,
+                    hasImage: coin.resolvedHasImage,
+                    localAssetName: coin.localAssetName,
+                    symbolImageState: AssetImageClient.shared.renderState(
+                        for: AssetImageRequestDescriptor(
+                            marketIdentity: coin.marketIdentity(exchange: vm.exchange),
+                            symbol: coin.symbol,
+                            canonicalSymbol: coin.canonicalSymbol,
+                            imageURL: coin.iconURL,
+                            hasImage: coin.resolvedHasImage,
+                            localAssetName: coin.localAssetName
+                        )
+                    ),
+                    size: 36
+                )
+
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 8) {
-                        Text(coin.symbol)
+                        Text(coin.displaySymbol)
                             .font(.system(size: 18, weight: .heavy))
                             .foregroundColor(.themeText)
                         Text(coin.name)
@@ -84,7 +107,7 @@ struct ChartView: View {
                             .foregroundColor(.textMuted)
                     }
 
-                    let ticker = vm.currentTicker
+                    let ticker = vm.headerSummaryState.value ?? vm.currentTicker
                     let isUp = (ticker?.change ?? 0) >= 0
 
                     if let ticker {
@@ -138,30 +161,65 @@ struct ChartView: View {
     private var candleSection: some View {
         switch vm.candlesState {
         case .idle, .loading:
-            ProgressView("캔들 데이터를 불러오는 중...")
-                .tint(.accent)
-                .frame(maxWidth: .infinity)
-                .frame(height: 220)
-                .padding(.top, 8)
+            loadingSectionCard(
+                title: "차트 데이터를 불러오는 중...",
+                height: 220
+            )
 
         case .failed(let message):
-            stateMessage(message)
-                .frame(height: 220)
+            sectionStateCard(
+                icon: "exclamationmark.triangle.fill",
+                title: "차트 데이터를 불러오지 못했어요",
+                description: message,
+                height: 220,
+                actionTitle: "다시 시도",
+                action: retryChartData
+            )
+
+        case .unavailable(let message):
+            sectionStateCard(
+                icon: "chart.xyaxis.line",
+                title: "차트 데이터를 일시적으로 불러올 수 없어요",
+                description: message,
+                height: 220,
+                actionTitle: "다시 시도",
+                action: retryChartData
+            )
 
         case .empty:
-            stateMessage("캔들 데이터가 아직 없어요.")
-                .frame(height: 220)
+            sectionStateCard(
+                icon: "chart.bar.xaxis",
+                title: "차트 데이터가 아직 없어요",
+                description: "거래소에서 캔들 데이터가 도착하면 바로 표시할게요.",
+                height: 220,
+                actionTitle: "다시 시도",
+                action: retryChartData
+            )
 
         case .loaded, .staleCache, .refreshing:
-            GeometryReader { geo in
-                CandleChartView(
-                    candles: vm.candles,
-                    width: min(geo.size.width - 16, 390),
-                    height: 220
-                )
-                .frame(maxWidth: .infinity)
+            VStack(spacing: 8) {
+                if let warningMessage = vm.candlesState.warningMessage {
+                    sectionWarningBanner(warningMessage)
+                        .padding(.horizontal, 16)
+                }
+                GeometryReader { geo in
+                    ZStack(alignment: .topTrailing) {
+                        CandleChartView(
+                            candles: vm.candles,
+                            width: min(geo.size.width - 16, 390),
+                            height: 220
+                        )
+                        .frame(maxWidth: .infinity)
+
+                        if case .refreshing = vm.candlesState {
+                            ProgressView()
+                                .tint(.accent)
+                                .padding(10)
+                        }
+                    }
+                }
+                .frame(height: 220)
             }
-            .frame(height: 220)
             .padding(.horizontal, 8)
             .padding(.top, 8)
         }
@@ -169,7 +227,7 @@ struct ChartView: View {
 
     private var stats24H: some View {
         HStack(spacing: 8) {
-            let ticker = vm.currentTicker
+            let ticker = vm.marketStatsState.value ?? vm.currentTicker
             statItem(label: "고가(24H)", value: ticker.map { PriceFormatter.formatPrice($0.high24) } ?? "—", color: .up)
             statItem(label: "저가(24H)", value: ticker.map { PriceFormatter.formatPrice($0.low24) } ?? "—", color: .down)
             statItem(label: "거래량(24H)", value: ticker.map { PriceFormatter.formatVolume($0.volume) } ?? "—", color: .themeText)
@@ -182,19 +240,62 @@ struct ChartView: View {
     private var orderbookSection: some View {
         switch vm.orderbookState {
         case .idle, .loading:
-            ProgressView("호가 데이터를 불러오는 중...")
-                .tint(.accent)
-                .padding(.top, 18)
-                .padding(.bottom, 20)
+            loadingSectionCard(
+                title: "호가 데이터를 불러오는 중...",
+                height: 170
+            )
+            .padding(.top, 12)
 
         case .failed(let message):
-            stateMessage(message)
-                .padding(.top, 18)
-                .padding(.bottom, 20)
+            sectionStateCard(
+                icon: "list.bullet.rectangle",
+                title: "호가 데이터를 불러오지 못했어요",
+                description: message,
+                height: 170,
+                actionTitle: "다시 시도",
+                action: retryChartData
+            )
+            .padding(.top, 12)
 
-        case .loaded:
-            OrderbookView(orderbook: vm.orderbook, currentPrice: vm.currentPrice)
-                .padding(.top, 12)
+        case .unavailable(let message):
+            sectionStateCard(
+                icon: "list.bullet.rectangle",
+                title: "호가 데이터가 일시적으로 제공되지 않아요",
+                description: message,
+                height: 170,
+                actionTitle: "다시 시도",
+                action: retryChartData
+            )
+            .padding(.top, 12)
+
+        case .empty:
+            sectionStateCard(
+                icon: "list.bullet.rectangle",
+                title: "호가 데이터가 아직 없어요",
+                description: "거래소에서 호가 데이터를 제공하면 이 영역에 표시됩니다.",
+                height: 170,
+                actionTitle: "다시 시도",
+                action: retryChartData
+            )
+            .padding(.top, 12)
+
+        case .loaded, .staleCache, .refreshing:
+            VStack(spacing: 8) {
+                if let warningMessage = vm.orderbookState.warningMessage {
+                    sectionWarningBanner(warningMessage)
+                        .padding(.horizontal, 16)
+                }
+                OrderbookView(orderbook: vm.orderbook, currentPrice: vm.currentPrice)
+                    .overlay(alignment: .topTrailing) {
+                        if case .refreshing = vm.orderbookState {
+                            ProgressView()
+                                .tint(.accent)
+                                .padding(.trailing, 24)
+                                .padding(.top, 28)
+                        }
+                    }
+            }
+            .padding(.top, 12)
         }
     }
 
@@ -202,19 +303,62 @@ struct ChartView: View {
     private var tradesSection: some View {
         switch vm.recentTradesState {
         case .idle, .loading:
-            ProgressView("실시간 체결을 불러오는 중...")
-                .tint(.accent)
-                .padding(.top, 14)
-                .padding(.bottom, 20)
+            loadingSectionCard(
+                title: "최근 체결을 불러오는 중...",
+                height: 124
+            )
+            .padding(.top, 14)
 
         case .failed(let message):
-            stateMessage(message)
-                .padding(.top, 14)
-                .padding(.bottom, 20)
+            sectionStateCard(
+                icon: "clock.badge.exclamationmark",
+                title: "최근 체결을 불러오지 못했어요",
+                description: message,
+                height: 124,
+                actionTitle: "다시 시도",
+                action: retryChartData
+            )
+            .padding(.top, 14)
 
-        case .loaded(let trades):
-            RecentTradesView(trades: trades)
-                .padding(.top, 14)
+        case .unavailable(let message):
+            sectionStateCard(
+                icon: "clock.badge.exclamationmark",
+                title: "최근 체결 데이터가 일시적으로 제공되지 않아요",
+                description: message,
+                height: 124,
+                actionTitle: "다시 시도",
+                action: retryChartData
+            )
+            .padding(.top, 14)
+
+        case .empty:
+            sectionStateCard(
+                icon: "clock",
+                title: "최근 체결 데이터가 아직 없어요",
+                description: "새 체결이 들어오면 이 영역에 바로 표시됩니다.",
+                height: 124,
+                actionTitle: "다시 시도",
+                action: retryChartData
+            )
+            .padding(.top, 14)
+
+        case .loaded(let trades), .staleCache(let trades, _), .refreshing(let trades):
+            VStack(spacing: 8) {
+                if let warningMessage = vm.recentTradesState.warningMessage {
+                    sectionWarningBanner(warningMessage)
+                        .padding(.horizontal, 16)
+                }
+                RecentTradesView(trades: trades)
+                    .overlay(alignment: .topTrailing) {
+                        if case .refreshing = vm.recentTradesState {
+                            ProgressView()
+                                .tint(.accent)
+                                .padding(.trailing, 24)
+                                .padding(.top, 18)
+                        }
+                    }
+            }
+            .padding(.top, 14)
         }
     }
 
@@ -240,12 +384,95 @@ struct ChartView: View {
         )
     }
 
-    private func stateMessage(_ message: String) -> some View {
-        Text(message)
-            .font(.system(size: 12))
-            .foregroundColor(.textMuted)
-            .multilineTextAlignment(.center)
-            .frame(maxWidth: .infinity)
-            .padding(.horizontal, 20)
+    private func loadingSectionCard(title: String, height: CGFloat) -> some View {
+        HStack(spacing: 10) {
+            ProgressView()
+                .tint(.accent)
+            Text(title)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(.textSecondary)
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: height)
+        .background(sectionCardBackground)
+        .padding(.horizontal, 16)
+    }
+
+    private func sectionStateCard(
+        icon: String,
+        title: String,
+        description: String,
+        height: CGFloat,
+        actionTitle: String? = nil,
+        action: (() -> Void)? = nil
+    ) -> some View {
+        VStack(spacing: 8) {
+            Image(systemName: icon)
+                .font(.system(size: 22, weight: .semibold))
+                .foregroundColor(.accent)
+            Text(title)
+                .font(.system(size: 13, weight: .bold))
+                .foregroundColor(.themeText)
+                .multilineTextAlignment(.center)
+            Text(description)
+                .font(.system(size: 11))
+                .foregroundColor(.textMuted)
+                .multilineTextAlignment(.center)
+                .lineLimit(2)
+                .padding(.horizontal, 18)
+
+            if let actionTitle, let action {
+                Button(action: action) {
+                    Text(actionTitle)
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundColor(.themeText)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 7)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8)
+                                .fill(Color.bgTertiary)
+                        )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: height)
+        .background(sectionCardBackground)
+        .padding(.horizontal, 16)
+    }
+
+    private func sectionWarningBanner(_ message: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 11, weight: .bold))
+                .foregroundColor(.accent)
+            Text(message)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(.textSecondary)
+                .lineLimit(2)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color.accentBg)
+        )
+    }
+
+    private var sectionCardBackground: some View {
+        RoundedRectangle(cornerRadius: 10)
+            .fill(Color.bgSecondary)
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(Color.themeBorder, lineWidth: 1)
+            )
+    }
+
+    private func retryChartData() {
+        Task {
+            await vm.loadChartData(forceRefresh: true, reason: "chart_section_retry")
+        }
     }
 }

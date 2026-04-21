@@ -1,7 +1,14 @@
 import XCTest
+import UIKit
 @testable import Cryptory
 
 final class ViewModelStateTests: XCTestCase {
+
+    override func setUp() {
+        super.setUp()
+        AssetImageDebugClient.shared.reset()
+        AssetImageClient.shared.debugReset()
+    }
 
     @MainActor
     private func waitUntil(
@@ -24,6 +31,113 @@ final class ViewModelStateTests: XCTestCase {
         let defaults = UserDefaults(suiteName: suiteName)!
         defaults.removePersistentDomain(forName: suiteName)
         return defaults
+    }
+
+    private func makeMarketCoin(
+        exchange: Exchange,
+        marketId: String,
+        symbol: String,
+        imageURL: String? = nil
+    ) -> CoinInfo {
+        CoinCatalog.coin(
+            symbol: symbol,
+            exchange: exchange,
+            marketId: marketId,
+            displayName: "\(exchange.rawValue.uppercased()) \(symbol)",
+            englishName: "\(exchange.rawValue.uppercased()) \(symbol)",
+            imageURL: imageURL
+        )
+    }
+
+    private func makeCatalogSnapshot(
+        exchange: Exchange,
+        entries: [(marketId: String, symbol: String, imageURL: String?)]
+    ) -> MarketCatalogSnapshot {
+        let markets = entries.map {
+            makeMarketCoin(
+                exchange: exchange,
+                marketId: $0.marketId,
+                symbol: $0.symbol,
+                imageURL: $0.imageURL
+            )
+        }
+        let supportedIntervals = entries.reduce(into: [String: [String]]()) { partialResult, entry in
+            partialResult[entry.symbol] = ["1m", "1h"]
+        }
+        return MarketCatalogSnapshot(
+            exchange: exchange,
+            markets: markets,
+            supportedIntervalsBySymbol: supportedIntervals,
+            meta: .empty
+        )
+    }
+
+    private func makeTickerSnapshot(
+        exchange: Exchange,
+        entries: [(marketId: String, symbol: String, price: Double, imageURL: String?, sparkline: [Double])]
+    ) -> MarketTickerSnapshot {
+        let coins = entries.map {
+            makeMarketCoin(
+                exchange: exchange,
+                marketId: $0.marketId,
+                symbol: $0.symbol,
+                imageURL: $0.imageURL
+            )
+        }
+        let tickers = entries.reduce(into: [String: TickerData]()) { partialResult, entry in
+            partialResult[entry.symbol] = TickerData(
+                price: entry.price,
+                change: 0.5,
+                volume: 10_000,
+                high24: entry.price * 1.05,
+                low24: entry.price * 0.95,
+                sparkline: entry.sparkline,
+                sparklinePointCount: entry.sparkline.count,
+                hasServerSparkline: entry.sparkline.isEmpty == false
+            )
+        }
+        return MarketTickerSnapshot(
+            exchange: exchange,
+            coins: coins,
+            tickers: tickers,
+            meta: .empty
+        )
+    }
+
+    private func makeCandleSnapshot(exchange: Exchange, symbol: String, closes: [Double]) -> CandleSnapshot {
+        CandleSnapshot(
+            exchange: exchange,
+            symbol: symbol,
+            interval: "1h",
+            candles: closes.enumerated().map { index, close in
+                CandleData(
+                    time: index + 1,
+                    open: close,
+                    high: close + 1,
+                    low: max(close - 1, 0),
+                    close: close,
+                    volume: 1
+                )
+            },
+            meta: .empty
+        )
+    }
+
+    private func makeTemporaryPNGURL(color: UIColor = .systemBlue) throws -> URL {
+        let renderer = UIGraphicsImageRenderer(size: CGSize(width: 24, height: 24))
+        let image = renderer.image { context in
+            color.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 24, height: 24))
+        }
+        guard let pngData = image.pngData() else {
+            throw XCTSkip("Failed to create png data")
+        }
+
+        let fileURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("png")
+        try pngData.write(to: fileURL)
+        return fileURL
     }
 
     @MainActor
@@ -522,6 +636,103 @@ final class ViewModelStateTests: XCTestCase {
     }
 
     @MainActor
+    func testMarketRowsPatchVisibleSymbolImageFromPlaceholderToLive() async throws {
+        let imageURL = try makeTemporaryPNGURL(color: .systemGreen)
+        let assetImageClient = AssetImageClient(namespace: UUID().uuidString)
+        let marketRepository = SpyMarketRepository()
+        marketRepository.marketCatalogSnapshots[.upbit] = makeCatalogSnapshot(
+            exchange: .upbit,
+            entries: [(marketId: "KRW-BTC", symbol: "BTC", imageURL: imageURL.absoluteString)]
+        )
+        marketRepository.tickerSnapshots[.upbit] = makeTickerSnapshot(
+            exchange: .upbit,
+            entries: [
+                (
+                    marketId: "KRW-BTC",
+                    symbol: "BTC",
+                    price: 125_000_000,
+                    imageURL: imageURL.absoluteString,
+                    sparkline: [124_000_000, 124_400_000, 124_900_000]
+                )
+            ]
+        )
+
+        let vm = CryptoViewModel(
+            marketRepository: marketRepository,
+            tradingRepository: SpyTradingRepository(),
+            portfolioRepository: SpyPortfolioRepository(),
+            kimchiPremiumRepository: StubKimchiPremiumRepository(),
+            exchangeConnectionsRepository: SpyExchangeConnectionsRepository(),
+            authService: StubAuthenticationService(),
+            publicWebSocketService: NoOpPublicWebSocketService(),
+            privateWebSocketService: NoOpPrivateWebSocketService(),
+            assetImageClient: assetImageClient
+        )
+
+        vm.onAppear()
+        await waitUntil {
+            vm.displayedMarketRows.first?.symbolImageState == .live
+        }
+
+        XCTAssertEqual(vm.displayedMarketRows.first?.symbolImageState, .live)
+        XCTAssertGreaterThanOrEqual(AssetImageDebugClient.shared.snapshotEventCounts()["request_start"] ?? 0, 1)
+        XCTAssertEqual(AssetImageDebugClient.shared.snapshotEventCounts()["batched_visible_patch"], 1)
+    }
+
+    @MainActor
+    func testMarketRowsUsePreloadedSymbolImageStateOnFirstPaint() async throws {
+        let imageURL = try makeTemporaryPNGURL(color: .systemOrange)
+        let assetImageClient = AssetImageClient(namespace: UUID().uuidString)
+        let marketIdentity = MarketIdentity(exchange: .upbit, marketId: "KRW-BTC", symbol: "BTC")
+        let descriptor = AssetImageRequestDescriptor(
+            marketIdentity: marketIdentity,
+            symbol: "BTC",
+            canonicalSymbol: "BTC",
+            imageURL: imageURL.absoluteString,
+            hasImage: true,
+            localAssetName: nil
+        )
+        _ = await assetImageClient.requestImage(for: descriptor, mode: .prefetch)
+
+        let marketRepository = SpyMarketRepository()
+        marketRepository.marketCatalogSnapshots[.upbit] = makeCatalogSnapshot(
+            exchange: .upbit,
+            entries: [(marketId: "KRW-BTC", symbol: "BTC", imageURL: imageURL.absoluteString)]
+        )
+        marketRepository.tickerSnapshots[.upbit] = makeTickerSnapshot(
+            exchange: .upbit,
+            entries: [
+                (
+                    marketId: "KRW-BTC",
+                    symbol: "BTC",
+                    price: 125_000_000,
+                    imageURL: imageURL.absoluteString,
+                    sparkline: [124_000_000, 124_400_000, 124_900_000]
+                )
+            ]
+        )
+
+        let vm = CryptoViewModel(
+            marketRepository: marketRepository,
+            tradingRepository: SpyTradingRepository(),
+            portfolioRepository: SpyPortfolioRepository(),
+            kimchiPremiumRepository: StubKimchiPremiumRepository(),
+            exchangeConnectionsRepository: SpyExchangeConnectionsRepository(),
+            authService: StubAuthenticationService(),
+            publicWebSocketService: NoOpPublicWebSocketService(),
+            privateWebSocketService: NoOpPrivateWebSocketService(),
+            assetImageClient: assetImageClient
+        )
+
+        vm.onAppear()
+        await waitUntil {
+            vm.displayedMarketRows.first?.symbol == "BTC"
+        }
+
+        XCTAssertEqual(vm.displayedMarketRows.first?.symbolImageState, .live)
+    }
+
+    @MainActor
     func testMarketDisplayModeChangeKeepsImageAndGraphState() async {
         let marketRepository = SpyMarketRepository()
         let vm = CryptoViewModel(
@@ -612,7 +823,7 @@ final class ViewModelStateTests: XCTestCase {
             return XCTFail("Expected BTC market row")
         }
 
-        XCTAssertEqual(btcRow.id, "upbit:BTC")
+        XCTAssertEqual(btcRow.id, MarketIdentity(exchange: .upbit, symbol: "BTC").cacheKey)
         XCTAssertFalse(btcRow.isPricePlaceholder)
         XCTAssertFalse(btcRow.isVolumePlaceholder)
         XCTAssertEqual(btcRow.sparkline.count, 2)
@@ -731,17 +942,23 @@ final class ViewModelStateTests: XCTestCase {
 
         vm.onAppear()
         await waitUntil {
-            vm.displayedMarketRows.contains(where: { $0.id == "upbit:BTC" })
+            vm.displayedMarketRows.contains(where: { $0.id == MarketIdentity(exchange: .upbit, symbol: "BTC").cacheKey })
         }
 
         vm.updateExchange(.coinone, source: "test")
         await waitUntil {
             vm.displayedMarketRows.count == 2
-                && Set(vm.displayedMarketRows.map(\.id)) == Set(["coinone:BTC", "coinone:XRP"])
+                && Set(vm.displayedMarketRows.map(\.id)) == Set([
+                    MarketIdentity(exchange: .coinone, symbol: "BTC").cacheKey,
+                    MarketIdentity(exchange: .coinone, symbol: "XRP").cacheKey
+                ])
         }
 
         XCTAssertEqual(vm.displayedMarketRows.count, 2)
-        XCTAssertEqual(Set(vm.displayedMarketRows.map(\.id)), Set(["coinone:BTC", "coinone:XRP"]))
+        XCTAssertEqual(Set(vm.displayedMarketRows.map(\.id)), Set([
+            MarketIdentity(exchange: .coinone, symbol: "BTC").cacheKey,
+            MarketIdentity(exchange: .coinone, symbol: "XRP").cacheKey
+        ]))
     }
 
     @MainActor
@@ -969,7 +1186,10 @@ final class ViewModelStateTests: XCTestCase {
 
         vm.onAppear()
         await waitUntil {
-            Set(vm.displayedMarketRows.map(\.id)) == Set(["upbit:BTC", "upbit:ETH"])
+            Set(vm.displayedMarketRows.map(\.id)) == Set([
+                MarketIdentity(exchange: .upbit, symbol: "BTC").cacheKey,
+                MarketIdentity(exchange: .upbit, symbol: "ETH").cacheKey
+            ])
         }
 
         vm.updateExchange(.coinone, source: "test")
@@ -977,7 +1197,10 @@ final class ViewModelStateTests: XCTestCase {
         await Task.yield()
 
         XCTAssertEqual(vm.selectedExchange, .coinone)
-        XCTAssertEqual(Set(vm.displayedMarketRows.map(\.id)), Set(["coinone:BTC", "coinone:XRP"]))
+        XCTAssertEqual(Set(vm.displayedMarketRows.map(\.id)), Set([
+            MarketIdentity(exchange: .coinone, symbol: "BTC").cacheKey,
+            MarketIdentity(exchange: .coinone, symbol: "XRP").cacheKey
+        ]))
         XCTAssertTrue(vm.displayedMarketRows.allSatisfy(\.isPricePlaceholder))
         XCTAssertEqual(vm.marketPresentationState.selectedExchange, .coinone)
         XCTAssertEqual(vm.marketPresentationState.transitionState.phase, .partial)
@@ -988,7 +1211,10 @@ final class ViewModelStateTests: XCTestCase {
         XCTAssertNil(vm.marketTransitionMessage)
 
         await waitUntil {
-            Set(vm.displayedMarketRows.map(\.id)) == Set(["coinone:BTC", "coinone:XRP"])
+            Set(vm.displayedMarketRows.map(\.id)) == Set([
+                MarketIdentity(exchange: .coinone, symbol: "BTC").cacheKey,
+                MarketIdentity(exchange: .coinone, symbol: "XRP").cacheKey
+            ])
                 && vm.displayedMarketRows.allSatisfy { $0.isPricePlaceholder == false }
         }
 
@@ -1079,7 +1305,194 @@ final class ViewModelStateTests: XCTestCase {
         XCTAssertTrue(refreshingRow.graphState.keepsVisibleGraph)
         XCTAssertNotEqual(refreshingRow.chartPresentation, .placeholder)
         XCTAssertGreaterThanOrEqual(refreshingRow.sparkline.count, 4)
-        XCTAssertEqual(refreshingRow.id, "upbit:BTC")
+        XCTAssertEqual(refreshingRow.id, MarketIdentity(exchange: .upbit, symbol: "BTC").cacheKey)
+    }
+
+    @MainActor
+    func testFirstPaintCoarseGraphRefinesWithoutScrollRebind() async {
+        let candleSnapshot = CandleSnapshot(
+            exchange: .upbit,
+            symbol: "BTC",
+            interval: "1h",
+            candles: [
+                CandleData(time: 1, open: 1, high: 2, low: 1, close: 1, volume: 1),
+                CandleData(time: 2, open: 2, high: 3, low: 2, close: 2, volume: 1),
+                CandleData(time: 3, open: 1.5, high: 2.5, low: 1.4, close: 1.5, volume: 1),
+                CandleData(time: 4, open: 2.4, high: 3.0, low: 2.0, close: 2.4, volume: 1),
+                CandleData(time: 5, open: 2.1, high: 2.7, low: 1.9, close: 2.1, volume: 1),
+                CandleData(time: 6, open: 3, high: 3.2, low: 2.8, close: 3, volume: 1)
+            ],
+            meta: .empty
+        )
+        let repository = DelayedMarketRepository(
+            marketCatalogSnapshots: [
+                .upbit: MarketCatalogSnapshot(
+                    exchange: .upbit,
+                    markets: [CoinCatalog.coin(symbol: "BTC")],
+                    supportedIntervalsBySymbol: ["BTC": ["1h"]],
+                    meta: .empty
+                )
+            ],
+            tickerSnapshots: [
+                .upbit: MarketTickerSnapshot(
+                    exchange: .upbit,
+                    tickers: [
+                        "BTC": TickerData(
+                            price: 2,
+                            change: 1,
+                            volume: 100,
+                            high24: 3,
+                            low24: 1,
+                            sparkline: [1, 2],
+                            hasServerSparkline: true
+                        )
+                    ],
+                    meta: .empty
+                )
+            ],
+            candleSnapshotsByKey: [
+                "upbit:BTC:1h": candleSnapshot
+            ],
+            candleDelaysByExchange: [.upbit: 180_000_000]
+        )
+        let vm = CryptoViewModel(
+            marketRepository: repository,
+            tradingRepository: SpyTradingRepository(),
+            portfolioRepository: SpyPortfolioRepository(),
+            kimchiPremiumRepository: StubKimchiPremiumRepository(),
+            exchangeConnectionsRepository: SpyExchangeConnectionsRepository(),
+            authService: StubAuthenticationService(),
+            publicWebSocketService: RecordingPublicWebSocketService(),
+            privateWebSocketService: NoOpPrivateWebSocketService()
+        )
+
+        vm.onAppear()
+        await waitUntil(timeoutNanoseconds: 1_000_000_000) {
+            guard let row = vm.displayedMarketRows.first(where: { $0.symbol == "BTC" }) else {
+                return false
+            }
+            return row.sparkline.count >= 2
+        }
+
+        guard let initialRow = vm.displayedMarketRows.first(where: { $0.symbol == "BTC" }) else {
+            return XCTFail("Expected initial BTC market row")
+        }
+        XCTAssertTrue(
+            initialRow.sparklinePayload.detailLevel == .retainedCoarse ||
+                initialRow.sparklinePayload.detailLevel == .liveDetailed
+        )
+
+        if initialRow.sparklinePayload.detailLevel == .retainedCoarse {
+            await waitUntil(timeoutNanoseconds: 2_000_000_000) {
+                vm.displayedMarketRows.first(where: { $0.symbol == "BTC" })?.sparkline.count == 6
+            }
+
+            guard let refinedRow = vm.displayedMarketRows.first(where: { $0.symbol == "BTC" }) else {
+                return XCTFail("Expected refined BTC market row")
+            }
+            XCTAssertEqual(refinedRow.sparklinePayload.detailLevel, .liveDetailed)
+            XCTAssertGreaterThan(refinedRow.graphRenderVersion, initialRow.graphRenderVersion)
+            XCTAssertGreaterThan(refinedRow.graphPathVersion, initialRow.graphPathVersion)
+        } else {
+            XCTAssertEqual(initialRow.sparklinePayload.detailLevel, .liveDetailed)
+            XCTAssertEqual(initialRow.sparkline.count, 6)
+        }
+        XCTAssertEqual(repository.fetchedCandles.first?.symbol, "BTC")
+    }
+
+    @MainActor
+    func testRefinedSparklineDoesNotRevertToCoarseStreamPatch() async {
+        let publicWebSocketService = ManualPublicWebSocketService()
+        let candleSnapshot = CandleSnapshot(
+            exchange: .upbit,
+            symbol: "BTC",
+            interval: "1h",
+            candles: [
+                CandleData(time: 1, open: 1, high: 2, low: 1, close: 1, volume: 1),
+                CandleData(time: 2, open: 2, high: 3, low: 2, close: 2, volume: 1),
+                CandleData(time: 3, open: 1.5, high: 2.5, low: 1.4, close: 1.5, volume: 1),
+                CandleData(time: 4, open: 2.4, high: 3.0, low: 2.0, close: 2.4, volume: 1),
+                CandleData(time: 5, open: 2.1, high: 2.7, low: 1.9, close: 2.1, volume: 1),
+                CandleData(time: 6, open: 3, high: 3.2, low: 2.8, close: 3, volume: 1)
+            ],
+            meta: .empty
+        )
+        let repository = DelayedMarketRepository(
+            marketCatalogSnapshots: [
+                .upbit: MarketCatalogSnapshot(
+                    exchange: .upbit,
+                    markets: [CoinCatalog.coin(symbol: "BTC")],
+                    supportedIntervalsBySymbol: ["BTC": ["1h"]],
+                    meta: .empty
+                )
+            ],
+            tickerSnapshots: [
+                .upbit: MarketTickerSnapshot(
+                    exchange: .upbit,
+                    tickers: [
+                        "BTC": TickerData(
+                            price: 2,
+                            change: 1,
+                            volume: 100,
+                            high24: 3,
+                            low24: 1,
+                            sparkline: [1, 2],
+                            hasServerSparkline: true
+                        )
+                    ],
+                    meta: .empty
+                )
+            ],
+            candleSnapshotsByKey: [
+                "upbit:BTC:1h": candleSnapshot
+            ]
+        )
+        let vm = CryptoViewModel(
+            marketRepository: repository,
+            tradingRepository: SpyTradingRepository(),
+            portfolioRepository: SpyPortfolioRepository(),
+            kimchiPremiumRepository: StubKimchiPremiumRepository(),
+            exchangeConnectionsRepository: SpyExchangeConnectionsRepository(),
+            authService: StubAuthenticationService(),
+            publicWebSocketService: publicWebSocketService,
+            privateWebSocketService: NoOpPrivateWebSocketService()
+        )
+
+        vm.onAppear()
+        await waitUntil(timeoutNanoseconds: 2_000_000_000) {
+            vm.displayedMarketRows.first(where: { $0.symbol == "BTC" })?.sparklinePayload.detailLevel == .liveDetailed
+        }
+
+        guard let refinedRow = vm.displayedMarketRows.first(where: { $0.symbol == "BTC" }) else {
+            return XCTFail("Expected refined BTC market row")
+        }
+        publicWebSocketService.emitTicker(
+            TickerStreamPayload(
+                symbol: "BTC",
+                exchange: Exchange.upbit.rawValue,
+                ticker: TickerData(
+                    price: 3.1,
+                    change: 1.1,
+                    volume: 120,
+                    high24: 3.2,
+                    low24: 1,
+                    sparkline: [],
+                    hasServerSparkline: false,
+                    timestamp: Date(),
+                    delivery: .live
+                )
+            )
+        )
+        await waitUntil(timeoutNanoseconds: 1_000_000_000) {
+            vm.displayedMarketRows.first(where: { $0.symbol == "BTC" })?.sparkline.last == 3.1
+        }
+
+        guard let livePatchedRow = vm.displayedMarketRows.first(where: { $0.symbol == "BTC" }) else {
+            return XCTFail("Expected live patched BTC row")
+        }
+        XCTAssertEqual(livePatchedRow.sparklinePayload.detailLevel, .liveDetailed)
+        XCTAssertGreaterThanOrEqual(livePatchedRow.sparkline.count, refinedRow.sparkline.count)
+        XCTAssertNotEqual(livePatchedRow.sparklinePayload.detailLevel, .liveCoarse)
     }
 
     @MainActor
@@ -1137,6 +1550,291 @@ final class ViewModelStateTests: XCTestCase {
 
         let firstRequestedSymbols = repository.fetchedCandles.prefix(12).map(\.symbol)
         XCTAssertTrue(firstRequestedSymbols.contains("C18"))
+    }
+
+    @MainActor
+    func testDuplicateShortSymbolsAcrossExchangesKeepDistinctMarketIdentityState() async {
+        let symbols = ["T", "G", "A", "W", "IN", "IP", "BTC", "ETH"]
+        let upbitEntries = symbols.map { symbol in
+            (marketId: "upbit-\(symbol)", symbol: symbol, imageURL: "https://assets.example.com/upbit/\(symbol.lowercased()).png")
+        }
+        let bithumbEntries = symbols.map { symbol in
+            (marketId: "bithumb-\(symbol)", symbol: symbol, imageURL: "https://assets.example.com/bithumb/\(symbol.lowercased()).png")
+        }
+        let korbitEntries = symbols.map { symbol in
+            (marketId: "korbit-\(symbol)", symbol: symbol, imageURL: "https://assets.example.com/korbit/\(symbol.lowercased()).png")
+        }
+
+        let repository = DelayedMarketRepository(
+            marketCatalogSnapshots: [
+                .upbit: makeCatalogSnapshot(exchange: .upbit, entries: upbitEntries),
+                .bithumb: makeCatalogSnapshot(exchange: .bithumb, entries: bithumbEntries),
+                .korbit: makeCatalogSnapshot(exchange: .korbit, entries: korbitEntries)
+            ],
+            tickerSnapshots: [
+                .upbit: makeTickerSnapshot(
+                    exchange: .upbit,
+                    entries: upbitEntries.enumerated().map { index, entry in
+                        (
+                            marketId: entry.marketId,
+                            symbol: entry.symbol,
+                            price: Double(100 + index),
+                            imageURL: entry.imageURL,
+                            sparkline: [Double(99 + index), Double(100 + index)]
+                        )
+                    }
+                ),
+                .bithumb: makeTickerSnapshot(
+                    exchange: .bithumb,
+                    entries: bithumbEntries.enumerated().map { index, entry in
+                        (
+                            marketId: entry.marketId,
+                            symbol: entry.symbol,
+                            price: Double(200 + index),
+                            imageURL: entry.imageURL,
+                            sparkline: [Double(199 + index), Double(200 + index)]
+                        )
+                    }
+                ),
+                .korbit: makeTickerSnapshot(
+                    exchange: .korbit,
+                    entries: korbitEntries.enumerated().map { index, entry in
+                        (
+                            marketId: entry.marketId,
+                            symbol: entry.symbol,
+                            price: Double(300 + index),
+                            imageURL: entry.imageURL,
+                            sparkline: [Double(299 + index), Double(300 + index)]
+                        )
+                    }
+                )
+            ]
+        )
+        let vm = CryptoViewModel(
+            marketRepository: repository,
+            tradingRepository: SpyTradingRepository(),
+            portfolioRepository: SpyPortfolioRepository(),
+            kimchiPremiumRepository: StubKimchiPremiumRepository(),
+            exchangeConnectionsRepository: SpyExchangeConnectionsRepository(),
+            authService: StubAuthenticationService(),
+            publicWebSocketService: RecordingPublicWebSocketService(),
+            privateWebSocketService: NoOpPrivateWebSocketService()
+        )
+
+        let upbitTIdentity = MarketIdentity(exchange: .upbit, marketId: "upbit-T", symbol: "T")
+        let bithumbTIdentity = MarketIdentity(exchange: .bithumb, marketId: "bithumb-T", symbol: "T")
+        let korbitTIdentity = MarketIdentity(exchange: .korbit, marketId: "korbit-T", symbol: "T")
+
+        vm.onAppear()
+        await waitUntil(timeoutNanoseconds: 2_000_000_000) {
+            Set(vm.displayedMarketRows.map(\.id))
+                == Set(upbitEntries.map { MarketIdentity(exchange: .upbit, marketId: $0.marketId, symbol: $0.symbol).cacheKey })
+        }
+
+        XCTAssertEqual(Set(vm.displayedMarketRows.map(\.symbol)), Set(symbols))
+        XCTAssertEqual(vm.displayedMarketRows.first(where: { $0.marketIdentity == upbitTIdentity })?.imageURL, "https://assets.example.com/upbit/t.png")
+
+        vm.updateExchange(.bithumb, source: "duplicate_symbol_switch")
+        await waitUntil(timeoutNanoseconds: 2_000_000_000) {
+            Set(vm.displayedMarketRows.map(\.id))
+                == Set(bithumbEntries.map { MarketIdentity(exchange: .bithumb, marketId: $0.marketId, symbol: $0.symbol).cacheKey })
+        }
+
+        XCTAssertEqual(vm.displayedMarketRows.first(where: { $0.marketIdentity == bithumbTIdentity })?.imageURL, "https://assets.example.com/bithumb/t.png")
+
+        vm.updateExchange(.korbit, source: "duplicate_symbol_switch")
+        await waitUntil(timeoutNanoseconds: 2_000_000_000) {
+            Set(vm.displayedMarketRows.map(\.id))
+                == Set(korbitEntries.map { MarketIdentity(exchange: .korbit, marketId: $0.marketId, symbol: $0.symbol).cacheKey })
+        }
+
+        XCTAssertEqual(vm.displayedMarketRows.first(where: { $0.marketIdentity == korbitTIdentity })?.imageURL, "https://assets.example.com/korbit/t.png")
+        XCTAssertEqual(
+            Set(vm.pricesByMarketIdentity.keys.filter { $0.symbol == "T" }),
+            Set([upbitTIdentity, bithumbTIdentity, korbitTIdentity])
+        )
+
+        vm.updateExchange(.upbit, source: "duplicate_symbol_return")
+        await waitUntil(timeoutNanoseconds: 2_000_000_000) {
+            vm.displayedMarketRows.first(where: { $0.marketIdentity == upbitTIdentity })?.imageURL == "https://assets.example.com/upbit/t.png"
+        }
+
+        XCTAssertEqual(vm.displayedMarketRows.first(where: { $0.marketIdentity == upbitTIdentity })?.imageURL, "https://assets.example.com/upbit/t.png")
+    }
+
+    func testPublicMarketSubscriptionSetKeepsDuplicateSymbolsDistinctAcrossExchangesAndMarketIDs() {
+        let identities = [
+            MarketIdentity(exchange: .upbit, marketId: "upbit-T", symbol: "T"),
+            MarketIdentity(exchange: .bithumb, marketId: "bithumb-T", symbol: "T"),
+            MarketIdentity(exchange: .korbit, marketId: "korbit-T", symbol: "T")
+        ]
+        let subscriptions: Set<PublicMarketSubscription> = [
+            PublicMarketSubscription(channel: .ticker, marketIdentity: identities[0]),
+            PublicMarketSubscription(channel: .ticker, marketIdentity: identities[1]),
+            PublicMarketSubscription(channel: .ticker, marketIdentity: identities[2]),
+            PublicMarketSubscription(channel: .ticker, marketIdentity: identities[0])
+        ]
+
+        XCTAssertEqual(subscriptions.count, 3)
+        XCTAssertEqual(Set(subscriptions.compactMap(\.marketIdentity)), Set(identities))
+    }
+
+    @MainActor
+    func testDuplicateSymbolSparklineHydrationAndTickerPatchesStayScopedByMarketIdentity() async {
+        let upbitEntry = (marketId: "upbit-T", symbol: "T", imageURL: "https://assets.example.com/upbit/t.png")
+        let bithumbEntry = (marketId: "bithumb-T", symbol: "T", imageURL: "https://assets.example.com/bithumb/t.png")
+        let upbitIdentity = MarketIdentity(exchange: .upbit, marketId: upbitEntry.marketId, symbol: upbitEntry.symbol)
+        let bithumbIdentity = MarketIdentity(exchange: .bithumb, marketId: bithumbEntry.marketId, symbol: bithumbEntry.symbol)
+        let repository = DelayedMarketRepository(
+            marketCatalogSnapshots: [
+                .upbit: makeCatalogSnapshot(exchange: .upbit, entries: [upbitEntry]),
+                .bithumb: makeCatalogSnapshot(exchange: .bithumb, entries: [bithumbEntry])
+            ],
+            tickerSnapshots: [
+                .upbit: makeTickerSnapshot(
+                    exchange: .upbit,
+                    entries: [(marketId: upbitEntry.marketId, symbol: upbitEntry.symbol, price: 101, imageURL: upbitEntry.imageURL, sparkline: [100, 101])]
+                ),
+                .bithumb: makeTickerSnapshot(
+                    exchange: .bithumb,
+                    entries: [(marketId: bithumbEntry.marketId, symbol: bithumbEntry.symbol, price: 201, imageURL: bithumbEntry.imageURL, sparkline: [200, 201])]
+                )
+            ],
+            candleSnapshotsByKey: [
+                "upbit:T:1h": makeCandleSnapshot(exchange: .upbit, symbol: "T", closes: [98, 99, 100, 101]),
+                "bithumb:T:1h": makeCandleSnapshot(exchange: .bithumb, symbol: "T", closes: [198, 199, 200, 201])
+            ]
+        )
+        let publicWebSocketService = ManualPublicWebSocketService()
+        let vm = CryptoViewModel(
+            marketRepository: repository,
+            tradingRepository: SpyTradingRepository(),
+            portfolioRepository: SpyPortfolioRepository(),
+            kimchiPremiumRepository: StubKimchiPremiumRepository(),
+            exchangeConnectionsRepository: SpyExchangeConnectionsRepository(),
+            authService: StubAuthenticationService(),
+            publicWebSocketService: publicWebSocketService,
+            privateWebSocketService: NoOpPrivateWebSocketService()
+        )
+
+        vm.onAppear()
+        await waitUntil(timeoutNanoseconds: 2_000_000_000) {
+            vm.pricesByMarketIdentity[upbitIdentity]?.price == 101
+        }
+
+        vm.markMarketRowVisible(marketIdentity: upbitIdentity)
+        await waitUntil(timeoutNanoseconds: 2_000_000_000) {
+            repository.fetchedCandles.contains(where: { $0.symbol == "T" && $0.exchange == .upbit })
+        }
+
+        vm.updateExchange(.bithumb, source: "duplicate_symbol_hydration")
+        await waitUntil(timeoutNanoseconds: 2_000_000_000) {
+            vm.displayedMarketRows.first?.marketIdentity == bithumbIdentity
+                && vm.prices["T"]?[Exchange.bithumb.rawValue]?.price == 201
+        }
+
+        vm.markMarketRowVisible(marketIdentity: bithumbIdentity)
+        await waitUntil(timeoutNanoseconds: 2_000_000_000) {
+            repository.fetchedCandles.contains(where: { $0.symbol == "T" && $0.exchange == .bithumb })
+        }
+
+        publicWebSocketService.emitTicker(
+            TickerStreamPayload(
+                symbol: "T",
+                exchange: Exchange.upbit.rawValue,
+                ticker: TickerData(
+                    price: 999,
+                    change: 1.0,
+                    volume: 10_000,
+                    high24: 1_000,
+                    low24: 900,
+                    sparkline: [100, 999],
+                    sparklinePointCount: 2,
+                    hasServerSparkline: true,
+                    delivery: .live
+                )
+            )
+        )
+        await waitUntil(timeoutNanoseconds: 2_000_000_000) {
+            vm.pricesByMarketIdentity[upbitIdentity]?.price == 999
+        }
+
+        XCTAssertEqual(vm.prices["T"]?[Exchange.bithumb.rawValue]?.price, 201)
+        XCTAssertEqual(vm.displayedMarketRows.first(where: { $0.marketIdentity == bithumbIdentity })?.marketIdentity, bithumbIdentity)
+
+        publicWebSocketService.emitTicker(
+            TickerStreamPayload(
+                symbol: "T",
+                exchange: Exchange.bithumb.rawValue,
+                ticker: TickerData(
+                    price: 333,
+                    change: 1.0,
+                    volume: 10_000,
+                    high24: 350,
+                    low24: 200,
+                    sparkline: [201, 333],
+                    sparklinePointCount: 2,
+                    hasServerSparkline: true,
+                    delivery: .live
+                )
+            )
+        )
+        await waitUntil(timeoutNanoseconds: 2_000_000_000) {
+            vm.prices["T"]?[Exchange.bithumb.rawValue]?.price == 333
+                && vm.displayedMarketRows.first(where: { $0.marketIdentity == bithumbIdentity })?.sparkline.last == 333
+        }
+
+        XCTAssertEqual(
+            Set(repository.fetchedCandles.filter { $0.symbol == "T" }.map(\.exchange)),
+            Set([.upbit, .bithumb])
+        )
+    }
+
+    @MainActor
+    func testLargeMarketUniverseBuildsDistinctIdentityMapsWithoutDictionaryCollisions() async {
+        let symbols = ["T", "G", "A", "W", "IN", "IP", "BTC", "ETH"] + (1...212).map { "C\($0)" }
+        let entries = symbols.enumerated().map { index, symbol in
+            (
+                marketId: "upbit-\(symbol)",
+                symbol: symbol,
+                imageURL: "https://assets.example.com/upbit/\(index).png"
+            )
+        }
+        let repository = SpyMarketRepository()
+        repository.marketCatalogSnapshots[.upbit] = makeCatalogSnapshot(exchange: .upbit, entries: entries)
+        repository.tickerSnapshots[.upbit] = makeTickerSnapshot(
+            exchange: .upbit,
+            entries: entries.enumerated().map { index, entry in
+                (
+                    marketId: entry.marketId,
+                    symbol: entry.symbol,
+                    price: Double(1_000 + index),
+                    imageURL: entry.imageURL,
+                    sparkline: [Double(999 + index), Double(1_000 + index)]
+                )
+            }
+        )
+
+        let vm = CryptoViewModel(
+            marketRepository: repository,
+            tradingRepository: SpyTradingRepository(),
+            portfolioRepository: SpyPortfolioRepository(),
+            kimchiPremiumRepository: StubKimchiPremiumRepository(),
+            exchangeConnectionsRepository: SpyExchangeConnectionsRepository(),
+            authService: StubAuthenticationService(),
+            publicWebSocketService: RecordingPublicWebSocketService(),
+            privateWebSocketService: NoOpPrivateWebSocketService()
+        )
+
+        vm.onAppear()
+        await waitUntil(timeoutNanoseconds: 3_000_000_000) {
+            vm.displayedMarketRows.count == symbols.count
+                && vm.pricesByMarketIdentity.keys.filter { $0.exchange == .upbit }.count == symbols.count
+        }
+
+        XCTAssertEqual(vm.displayedMarketRows.count, symbols.count)
+        XCTAssertEqual(Set(vm.displayedMarketRows.map(\.id)).count, symbols.count)
+        XCTAssertEqual(Set(vm.pricesByMarketIdentity.keys.filter { $0.exchange == .upbit }).count, symbols.count)
     }
 
     @MainActor
@@ -1534,7 +2232,10 @@ final class ViewModelStateTests: XCTestCase {
         vm.updateExchange(.coinone, source: "cache_switch")
         await Task.yield()
 
-        XCTAssertEqual(Set(vm.displayedMarketRows.map(\.id)), Set(["coinone:BTC", "coinone:XRP"]))
+        XCTAssertEqual(Set(vm.displayedMarketRows.map(\.id)), Set([
+            MarketIdentity(exchange: .coinone, symbol: "BTC").cacheKey,
+            MarketIdentity(exchange: .coinone, symbol: "XRP").cacheKey
+        ]))
         XCTAssertNil(vm.marketTransitionMessage)
         XCTAssertEqual(vm.marketLoadState.phase, .showingCache)
     }
@@ -2248,5 +2949,209 @@ final class ViewModelStateTests: XCTestCase {
         }
         XCTAssertEqual(settledRows.first?.status, .unavailable)
         XCTAssertEqual(settledRows.first?.cells.first?.status, .unavailable)
+    }
+
+    @MainActor
+    func testChartCandleFailureKeepsLastSuccessfulCandles() async {
+        let firstBucket = Int(Date().timeIntervalSince1970) / 3600 * 3600 - 3600
+        let successfulSnapshot = CandleSnapshot(
+            exchange: .korbit,
+            symbol: "BTC",
+            interval: "1h",
+            candles: [
+                CandleData(time: firstBucket, open: 100, high: 120, low: 90, close: 110, volume: 10),
+                CandleData(time: firstBucket + 3600, open: 110, high: 130, low: 100, close: 125, volume: 12)
+            ],
+            meta: .empty
+        )
+        let repository = SequencedCandleMarketRepository(
+            marketCatalogSnapshot: MarketCatalogSnapshot(
+                exchange: .korbit,
+                markets: [CoinCatalog.coin(symbol: "BTC", exchange: .korbit)],
+                supportedIntervalsBySymbol: ["BTC": ["1h"]],
+                meta: .empty
+            ),
+            tickerSnapshot: MarketTickerSnapshot(
+                exchange: .korbit,
+                tickers: [
+                    "BTC": TickerData(
+                        price: 125,
+                        change: 1.2,
+                        volume: 1000,
+                        high24: 130,
+                        low24: 90
+                    )
+                ],
+                meta: .empty
+            ),
+            candleResultsBySymbol: [
+                "BTC": [
+                    .success(successfulSnapshot),
+                    .failure(NetworkServiceError.httpError(503, "korbit candles are temporarily unavailable", .maintenance))
+                ]
+            ]
+        )
+
+        let vm = CryptoViewModel(
+            marketRepository: repository,
+            tradingRepository: SpyTradingRepository(),
+            portfolioRepository: SpyPortfolioRepository(),
+            kimchiPremiumRepository: StubKimchiPremiumRepository(),
+            exchangeConnectionsRepository: SpyExchangeConnectionsRepository(),
+            authService: StubAuthenticationService(),
+            publicWebSocketService: NoOpPublicWebSocketService(),
+            privateWebSocketService: NoOpPrivateWebSocketService()
+        )
+
+        vm.updateExchange(.korbit, source: "test")
+        vm.selectedCoin = CoinCatalog.coin(symbol: "BTC", exchange: .korbit)
+        vm.chartPeriod = "1h"
+
+        await vm.loadChartData(forceRefresh: true, reason: "first_success")
+        XCTAssertEqual(vm.candles.count, 2)
+
+        await vm.loadChartData(forceRefresh: true, reason: "second_failure")
+
+        XCTAssertEqual(vm.candles.count, 2)
+        XCTAssertEqual(vm.candlesState.warningMessage, "최신 차트 데이터를 불러오지 못했어요. 마지막 데이터를 표시 중입니다.")
+        guard case .staleCache = vm.candlesState else {
+            return XCTFail("Expected stale candle cache after Korbit candle failure")
+        }
+    }
+
+    @MainActor
+    func testChartOrderbookFailureKeepsLastSuccessfulOrderbook() async {
+        let firstBucket = Int(Date().timeIntervalSince1970) / 3600 * 3600 - 3600
+        let candleSnapshot = CandleSnapshot(
+            exchange: .korbit,
+            symbol: "BTC",
+            interval: "1h",
+            candles: [
+                CandleData(time: firstBucket, open: 100, high: 120, low: 90, close: 110, volume: 10)
+            ],
+            meta: .empty
+        )
+        let orderbook = OrderbookData(
+            asks: [OrderbookEntry(price: 126, qty: 1.5)],
+            bids: [OrderbookEntry(price: 125, qty: 2.0)]
+        )
+        let repository = SequencedCandleMarketRepository(
+            marketCatalogSnapshot: MarketCatalogSnapshot(
+                exchange: .korbit,
+                markets: [CoinCatalog.coin(symbol: "BTC", exchange: .korbit)],
+                supportedIntervalsBySymbol: ["BTC": ["1h"]],
+                meta: .empty
+            ),
+            tickerSnapshot: MarketTickerSnapshot(
+                exchange: .korbit,
+                tickers: [
+                    "BTC": TickerData(price: 125, change: 1.2, volume: 1000, high24: 130, low24: 90)
+                ],
+                meta: .empty
+            ),
+            candleResultsBySymbol: [
+                "BTC": [
+                    .success(candleSnapshot),
+                    .success(candleSnapshot)
+                ]
+            ],
+            orderbookResultsBySymbol: [
+                "BTC": [
+                    .success(OrderbookSnapshot(exchange: .korbit, symbol: "BTC", orderbook: orderbook, meta: .empty)),
+                    .failure(NetworkServiceError.httpError(503, "korbit orderbook is temporarily unavailable", .maintenance))
+                ]
+            ]
+        )
+
+        let vm = CryptoViewModel(
+            marketRepository: repository,
+            tradingRepository: SpyTradingRepository(),
+            portfolioRepository: SpyPortfolioRepository(),
+            kimchiPremiumRepository: StubKimchiPremiumRepository(),
+            exchangeConnectionsRepository: SpyExchangeConnectionsRepository(),
+            authService: StubAuthenticationService(),
+            publicWebSocketService: NoOpPublicWebSocketService(),
+            privateWebSocketService: NoOpPrivateWebSocketService()
+        )
+
+        vm.updateExchange(.korbit, source: "test")
+        vm.selectedCoin = CoinCatalog.coin(symbol: "BTC", exchange: .korbit)
+        vm.chartPeriod = "1h"
+
+        await vm.loadChartData(forceRefresh: true, reason: "first_success")
+        XCTAssertEqual(vm.orderbookState.value?.bids.first?.price, 125)
+
+        await vm.loadChartData(forceRefresh: true, reason: "second_failure")
+
+        XCTAssertEqual(vm.orderbookState.value?.bids.first?.price, 125)
+        XCTAssertEqual(vm.orderbookState.warningMessage, "최신 호가 데이터를 불러오지 못했어요. 마지막 데이터를 표시 중입니다.")
+        guard case .staleCache = vm.orderbookState else {
+            return XCTFail("Expected stale orderbook cache after Korbit orderbook failure")
+        }
+        guard case .loaded = vm.candleChartState else {
+            return XCTFail("Expected candle section to remain independently loaded")
+        }
+    }
+
+    @MainActor
+    func testChartTradesEmptyUsesIndependentEmptyState() async {
+        let firstBucket = Int(Date().timeIntervalSince1970) / 3600 * 3600 - 3600
+        let candleSnapshot = CandleSnapshot(
+            exchange: .korbit,
+            symbol: "BTC",
+            interval: "1h",
+            candles: [
+                CandleData(time: firstBucket, open: 100, high: 120, low: 90, close: 110, volume: 10)
+            ],
+            meta: .empty
+        )
+        let repository = SequencedCandleMarketRepository(
+            marketCatalogSnapshot: MarketCatalogSnapshot(
+                exchange: .korbit,
+                markets: [CoinCatalog.coin(symbol: "BTC", exchange: .korbit)],
+                supportedIntervalsBySymbol: ["BTC": ["1h"]],
+                meta: .empty
+            ),
+            tickerSnapshot: MarketTickerSnapshot(
+                exchange: .korbit,
+                tickers: [
+                    "BTC": TickerData(price: 125, change: 1.2, volume: 1000, high24: 130, low24: 90)
+                ],
+                meta: .empty
+            ),
+            candleResultsBySymbol: [
+                "BTC": [.success(candleSnapshot)]
+            ],
+            tradeResultsBySymbol: [
+                "BTC": [
+                    .success(PublicTradesSnapshot(exchange: .korbit, symbol: "BTC", trades: [], meta: .empty))
+                ]
+            ]
+        )
+
+        let vm = CryptoViewModel(
+            marketRepository: repository,
+            tradingRepository: SpyTradingRepository(),
+            portfolioRepository: SpyPortfolioRepository(),
+            kimchiPremiumRepository: StubKimchiPremiumRepository(),
+            exchangeConnectionsRepository: SpyExchangeConnectionsRepository(),
+            authService: StubAuthenticationService(),
+            publicWebSocketService: NoOpPublicWebSocketService(),
+            privateWebSocketService: NoOpPrivateWebSocketService()
+        )
+
+        vm.updateExchange(.korbit, source: "test")
+        vm.selectedCoin = CoinCatalog.coin(symbol: "BTC", exchange: .korbit)
+        vm.chartPeriod = "1h"
+
+        await vm.loadChartData(forceRefresh: true, reason: "trades_empty")
+
+        XCTAssertTrue(vm.recentTrades.isEmpty)
+        guard case .empty = vm.recentTradesState else {
+            return XCTFail("Expected independent empty state for trades")
+        }
+        guard case .loaded = vm.candleChartState else {
+            return XCTFail("Expected candle section to remain loaded when trades are empty")
+        }
     }
 }

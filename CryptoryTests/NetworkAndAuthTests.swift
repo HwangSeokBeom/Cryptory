@@ -14,6 +14,8 @@ final class NetworkAndAuthTests: XCTestCase {
     func testLiveConfigurationUsesResponsibilityBasedPaths() {
         let configuration = APIConfiguration.live
 
+        XCTAssertEqual(configuration.loginPath, "/api/v1/auth/login")
+        XCTAssertEqual(configuration.registerPath, "/api/v1/auth/register")
         XCTAssertEqual(configuration.marketMarketsPath, "/market/markets")
         XCTAssertEqual(configuration.marketTickersPath, "/market/tickers")
         XCTAssertEqual(configuration.marketOrderbookPath, "/market/orderbook")
@@ -53,6 +55,70 @@ final class NetworkAndAuthTests: XCTestCase {
 
         XCTAssertEqual(configuration.restBaseURL.absoluteString, "http://192.168.0.24:3002")
         XCTAssertEqual(configuration.publicMarketWebSocketURL.absoluteString, "ws://192.168.0.24:3002/ws/market")
+    }
+
+    func testSignUpUsesServerAuthRegisterPathAndParsesNestedUserResponse() async throws {
+        URLProtocolSpy.reset()
+        URLProtocolSpy.responseData = Data(
+            """
+            {
+              "success": true,
+              "data": {
+                "user": {
+                  "id": "user-1",
+                  "email": "new@example.com",
+                  "nickname": "newbie",
+                  "authProvider": "email"
+                },
+                "token": "access-token"
+              }
+            }
+            """.utf8
+        )
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [URLProtocolSpy.self]
+        let session = URLSession(configuration: configuration)
+        let client = APIClient(
+            configuration: APIConfiguration(
+                baseURL: "https://example.com",
+                loginPath: "/api/v1/auth/login",
+                marketMarketsPath: "/market/markets",
+                marketTickersPath: "/market/tickers",
+                marketOrderbookPath: "/market/orderbook",
+                marketTradesPath: "/market/trades",
+                marketCandlesPath: "/market/candles",
+                tradingChancePath: "/trading/chance",
+                tradingOrdersPath: "/trading/orders",
+                tradingOpenOrdersPath: "/trading/open-orders",
+                tradingFillsPath: "/trading/fills",
+                portfolioSummaryPath: "/portfolio/summary",
+                portfolioHistoryPath: "/portfolio/history",
+                kimchiPremiumPath: "/kimchi-premium",
+                exchangeConnectionsPath: "/exchange-connections",
+                exchangeConnectionsCreateEnabled: true,
+                exchangeConnectionsUpdateEnabled: true,
+                exchangeConnectionsDeleteEnabled: true
+            ),
+            session: session
+        )
+        let service = LiveAuthenticationService(client: client)
+
+        let sessionResult = try await service.signUp(
+            request: SignUpRequest(
+                email: "new@example.com",
+                password: "abc12345",
+                passwordConfirm: "abc12345",
+                nickname: "newbie",
+                acceptedTerms: true
+            )
+        )
+
+        XCTAssertEqual(URLProtocolSpy.lastRequest?.url?.path, "/api/v1/auth/register")
+        XCTAssertEqual(URLProtocolSpy.lastRequest?.httpMethod, "POST")
+        XCTAssertEqual(sessionResult.accessToken, "access-token")
+        XCTAssertEqual(sessionResult.userID, "user-1")
+        XCTAssertEqual(sessionResult.email, "new@example.com")
     }
 
     func testTransportFailureMapperMarksCannotFindHostAsNonRetryable() {
@@ -269,6 +335,66 @@ final class NetworkAndAuthTests: XCTestCase {
             snapshot.coins.first?.imageURL,
             "https://assets.coingecko.com/coins/images/1/large/bitcoin.png"
         )
+    }
+
+    func testTickerParsingHonorsHasImageFlag() async throws {
+        URLProtocolSpy.reset()
+        URLProtocolSpy.responseData = Data(
+            """
+            {
+              "data": [
+                {
+                  "symbol": "XRP",
+                  "hasImage": false,
+                  "assetImageUrl": "https://assets.example.com/xrp.png",
+                  "price": "790",
+                  "changePercent": "0.3",
+                  "volume24h": "30000000",
+                  "high24": "810",
+                  "low24": "770",
+                  "sparkline": ["780", "790"],
+                  "sparklinePointCount": 2
+                }
+              ]
+            }
+            """.utf8
+        )
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [URLProtocolSpy.self]
+        let session = URLSession(configuration: configuration)
+        let client = APIClient(
+            configuration: APIConfiguration(
+                baseURL: "https://example.com",
+                loginPath: "/auth/login",
+                marketMarketsPath: "/market/markets",
+                marketTickersPath: "/market/tickers",
+                marketOrderbookPath: "/market/orderbook",
+                marketTradesPath: "/market/trades",
+                marketCandlesPath: "/market/candles",
+                tradingChancePath: "/trading/chance",
+                tradingOrdersPath: "/trading/orders",
+                tradingOpenOrdersPath: "/trading/open-orders",
+                tradingFillsPath: "/trading/fills",
+                portfolioSummaryPath: "/portfolio/summary",
+                portfolioHistoryPath: "/portfolio/history",
+                kimchiPremiumPath: "/kimchi-premium",
+                exchangeConnectionsPath: "/exchange-connections",
+                exchangeConnectionsCreateEnabled: true,
+                exchangeConnectionsUpdateEnabled: true,
+                exchangeConnectionsDeleteEnabled: true
+            ),
+            session: session
+        )
+        let repository = LiveMarketRepository(client: client)
+
+        let snapshot = try await repository.fetchTickers(exchange: .coinone)
+        let coin = try XCTUnwrap(snapshot.coins.first)
+
+        XCTAssertEqual(coin.symbol, "XRP")
+        XCTAssertEqual(coin.hasImage, false)
+        XCTAssertNil(coin.iconURL)
+        XCTAssertEqual(coin.displayMetadata?.iconURL, "https://assets.example.com/xrp.png")
     }
 
     func testMarketCatalogParsingSupportsNestedItemsPayload() async throws {
@@ -632,5 +758,74 @@ final class NetworkAndAuthTests: XCTestCase {
         XCTAssertEqual(snapshot.rows.first?.freshnessState, .referencePriceDelayed)
         XCTAssertEqual(snapshot.rows.first?.freshnessReason, "기준가 반영 지연")
         XCTAssertNotNil(snapshot.rows.first?.updatedAt)
+    }
+
+    func testMarketCatalogParsingUsesCanonicalMetadataForDisplayAndImages() async throws {
+        URLProtocolSpy.reset()
+        URLProtocolSpy.responseData = Data(
+            """
+            {
+              "data": {
+                "items": [
+                  {
+                    "symbol": "C",
+                    "marketId": "btc_krw",
+                    "baseAsset": "btc",
+                    "quoteAsset": "krw",
+                    "displaySymbol": "btc",
+                    "displayName": "비트코인",
+                    "englishName": "Bitcoin",
+                    "iconUrl": "https://assets.example.com/btc.png",
+                    "isChartAvailable": false,
+                    "isOrderBookAvailable": true,
+                    "isTradesAvailable": true,
+                    "unavailableReason": "korbit candles are temporarily unavailable"
+                  }
+                ]
+              }
+            }
+            """.utf8
+        )
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [URLProtocolSpy.self]
+        let session = URLSession(configuration: configuration)
+        let client = APIClient(
+            configuration: APIConfiguration(
+                baseURL: "https://example.com",
+                loginPath: "/auth/login",
+                marketMarketsPath: "/market/markets",
+                marketTickersPath: "/market/tickers",
+                marketOrderbookPath: "/market/orderbook",
+                marketTradesPath: "/market/trades",
+                marketCandlesPath: "/market/candles",
+                tradingChancePath: "/trading/chance",
+                tradingOrdersPath: "/trading/orders",
+                tradingOpenOrdersPath: "/trading/open-orders",
+                tradingFillsPath: "/trading/fills",
+                portfolioSummaryPath: "/portfolio/summary",
+                portfolioHistoryPath: "/portfolio/history",
+                kimchiPremiumPath: "/kimchi-premium",
+                exchangeConnectionsPath: "/exchange-connections",
+                exchangeConnectionsCreateEnabled: true,
+                exchangeConnectionsUpdateEnabled: true,
+                exchangeConnectionsDeleteEnabled: true
+            ),
+            session: session
+        )
+        let repository = LiveMarketRepository(client: client)
+
+        let snapshot = try await repository.fetchMarkets(exchange: .korbit)
+        let coin = try XCTUnwrap(snapshot.markets.first)
+
+        XCTAssertEqual(coin.symbol, "BTC")
+        XCTAssertEqual(coin.canonicalSymbol, "BTC")
+        XCTAssertEqual(coin.displaySymbol, "BTC")
+        XCTAssertEqual(coin.name, "비트코인")
+        XCTAssertEqual(coin.iconURL, "https://assets.example.com/btc.png")
+        XCTAssertEqual(coin.displayMetadata?.marketId, "btc_krw")
+        XCTAssertEqual(coin.displayMetadata?.baseAsset, "BTC")
+        XCTAssertEqual(coin.displayMetadata?.quoteAsset, "KRW")
+        XCTAssertEqual(coin.displayMetadata?.isChartAvailable, false)
     }
 }

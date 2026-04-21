@@ -51,6 +51,30 @@ struct ResponseMeta: Equatable, Codable {
     let isStale: Bool
     let warningMessage: String?
     let partialFailureMessage: String?
+    let isChartAvailable: Bool?
+    let isOrderBookAvailable: Bool?
+    let isTradesAvailable: Bool?
+    let unavailableReason: String?
+
+    nonisolated init(
+        fetchedAt: Date?,
+        isStale: Bool,
+        warningMessage: String?,
+        partialFailureMessage: String?,
+        isChartAvailable: Bool? = nil,
+        isOrderBookAvailable: Bool? = nil,
+        isTradesAvailable: Bool? = nil,
+        unavailableReason: String? = nil
+    ) {
+        self.fetchedAt = fetchedAt
+        self.isStale = isStale
+        self.warningMessage = warningMessage
+        self.partialFailureMessage = partialFailureMessage
+        self.isChartAvailable = isChartAvailable
+        self.isOrderBookAvailable = isOrderBookAvailable
+        self.isTradesAvailable = isTradesAvailable
+        self.unavailableReason = unavailableReason
+    }
 
     static let empty = ResponseMeta(
         fetchedAt: nil,
@@ -495,6 +519,7 @@ final class UserDefaultsMarketSnapshotCacheStore: MarketSnapshotCacheStoring {
 struct APIConfiguration {
     let baseURL: String
     let loginPath: String
+    let registerPath: String
     let marketMarketsPath: String
     let marketTickersPath: String
     let marketOrderbookPath: String
@@ -511,6 +536,48 @@ struct APIConfiguration {
     let exchangeConnectionsCreateEnabled: Bool
     let exchangeConnectionsUpdateEnabled: Bool
     let exchangeConnectionsDeleteEnabled: Bool
+
+    init(
+        baseURL: String,
+        loginPath: String,
+        registerPath: String = "/api/v1/auth/register",
+        marketMarketsPath: String,
+        marketTickersPath: String,
+        marketOrderbookPath: String,
+        marketTradesPath: String,
+        marketCandlesPath: String,
+        tradingChancePath: String,
+        tradingOrdersPath: String,
+        tradingOpenOrdersPath: String,
+        tradingFillsPath: String,
+        portfolioSummaryPath: String,
+        portfolioHistoryPath: String,
+        kimchiPremiumPath: String,
+        exchangeConnectionsPath: String,
+        exchangeConnectionsCreateEnabled: Bool,
+        exchangeConnectionsUpdateEnabled: Bool,
+        exchangeConnectionsDeleteEnabled: Bool
+    ) {
+        self.baseURL = baseURL
+        self.loginPath = loginPath
+        self.registerPath = registerPath
+        self.marketMarketsPath = marketMarketsPath
+        self.marketTickersPath = marketTickersPath
+        self.marketOrderbookPath = marketOrderbookPath
+        self.marketTradesPath = marketTradesPath
+        self.marketCandlesPath = marketCandlesPath
+        self.tradingChancePath = tradingChancePath
+        self.tradingOrdersPath = tradingOrdersPath
+        self.tradingOpenOrdersPath = tradingOpenOrdersPath
+        self.tradingFillsPath = tradingFillsPath
+        self.portfolioSummaryPath = portfolioSummaryPath
+        self.portfolioHistoryPath = portfolioHistoryPath
+        self.kimchiPremiumPath = kimchiPremiumPath
+        self.exchangeConnectionsPath = exchangeConnectionsPath
+        self.exchangeConnectionsCreateEnabled = exchangeConnectionsCreateEnabled
+        self.exchangeConnectionsUpdateEnabled = exchangeConnectionsUpdateEnabled
+        self.exchangeConnectionsDeleteEnabled = exchangeConnectionsDeleteEnabled
+    }
 
     func exchangeConnectionPath(id: String) -> String {
         "\(exchangeConnectionsPath)/\(id)"
@@ -533,7 +600,8 @@ struct APIConfiguration {
 
         return APIConfiguration(
             baseURL: runtimeConfiguration.restBaseURL.absoluteString,
-            loginPath: environment["CRYPTORY_LOGIN_PATH"] ?? "/auth/login",
+            loginPath: environment["CRYPTORY_LOGIN_PATH"] ?? "/api/v1/auth/login",
+            registerPath: environment["CRYPTORY_REGISTER_PATH"] ?? "/api/v1/auth/register",
             marketMarketsPath: environment["CRYPTORY_MARKET_MARKETS_PATH"] ?? "/market/markets",
             marketTickersPath: environment["CRYPTORY_MARKET_TICKERS_PATH"] ?? "/market/tickers",
             marketOrderbookPath: environment["CRYPTORY_MARKET_ORDERBOOK_PATH"] ?? "/market/orderbook",
@@ -563,8 +631,17 @@ struct TradingOrderCreateRequest {
     let quantity: Double
 }
 
+struct SignUpRequest: Equatable {
+    let email: String
+    let password: String
+    let passwordConfirm: String
+    let nickname: String
+    let acceptedTerms: Bool
+}
+
 protocol AuthenticationServiceProtocol {
     func signIn(email: String, password: String) async throws -> AuthSession
+    func signUp(request: SignUpRequest) async throws -> AuthSession
 }
 
 protocol MarketRepositoryProtocol {
@@ -695,6 +772,12 @@ final class APIClient {
         guard (200...299).contains(httpResponse.statusCode) else {
             let parsedError = parseServerError(from: data, statusCode: httpResponse.statusCode)
             AppLogger.debug(.network, "HTTP \(httpResponse.statusCode) <- \(request.url?.absoluteString ?? path)")
+            if httpResponse.statusCode == 404 {
+                AppLogger.debug(
+                    .network,
+                    "Endpoint not found <- configuredPath=\(path) baseURL=\(configuration.baseURL). Check server route prefix."
+                )
+            }
             throw NetworkServiceError.httpError(httpResponse.statusCode, parsedError.message, parsedError.category)
         }
 
@@ -775,15 +858,55 @@ final class LiveAuthenticationService: AuthenticationServiceProtocol {
             throw NetworkServiceError.parsingFailed("로그인 응답을 확인할 수 없어요.")
         }
 
-        guard let accessToken = dictionary.string(["accessToken", "access_token", "token"]) else {
-            throw NetworkServiceError.parsingFailed("로그인 토큰이 응답에 없어요.")
+        return try parseAuthSession(
+            from: dictionary,
+            fallbackEmail: email,
+            context: "로그인"
+        )
+    }
+
+    func signUp(request: SignUpRequest) async throws -> AuthSession {
+        let body: JSONObject = [
+            "email": request.email,
+            "password": request.password,
+            "nickname": request.nickname
+        ]
+
+        let json = try await client.requestJSON(
+            path: client.configuration.registerPath,
+            method: "POST",
+            body: body,
+            accessRequirement: .publicAccess
+        )
+
+        let payload = unwrapPayload(json)
+        if let dictionary = payload as? JSONObject,
+           let session = try? parseAuthSession(
+            from: dictionary,
+            fallbackEmail: request.email,
+            context: "회원가입"
+           ) {
+            return session
         }
+
+        return try await signIn(email: request.email, password: request.password)
+    }
+
+    private func parseAuthSession(
+        from dictionary: JSONObject,
+        fallbackEmail: String?,
+        context: String
+    ) throws -> AuthSession {
+        guard let accessToken = dictionary.string(["accessToken", "access_token", "token"]) else {
+            throw NetworkServiceError.parsingFailed("\(context) 토큰이 응답에 없어요.")
+        }
+        let user = dictionary["user"] as? JSONObject
 
         return AuthSession(
             accessToken: accessToken,
             refreshToken: dictionary.string(["refreshToken", "refresh_token"]),
-            userID: dictionary.string(["userId", "user_id", "id"]),
-            email: dictionary.string(["email"])
+            userID: dictionary.string(["userId", "user_id", "id"]) ?? user?.string(["userId", "user_id", "id"]),
+            email: dictionary.string(["email"]) ?? user?.string(["email"]) ?? fallbackEmail
         )
     }
 }
@@ -1393,14 +1516,26 @@ private struct MarketInfoDTO {
     let supportedIntervals: [String]
 
     init?(dictionary: JSONObject, exchange: Exchange) {
-        guard let symbol = normalizeMarketSymbol(from: dictionary) else {
+        guard let rawSymbol = marketRawSymbol(from: dictionary) else {
             return nil
         }
 
         let displayName = dictionary.string(["displayName", "name", "koreanName"])
         let englishName = dictionary.string(["displayNameEn", "englishName"])
         let imageURL = marketImageURL(from: dictionary)
+        let hasImage = marketHasImage(from: dictionary)
         let canonicalAssetKey = marketCanonicalAssetKey(from: dictionary)
+        let metadata = marketDisplayMetadata(
+            from: dictionary,
+            exchange: exchange,
+            rawSymbol: rawSymbol,
+            displayName: displayName,
+            englishName: englishName,
+            imageURL: imageURL,
+            hasImage: hasImage,
+            localAssetName: canonicalAssetKey
+        )
+        let symbol = metadata.canonicalSymbol
         let isTradable = dictionary.bool([
             "tradable",
             "isTradable",
@@ -1418,15 +1553,27 @@ private struct MarketInfoDTO {
 
         self.coinInfo = CoinCatalog.coin(
             symbol: symbol,
+            exchange: exchange,
+            marketId: metadata.marketId,
+            baseAsset: metadata.baseAsset,
+            quoteAsset: metadata.quoteAsset,
+            canonicalSymbol: metadata.canonicalSymbol,
+            displaySymbol: metadata.displaySymbol,
             displayName: displayName,
             englishName: englishName,
             imageURL: imageURL,
+            hasImage: hasImage,
+            localAssetName: metadata.localAssetName,
+            isChartAvailable: metadata.isChartAvailable,
+            isOrderBookAvailable: metadata.isOrderBookAvailable,
+            isTradesAvailable: metadata.isTradesAvailable,
+            unavailableReason: metadata.unavailableReason,
             isTradable: isTradable,
             isKimchiComparable: isKimchiComparable
         )
         AppLogger.debug(
             .network,
-            "[ImageDebug] symbol=\(symbol) action=url_received value=\(imageURL ?? "<nil>") canonicalAssetKey=\(canonicalAssetKey ?? "<nil>")"
+            "[ImageDebug] symbol=\(symbol) action=url_received value=\(imageURL ?? "<nil>") hasImage=\(String(describing: hasImage)) canonicalAssetKey=\(canonicalAssetKey ?? "<nil>")"
         )
         self.supportedIntervals = dictionary.stringArray(["supportedIntervals", "intervals", "chartIntervals"]).map { $0.lowercased() }
     }
@@ -1459,7 +1606,7 @@ private struct MarketTickerDTO {
     let sourceExchange: Exchange
 
     init?(dictionary: JSONObject, exchange: Exchange) {
-        guard let symbol = normalizeMarketSymbol(from: dictionary) else {
+        guard let rawSymbol = marketRawSymbol(from: dictionary) else {
             return nil
         }
         guard let price = dictionary.double([
@@ -1474,11 +1621,23 @@ private struct MarketTickerDTO {
             return nil
         }
 
-        self.symbol = symbol
         let displayName = dictionary.string(["displayName", "name", "koreanName", "assetName"])
         let englishName = dictionary.string(["displayNameEn", "englishName", "nameEn"])
         let imageURL = marketImageURL(from: dictionary)
+        let hasImage = marketHasImage(from: dictionary)
         let canonicalAssetKey = marketCanonicalAssetKey(from: dictionary)
+        let metadata = marketDisplayMetadata(
+            from: dictionary,
+            exchange: exchange,
+            rawSymbol: rawSymbol,
+            displayName: displayName,
+            englishName: englishName,
+            imageURL: imageURL,
+            hasImage: hasImage,
+            localAssetName: canonicalAssetKey
+        )
+        let symbol = metadata.canonicalSymbol
+        self.symbol = symbol
         let isTradable = dictionary.bool([
             "tradable",
             "isTradable",
@@ -1495,15 +1654,27 @@ private struct MarketTickerDTO {
         ]) ?? (exchange.isDomestic && exchange.supportsKimchiPremium && isTradable)
         self.coinInfo = CoinCatalog.coin(
             symbol: symbol,
+            exchange: exchange,
+            marketId: metadata.marketId,
+            baseAsset: metadata.baseAsset,
+            quoteAsset: metadata.quoteAsset,
+            canonicalSymbol: metadata.canonicalSymbol,
+            displaySymbol: metadata.displaySymbol,
             displayName: displayName,
             englishName: englishName,
             imageURL: imageURL,
+            hasImage: hasImage,
+            localAssetName: metadata.localAssetName,
+            isChartAvailable: metadata.isChartAvailable,
+            isOrderBookAvailable: metadata.isOrderBookAvailable,
+            isTradesAvailable: metadata.isTradesAvailable,
+            unavailableReason: metadata.unavailableReason,
             isTradable: isTradable,
             isKimchiComparable: isKimchiComparable
         )
         AppLogger.debug(
             .network,
-            "[ImageDebug] symbol=\(symbol) action=url_received value=\(imageURL ?? "<nil>") canonicalAssetKey=\(canonicalAssetKey ?? "<nil>")"
+            "[ImageDebug] symbol=\(symbol) action=url_received value=\(imageURL ?? "<nil>") hasImage=\(String(describing: hasImage)) canonicalAssetKey=\(canonicalAssetKey ?? "<nil>")"
         )
         self.price = price
         let rawChangePercent = dictionary.double([
@@ -1559,14 +1730,21 @@ private func resolveMarketUniverse(
     let baseCoins: [CoinInfo]
 
     if !hints.listedCoins.isEmpty {
-        baseCoins = deduplicatedCoins(hints.listedCoins)
+        baseCoins = deduplicatedCoins(hints.listedCoins, exchange: exchange)
     } else if !hints.listedSymbols.isEmpty {
-        let parsedCoinsBySymbol = Dictionary(uniqueKeysWithValues: deduplicatedCoins(parsedCoins).map { ($0.symbol, $0) })
+        let parsedCoinsBySymbol = deduplicatedCoins(parsedCoins, exchange: exchange)
+            .reduce(into: [String: CoinInfo]()) { partialResult, coin in
+                if let existing = partialResult[coin.symbol] {
+                    partialResult[coin.symbol] = existing.merged(with: coin)
+                } else {
+                    partialResult[coin.symbol] = coin
+                }
+            }
         baseCoins = hints.listedSymbols.map { symbol in
             parsedCoinsBySymbol[symbol] ?? CoinCatalog.coin(symbol: symbol)
         }
     } else {
-        baseCoins = deduplicatedCoins(parsedCoins)
+        baseCoins = deduplicatedCoins(parsedCoins, exchange: exchange)
     }
 
     let filteredSymbols = deduplicatedSymbols(
@@ -1650,24 +1828,26 @@ private func parseCoinInfoArray(from rawValue: Any?, exchange: Exchange) -> [Coi
 
             return MarketInfoDTO(dictionary: dictionary, exchange: exchange)?.coinInfo
                 ?? MarketTickerDTO(dictionary: dictionary, exchange: exchange)?.coinInfo
-        }
+        },
+        exchange: exchange
     )
 }
 
-private func deduplicatedCoins(_ coins: [CoinInfo]) -> [CoinInfo] {
-    var mergedCoinsBySymbol = [String: CoinInfo]()
-    var orderedSymbols = [String]()
+private func deduplicatedCoins(_ coins: [CoinInfo], exchange: Exchange) -> [CoinInfo] {
+    var mergedCoinsByMarketIdentity = [MarketIdentity: CoinInfo]()
+    var orderedMarketIdentities = [MarketIdentity]()
 
     for coin in coins {
-        if let existing = mergedCoinsBySymbol[coin.symbol] {
-            mergedCoinsBySymbol[coin.symbol] = existing.merged(with: coin)
+        let marketIdentity = coin.marketIdentity(exchange: exchange)
+        if let existing = mergedCoinsByMarketIdentity[marketIdentity] {
+            mergedCoinsByMarketIdentity[marketIdentity] = existing.merged(with: coin)
         } else {
-            mergedCoinsBySymbol[coin.symbol] = coin
-            orderedSymbols.append(coin.symbol)
+            mergedCoinsByMarketIdentity[marketIdentity] = coin
+            orderedMarketIdentities.append(marketIdentity)
         }
     }
 
-    return orderedSymbols.compactMap { mergedCoinsBySymbol[$0] }
+    return orderedMarketIdentities.compactMap { mergedCoinsByMarketIdentity[$0] }
 }
 
 private func deduplicatedSymbols(_ symbols: [String]) -> [String] {
@@ -1720,7 +1900,13 @@ private func marketImageURL(from dictionary: JSONObject) -> String? {
         "asset_image_url",
         "imageUrl",
         "imageURL",
-        "image_url"
+        "image_url",
+        "iconUrl",
+        "iconURL",
+        "icon_url",
+        "logoUrl",
+        "logoURL",
+        "logo_url"
     ])
 
     return normalizedMarketImageURLString(
@@ -1753,6 +1939,136 @@ private func marketCanonicalAssetKey(from dictionary: JSONObject) -> String? {
         return value
     }
     return nil
+}
+
+private func marketRawSymbol(from dictionary: JSONObject) -> String? {
+    dictionary.string([
+        "canonicalSymbol",
+        "canonical_symbol",
+        "baseAsset",
+        "base_asset",
+        "baseCurrency",
+        "base_currency",
+        "asset",
+        "currency",
+        "target_currency",
+        "targetCurrency",
+        "symbol",
+        "market",
+        "marketId",
+        "market_id",
+        "code"
+    ])
+}
+
+private func marketId(from dictionary: JSONObject) -> String? {
+    dictionary.string([
+        "marketId",
+        "market_id",
+        "market",
+        "code",
+        "pair",
+        "pairCode",
+        "pair_code"
+    ])
+}
+
+private func marketBaseAsset(from dictionary: JSONObject) -> String? {
+    dictionary.string([
+        "baseAsset",
+        "base_asset",
+        "baseCurrency",
+        "base_currency",
+        "target_currency",
+        "targetCurrency",
+        "asset",
+        "currency"
+    ]) ?? (dictionary["asset"] as? JSONObject)?.string([
+        "symbol",
+        "code",
+        "baseAsset",
+        "base_asset"
+    ])
+}
+
+private func marketQuoteAsset(from dictionary: JSONObject) -> String? {
+    dictionary.string([
+        "quoteAsset",
+        "quote_asset",
+        "quoteCurrency",
+        "quote_currency",
+        "marketCurrency",
+        "market_currency",
+        "paymentCurrency",
+        "payment_currency"
+    ])
+}
+
+private func marketCanonicalSymbol(from dictionary: JSONObject) -> String? {
+    dictionary.string([
+        "canonicalSymbol",
+        "canonical_symbol",
+        "canonicalAsset",
+        "canonical_asset"
+    ])
+}
+
+private func marketDisplaySymbol(from dictionary: JSONObject) -> String? {
+    dictionary.string([
+        "displaySymbol",
+        "display_symbol",
+        "ticker",
+        "symbol"
+    ])
+}
+
+private func marketDisplayMetadata(
+    from dictionary: JSONObject,
+    exchange: Exchange,
+    rawSymbol: String,
+    displayName: String?,
+    englishName: String?,
+    imageURL: String?,
+    hasImage: Bool?,
+    localAssetName: String?
+) -> CoinDisplayMetadata {
+    CoinDisplayMetadata(
+        exchange: exchange,
+        rawSymbol: rawSymbol,
+        marketId: marketId(from: dictionary),
+        baseAsset: marketBaseAsset(from: dictionary),
+        quoteAsset: marketQuoteAsset(from: dictionary),
+        canonicalSymbol: marketCanonicalSymbol(from: dictionary),
+        displaySymbol: marketDisplaySymbol(from: dictionary),
+        koreanName: displayName,
+        englishName: englishName,
+        iconURL: imageURL,
+        hasImage: hasImage,
+        localAssetName: localAssetName,
+        isChartAvailable: dictionary.bool(["isChartAvailable", "chartAvailable", "supportsChart"]),
+        isOrderBookAvailable: dictionary.bool(["isOrderBookAvailable", "orderBookAvailable", "orderbookAvailable", "supportsOrderBook", "supportsOrderbook"]),
+        isTradesAvailable: dictionary.bool(["isTradesAvailable", "tradesAvailable", "supportsTrades"]),
+        unavailableReason: dictionary.string(["unavailableReason", "unavailable_reason", "reason", "statusMessage"])
+    )
+}
+
+private func marketHasImage(from dictionary: JSONObject) -> Bool? {
+    let keys = [
+        "hasImage",
+        "has_image",
+        "hasIcon",
+        "has_icon",
+        "imageAvailable",
+        "image_available",
+        "isImageAvailable",
+        "iconAvailable",
+        "icon_available",
+        "isIconAvailable"
+    ]
+
+    return dictionary.bool(keys)
+        ?? (dictionary["asset"] as? JSONObject)?.bool(keys)
+        ?? (dictionary["metadata"] as? JSONObject)?.bool(keys)
 }
 
 private func normalizedMarketImageURLString(_ rawValue: String?) -> String? {
@@ -2178,7 +2494,11 @@ private func splitPayload(_ json: Any) -> (payload: Any, meta: ResponseMeta) {
         fetchedAt: parseDateValue(dictionary["asOf"] ?? dictionary["fetchedAt"] ?? dictionary["timestamp"] ?? dictionary["serverTime"]),
         isStale: dictionary.bool(["stale", "isStale"]) ?? (freshness == "stale"),
         warningMessage: dictionary.string(["warningMessage", "message"]),
-        partialFailureMessage: dictionary.string(["partialFailureMessage", "partialError", "partial_error"])
+        partialFailureMessage: dictionary.string(["partialFailureMessage", "partialError", "partial_error"]),
+        isChartAvailable: dictionary.bool(["isChartAvailable", "chartAvailable", "supportsChart"]),
+        isOrderBookAvailable: dictionary.bool(["isOrderBookAvailable", "orderBookAvailable", "orderbookAvailable", "supportsOrderBook", "supportsOrderbook"]),
+        isTradesAvailable: dictionary.bool(["isTradesAvailable", "tradesAvailable", "supportsTrades"]),
+        unavailableReason: dictionary.string(["unavailableReason", "unavailable_reason", "reason"])
     )
 
     return (payload, meta)
@@ -2209,58 +2529,21 @@ private func unwrapArray(_ value: Any?) -> [Any]? {
 }
 
 private func normalizeMarketSymbol(from dictionary: JSONObject) -> String? {
-    let rawSymbol = dictionary.string([
-        "symbol",
-        "market",
-        "code",
-        "baseAsset",
-        "asset",
-        "currency",
-        "target_currency",
-        "targetCurrency"
-    ])
-
-    guard let rawSymbol else {
+    guard let rawSymbol = marketRawSymbol(from: dictionary) else {
         return nil
     }
 
-    return normalizeMarketSymbol(rawSymbol)
+    return SymbolNormalization.canonicalAssetCode(
+        rawSymbol: rawSymbol,
+        marketId: marketId(from: dictionary),
+        baseAsset: marketBaseAsset(from: dictionary),
+        quoteAsset: marketQuoteAsset(from: dictionary),
+        canonicalSymbol: marketCanonicalSymbol(from: dictionary)
+    )
 }
 
 private func normalizeMarketSymbol(_ rawSymbol: String) -> String {
-    let normalized = rawSymbol
-        .trimmingCharacters(in: .whitespacesAndNewlines)
-        .uppercased()
-
-    guard !normalized.isEmpty else {
-        return normalized
-    }
-
-    let separators = CharacterSet(charactersIn: "-_:/")
-    let parts = normalized
-        .components(separatedBy: separators)
-        .filter { !$0.isEmpty }
-
-    let quoteCurrencies = Set(["KRW", "USD", "USDT", "BTC", "ETH"])
-    if parts.count >= 2 {
-        if quoteCurrencies.contains(parts[0]) {
-            return parts[1]
-        }
-        if let lastPart = parts.last, quoteCurrencies.contains(lastPart) {
-            return parts[0]
-        }
-    }
-
-    for quoteCurrency in ["KRW", "USDT", "USD", "BTC", "ETH"] {
-        if normalized.hasPrefix(quoteCurrency), normalized.count > quoteCurrency.count {
-            return String(normalized.dropFirst(quoteCurrency.count))
-        }
-        if normalized.hasSuffix(quoteCurrency), normalized.count > quoteCurrency.count {
-            return String(normalized.dropLast(quoteCurrency.count))
-        }
-    }
-
-    return normalized
+    SymbolNormalization.canonicalAssetCode(rawSymbol: rawSymbol)
 }
 
 private func debugJSONString(_ value: Any, limit: Int = 1_200) -> String {

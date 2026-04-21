@@ -1,10 +1,79 @@
 import Foundation
+import Security
 
-struct AuthSession {
+struct AuthSession: Codable, Equatable {
     let accessToken: String
     let refreshToken: String?
     let userID: String?
     let email: String?
+}
+
+enum AuthFlowMode: String, CaseIterable, Equatable {
+    case login
+    case signUp
+
+    var title: String {
+        switch self {
+        case .login:
+            return "로그인"
+        case .signUp:
+            return "회원가입"
+        }
+    }
+}
+
+protocol AuthSessionStoring {
+    func loadSession() -> AuthSession?
+    func saveSession(_ session: AuthSession)
+    func clearSession()
+}
+
+struct KeychainAuthSessionStore: AuthSessionStoring {
+    private let service = "com.cryptory.auth.session"
+    private let account = "default"
+    private let encoder = JSONEncoder()
+    private let decoder = JSONDecoder()
+
+    func loadSession() -> AuthSession? {
+        var query = baseQuery
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        guard status == errSecSuccess,
+              let data = item as? Data else {
+            return nil
+        }
+        return try? decoder.decode(AuthSession.self, from: data)
+    }
+
+    func saveSession(_ session: AuthSession) {
+        guard let data = try? encoder.encode(session) else {
+            return
+        }
+
+        let attributes = [kSecValueData as String: data]
+        let status = SecItemUpdate(baseQuery as CFDictionary, attributes as CFDictionary)
+        if status == errSecItemNotFound {
+            var insertQuery = baseQuery
+            insertQuery[kSecValueData as String] = data
+            insertQuery[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+            SecItemAdd(insertQuery as CFDictionary, nil)
+        }
+    }
+
+    func clearSession() {
+        SecItemDelete(baseQuery as CFDictionary)
+    }
+
+    private var baseQuery: [String: Any] {
+        [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account
+        ]
+    }
 }
 
 enum AuthState {

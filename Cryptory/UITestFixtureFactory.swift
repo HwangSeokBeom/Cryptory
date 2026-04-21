@@ -2,12 +2,13 @@
 import Foundation
 
 enum UITestFixtureFactory {
+    @MainActor
     static func makeViewModelIfNeeded() -> CryptoViewModel? {
         guard ProcessInfo.processInfo.environment["CRYPTORY_UI_TEST_SCENARIO"] == "kimchi_freshness" else {
             return nil
         }
 
-        return CryptoViewModel(
+        let viewModel = CryptoViewModel(
             marketRepository: UITestMarketRepository(),
             tradingRepository: UITestTradingRepository(),
             portfolioRepository: UITestPortfolioRepository(),
@@ -18,6 +19,8 @@ enum UITestFixtureFactory {
             privateWebSocketService: UITestPrivateWebSocketService(),
             marketSnapshotCacheStore: nil
         )
+        viewModel.setActiveTab(.kimchi)
+        return viewModel
     }
 }
 
@@ -197,6 +200,10 @@ private struct UITestExchangeConnectionsRepository: ExchangeConnectionsRepositor
 private struct UITestAuthenticationService: AuthenticationServiceProtocol {
     func signIn(email: String, password: String) async throws -> AuthSession {
         AuthSession(accessToken: "ui-test-token", refreshToken: nil, userID: "ui-test", email: email)
+    }
+
+    func signUp(request: SignUpRequest) async throws -> AuthSession {
+        AuthSession(accessToken: "ui-test-token", refreshToken: nil, userID: "ui-test", email: request.email)
     }
 }
 

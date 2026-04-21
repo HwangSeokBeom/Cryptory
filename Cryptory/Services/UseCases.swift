@@ -360,6 +360,116 @@ struct ExchangeConnectionFormValidator {
     }
 }
 
+struct SignUpFormValidationResult: Equatable {
+    let emailMessage: String?
+    let passwordMessage: String?
+    let passwordConfirmMessage: String?
+    let nicknameMessage: String?
+    let termsMessage: String?
+
+    var primaryMessage: String? {
+        emailMessage
+            ?? passwordMessage
+            ?? passwordConfirmMessage
+            ?? nicknameMessage
+            ?? termsMessage
+    }
+
+    var isValid: Bool {
+        primaryMessage == nil
+    }
+}
+
+struct AuthInputValidator {
+    func loginValidationMessage(email: String, password: String) -> String? {
+        let trimmedEmail = email.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedEmail.isEmpty || password.isEmpty {
+            return "이메일과 비밀번호를 입력해주세요."
+        }
+        if isValidEmail(trimmedEmail) == false {
+            return "올바른 이메일 형식을 입력해주세요."
+        }
+        return nil
+    }
+
+    func signUpValidation(
+        email: String,
+        password: String,
+        passwordConfirm: String,
+        nickname: String,
+        acceptedTerms: Bool
+    ) -> SignUpFormValidationResult {
+        let trimmedEmail = email.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedNickname = nickname.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let emailMessage: String? = {
+            guard trimmedEmail.isEmpty == false else {
+                return "이메일을 입력해주세요."
+            }
+            guard isValidEmail(trimmedEmail) else {
+                return "올바른 이메일 형식을 입력해주세요."
+            }
+            return nil
+        }()
+
+        let passwordMessage: String? = {
+            guard password.isEmpty == false else {
+                return "비밀번호를 입력해주세요."
+            }
+            guard password.count >= 8 else {
+                return "비밀번호는 8자 이상이어야 해요."
+            }
+            let containsLetter = password.rangeOfCharacter(from: .letters) != nil
+            let containsDigit = password.rangeOfCharacter(from: .decimalDigits) != nil
+            guard containsLetter && containsDigit else {
+                return "비밀번호는 영문과 숫자를 함께 포함해야 해요."
+            }
+            return nil
+        }()
+
+        let passwordConfirmMessage: String? = {
+            guard passwordConfirm.isEmpty == false else {
+                return "비밀번호 확인을 입력해주세요."
+            }
+            guard password == passwordConfirm else {
+                return "비밀번호가 일치하지 않아요."
+            }
+            return nil
+        }()
+
+        let nicknameMessage: String? = {
+            guard trimmedNickname.isEmpty == false else {
+                return "닉네임을 입력해주세요."
+            }
+            guard trimmedNickname.count >= 2 else {
+                return "닉네임은 2자 이상이어야 해요."
+            }
+            guard trimmedNickname.count <= 20 else {
+                return "닉네임은 20자 이내로 입력해주세요."
+            }
+            return nil
+        }()
+
+        let termsMessage = acceptedTerms ? nil : "약관 동의가 필요해요."
+
+        return SignUpFormValidationResult(
+            emailMessage: emailMessage,
+            passwordMessage: passwordMessage,
+            passwordConfirmMessage: passwordConfirmMessage,
+            nicknameMessage: nicknameMessage,
+            termsMessage: termsMessage
+        )
+    }
+
+    private func isValidEmail(_ email: String) -> Bool {
+        let pattern = #"^[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}$"#
+        return email.range(
+            of: pattern,
+            options: [.regularExpression, .caseInsensitive]
+        ) != nil
+    }
+}
+
 struct KimchiPremiumViewStateUseCase {
     enum PresentationPhase {
         case responsePending

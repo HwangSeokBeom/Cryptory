@@ -2,11 +2,17 @@ import SwiftUI
 
 struct MarketRowRenderModel: Identifiable, Equatable {
     let id: String
+    let marketIdentity: MarketIdentity
     let exchange: Exchange
     let sourceExchange: Exchange
     let symbol: String
+    let canonicalSymbol: String
+    let displaySymbol: String
     let displayName: String
     let imageURL: String?
+    let hasImage: Bool?
+    let localAssetName: String
+    let symbolImageState: MarketRowSymbolImageState
     let priceText: String
     let changeText: String
     let volumeText: String
@@ -27,11 +33,17 @@ struct MarketRowRenderModel: Identifiable, Equatable {
 
     init(row: MarketRowViewState) {
         self.id = row.id
+        self.marketIdentity = row.marketIdentity
         self.exchange = row.exchange
         self.sourceExchange = row.sourceExchange
         self.symbol = row.symbol
+        self.canonicalSymbol = row.canonicalSymbol
+        self.displaySymbol = row.displaySymbol
         self.displayName = row.displayName
         self.imageURL = row.imageURL
+        self.hasImage = row.hasImage
+        self.localAssetName = row.localAssetName
+        self.symbolImageState = row.symbolImageState
         self.priceText = row.priceText
         self.changeText = row.changeText
         self.volumeText = row.volumeText
@@ -55,9 +67,15 @@ struct MarketRowRenderModel: Identifiable, Equatable {
         id: String,
         exchange: Exchange,
         sourceExchange: Exchange,
+        marketIdentity: MarketIdentity,
         symbol: String,
+        canonicalSymbol: String? = nil,
+        displaySymbol: String? = nil,
         displayName: String,
         imageURL: String?,
+        hasImage: Bool? = nil,
+        localAssetName: String? = nil,
+        symbolImageState: MarketRowSymbolImageState = .placeholder,
         priceText: String,
         changeText: String,
         volumeText: String,
@@ -77,11 +95,17 @@ struct MarketRowRenderModel: Identifiable, Equatable {
         sparklinePoints: Int
     ) {
         self.id = id
+        self.marketIdentity = marketIdentity
         self.exchange = exchange
         self.sourceExchange = sourceExchange
         self.symbol = symbol
+        self.canonicalSymbol = canonicalSymbol ?? SymbolNormalization.canonicalAssetCode(rawSymbol: symbol)
+        self.displaySymbol = displaySymbol ?? self.canonicalSymbol
         self.displayName = displayName
         self.imageURL = imageURL
+        self.hasImage = hasImage
+        self.localAssetName = localAssetName ?? SymbolNormalization.localAssetName(for: self.canonicalSymbol)
+        self.symbolImageState = symbolImageState
         self.priceText = priceText
         self.changeText = changeText
         self.volumeText = volumeText
@@ -147,6 +171,7 @@ struct CoinRowView: View, Equatable {
             row.priceText,
             row.changeText,
             row.volumeText,
+            row.symbolImageState.rawValue,
             row.sparklineRenderToken,
             row.isFavorite ? "1" : "0"
         ].joined(separator: "|")
@@ -155,11 +180,11 @@ struct CoinRowView: View, Equatable {
     private func logRender() {
         AppLogger.debug(
             .lifecycle,
-            "[MarketRow] render selectedExchange=\(selectedExchange.rawValue) sourceExchange=\(row.sourceExchange.rawValue) exchange=\(row.exchange.rawValue) symbol=\(row.symbol) mode=\(configuration.mode.rawValue) state=\(String(describing: row.dataState)) baseFreshness=\(row.baseFreshnessState) graphState=\(row.graphState) hasPrice=\(row.hasPrice) hasVolume=\(row.hasVolume) sparklinePointCount=\(row.sparklinePoints) hasEnoughSparklineData=\(row.hasEnoughSparklineData)"
+            "[MarketRow] render selectedExchange=\(selectedExchange.rawValue) sourceExchange=\(row.sourceExchange.rawValue) \(row.marketLogFields) mode=\(configuration.mode.rawValue) state=\(String(describing: row.dataState)) baseFreshness=\(row.baseFreshnessState) graphState=\(row.graphState) hasPrice=\(row.hasPrice) hasVolume=\(row.hasVolume) sparklinePointCount=\(row.sparklinePoints) hasEnoughSparklineData=\(row.hasEnoughSparklineData)"
         )
         AppLogger.debug(
             .lifecycle,
-            "[CellLayout] symbol=\(row.symbol) mode=\(configuration.mode.rawValue) graphWidth=\(Int(configuration.sparklineWidth)) image=\(configuration.showsSymbolImage)"
+            "[CellLayout] \(row.marketLogFields) mode=\(configuration.mode.rawValue) graphWidth=\(Int(configuration.sparklineWidth)) graphVisible=\(configuration.showsSparkline) image=\(configuration.showsSymbolImage) imageState=\(row.symbolImageState.rawValue)"
         )
     }
 }
@@ -169,6 +194,10 @@ struct MarketRowContent: View {
     let configuration: MarketListDisplayConfiguration
     let showsFavoriteControl: Bool
     let onToggleFavorite: (() -> Void)?
+
+    private var sparklineColumnWidth: CGFloat {
+        max(configuration.sparklineWidth, configuration.sparklineMinimumWidth)
+    }
 
     var body: some View {
         HStack(spacing: 0) {
@@ -197,8 +226,8 @@ struct MarketRowContent: View {
                 configuration: configuration
             )
             .frame(width: configuration.changeWidth, alignment: .trailing)
-            .padding(.leading, configuration.compactLayout ? 8 : 0)
-            .layoutPriority(2)
+            .padding(.leading, configuration.changeColumnLeadingPadding)
+            .layoutPriority(4)
 
             if configuration.showsVolume {
                 MarketRowVolumeSection(
@@ -214,15 +243,14 @@ struct MarketRowContent: View {
                 MarketSparklineSection(
                     payload: model.sparklinePayload,
                     isUp: model.isUp,
-                    exchange: model.exchange,
-                    symbol: model.symbol,
+                    marketIdentity: model.marketIdentity,
                     width: configuration.sparklineWidth,
                     height: configuration.sparklineHeight
                 )
                 .equatable()
-                .frame(width: configuration.sparklineWidth, alignment: .trailing)
-                .padding(.leading, configuration.compactLayout ? 10 : 6)
-                .layoutPriority(2)
+                .frame(width: sparklineColumnWidth, alignment: .trailing)
+                .padding(.leading, configuration.sparklineColumnLeadingPadding)
+                .layoutPriority(3)
             }
         }
         .frame(minHeight: configuration.rowHeight)
@@ -250,10 +278,17 @@ private struct MarketRowIdentitySection: View {
 
             if configuration.showsSymbolImage {
                 SymbolImageView(
+                    marketIdentity: model.marketIdentity,
                     symbol: model.symbol,
+                    canonicalSymbol: model.canonicalSymbol,
                     imageURL: model.imageURL,
+                    hasImage: model.hasImage,
+                    localAssetName: model.localAssetName,
+                    symbolImageState: model.symbolImageState,
                     size: configuration.symbolImageSize
                 )
+                .frame(width: configuration.symbolImageSize, height: configuration.symbolImageSize)
+                .clipped()
             } else {
                 Circle()
                     .fill(model.exchange.color.opacity(0.9))
@@ -261,21 +296,23 @@ private struct MarketRowIdentitySection: View {
             }
 
             VStack(alignment: .leading, spacing: configuration.compactLayout ? 1 : 2) {
-                Text(model.symbol)
+                Text(model.displaySymbol)
                     .font(configuration.compactLayout ? .system(size: 12, weight: .heavy) : .system(size: 13, weight: .bold))
                     .foregroundColor(.themeText)
                     .lineLimit(1)
-                    .minimumScaleFactor(0.9)
-                    .fixedSize(horizontal: true, vertical: false)
-                    .layoutPriority(3)
+                    .minimumScaleFactor(0.72)
+                    .allowsTightening(true)
+                    .layoutPriority(2)
 
                 Text(model.displayName)
                     .font(configuration.compactLayout ? .system(size: 9, weight: .medium) : .system(size: 10))
                     .foregroundColor(.textMuted)
                     .lineLimit(1)
                     .truncationMode(.tail)
+                    .minimumScaleFactor(0.84)
                     .layoutPriority(1)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 }
@@ -293,8 +330,10 @@ private struct MarketRowPriceSection: View {
                     : (configuration.emphasizesChangeRate ? .themeText : (model.isUp ? .up : .down))
             )
             .lineLimit(1)
-            .minimumScaleFactor(0.82)
+            .minimumScaleFactor(configuration.emphasizesChangeRate ? 0.74 : 0.82)
+            .allowsTightening(true)
             .padding(.vertical, 4)
+            .frame(maxWidth: .infinity, alignment: .trailing)
             .background(flashBackground)
     }
 
@@ -320,18 +359,35 @@ private struct MarketRowChangeSection: View {
             Text(model.changeText)
                 .font(.mono(12, weight: .bold))
                 .foregroundColor(changeForegroundColor)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .minimumScaleFactor(0.72)
+                .allowsTightening(true)
                 .padding(.horizontal, 10)
-                .padding(.vertical, 6)
+                .frame(
+                    minWidth: configuration.changeBadgeMinWidth,
+                    maxWidth: configuration.changeWidth,
+                    minHeight: configuration.changeBadgeHeight,
+                    alignment: .center
+                )
                 .background(
-                    Capsule()
+                    RoundedRectangle(
+                        cornerRadius: configuration.changeBadgeHeight > 0
+                            ? configuration.changeBadgeHeight / 2
+                            : 12,
+                        style: .continuous
+                    )
                         .fill(changeBackgroundColor)
                 )
+                .frame(maxWidth: .infinity, alignment: .trailing)
         } else {
             Text(model.changeText)
                 .font(.mono(12, weight: .semibold))
                 .foregroundColor(changeForegroundColor)
                 .lineLimit(1)
                 .minimumScaleFactor(0.82)
+                .allowsTightening(true)
+                .frame(maxWidth: .infinity, alignment: .trailing)
         }
     }
 
@@ -363,8 +419,7 @@ private struct MarketRowVolumeSection: View {
 private struct MarketSparklineSection: View, Equatable {
     let payload: MarketSparklineRenderPayload
     let isUp: Bool
-    let exchange: Exchange
-    let symbol: String
+    let marketIdentity: MarketIdentity
     let width: CGFloat
     let height: CGFloat
 
@@ -373,16 +428,14 @@ private struct MarketSparklineSection: View, Equatable {
             && lhs.isUp == rhs.isUp
             && lhs.width == rhs.width
             && lhs.height == rhs.height
-            && lhs.exchange == rhs.exchange
-            && lhs.symbol == rhs.symbol
+            && lhs.marketIdentity == rhs.marketIdentity
     }
 
     var body: some View {
         SparklineView(
             payload: payload,
             isUp: isUp,
-            exchange: exchange,
-            symbol: symbol,
+            marketIdentity: marketIdentity,
             width: width,
             height: height
         )

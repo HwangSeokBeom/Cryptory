@@ -459,8 +459,8 @@
 		8BDB61C72F7A0CAA00987CEF /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				BUNDLE_LOADER = "$(TEST_HOST)";
-				CODE_SIGN_STYLE = Automatic;
+					BUNDLE_LOADER = "$(TEST_HOST)";
+					CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 63SB2B8YJ5;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -474,15 +474,15 @@
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Cryptory.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Cryptory";
+					TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Cryptory.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Cryptory";
+				};
+				name = Debug;
 			};
-			name = Debug;
-		};
 		8BDB61C82F7A0CAA00987CEF /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				BUNDLE_LOADER = "$(TEST_HOST)";
-				CODE_SIGN_STYLE = Automatic;
+					BUNDLE_LOADER = "$(TEST_HOST)";
+					CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 63SB2B8YJ5;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -496,10 +496,10 @@
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Cryptory.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Cryptory";
+					TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Cryptory.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Cryptory";
+				};
+				name = Release;
 			};
-			name = Release;
-		};
 		8BDB61CA2F7A0CAA00987CEF /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {

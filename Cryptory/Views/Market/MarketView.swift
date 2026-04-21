@@ -230,7 +230,7 @@ struct MarketView: View {
     @ViewBuilder
     private var listSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .top, spacing: 12) {
+            HStack(alignment: .bottom, spacing: 12) {
                 sectionHeader(
                     title: marketStyle.listTitle,
                     detail: listSectionDetail
@@ -287,10 +287,7 @@ struct MarketView: View {
                                 vm.toggleFavorite(row.symbol)
                             },
                             onVisible: {
-                                vm.markMarketRowVisible(
-                                    symbol: row.symbol,
-                                    exchange: row.exchange
-                                )
+                                vm.markMarketRowVisible(marketIdentity: row.marketIdentity)
                             }
                         )
                         .equatable()
@@ -316,13 +313,18 @@ struct MarketView: View {
                 .frame(width: displayConfiguration.priceWidth, alignment: .trailing)
             Text("등락률")
                 .frame(width: displayConfiguration.changeWidth, alignment: .trailing)
+                .padding(.leading, displayConfiguration.changeColumnLeadingPadding)
             if displayConfiguration.showsVolume {
                 Text(marketStyle.volumeTitle)
                     .frame(width: displayConfiguration.volumeWidth, alignment: .trailing)
             }
             if displayConfiguration.showsSparkline {
                 Text("추이")
-                    .frame(width: displayConfiguration.sparklineWidth, alignment: .trailing)
+                    .frame(
+                        width: max(displayConfiguration.sparklineWidth, displayConfiguration.sparklineMinimumWidth),
+                        alignment: .trailing
+                    )
+                    .padding(.leading, displayConfiguration.sparklineColumnLeadingPadding)
             }
         }
         .font(.system(size: 11, weight: .medium))
@@ -439,8 +441,7 @@ struct MarketView: View {
                         SparklineView(
                             payload: row.sparklinePayload,
                             isUp: row.isUp,
-                            exchange: row.exchange,
-                            symbol: row.symbol,
+                            marketIdentity: row.marketIdentity,
                             width: 76,
                             height: 24
                         )
@@ -486,26 +487,36 @@ struct MarketView: View {
     }
 
     private var marketRowSkeleton: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 0) {
             RoundedRectangle(cornerRadius: 4, style: .continuous)
                 .fill(Color.bgTertiary)
-                .frame(width: displayConfiguration.showsSymbolImage ? 120 : 92, height: 14)
-            Spacer()
+                .frame(
+                    minWidth: displayConfiguration.symbolColumnMinimumWidth,
+                    maxWidth: .infinity,
+                    minHeight: 14,
+                    alignment: .leading
+                )
             RoundedRectangle(cornerRadius: 4, style: .continuous)
                 .fill(Color.bgTertiary)
                 .frame(width: displayConfiguration.priceWidth, height: 14)
             RoundedRectangle(cornerRadius: 4, style: .continuous)
                 .fill(Color.bgTertiary)
                 .frame(width: displayConfiguration.changeWidth, height: 14)
+                .padding(.leading, displayConfiguration.changeColumnLeadingPadding)
             if displayConfiguration.showsVolume {
                 RoundedRectangle(cornerRadius: 4, style: .continuous)
                     .fill(Color.bgTertiary)
                     .frame(width: displayConfiguration.volumeWidth, height: 14)
+                    .padding(.leading, 6)
             }
             if displayConfiguration.showsSparkline {
                 RoundedRectangle(cornerRadius: 5, style: .continuous)
                     .fill(Color.bgTertiary.opacity(0.75))
-                    .frame(width: displayConfiguration.sparklineWidth, height: max(displayConfiguration.sparklineHeight, 18))
+                    .frame(
+                        width: max(displayConfiguration.sparklineWidth, displayConfiguration.sparklineMinimumWidth),
+                        height: max(displayConfiguration.sparklineHeight, 18)
+                    )
+                    .padding(.leading, displayConfiguration.sparklineColumnLeadingPadding)
             }
         }
         .padding(.horizontal, 16)

@@ -314,6 +314,7 @@ private enum MarketDisplayPreviewFactory {
             id: "preview:\(symbol)",
             exchange: .upbit,
             sourceExchange: .upbit,
+            marketIdentity: MarketIdentity(exchange: .upbit, marketId: "preview:\(symbol)", symbol: symbol),
             symbol: symbol,
             displayName: name,
             imageURL: imageURL,

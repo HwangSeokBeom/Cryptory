@@ -15,18 +15,35 @@ private final class RetainedSparklineStore {
 
     func resolve(
         incoming: MarketSparklineRenderPayload,
-        exchange: Exchange,
-        symbol: String
+        marketIdentity: MarketIdentity
     ) -> RetainedSparklineResolution {
         lock.lock()
         defer { lock.unlock() }
 
         if incoming.hasRenderableGraph {
-            payloadsByBindingKey[incoming.bindingKey] = incoming
-            let source = incoming.graphState == .liveVisible ? "live" : "retained"
+            let retainedPayload = payloadsByBindingKey[incoming.bindingKey]
+            let displayPayload: MarketSparklineRenderPayload
+            if let retainedPayload,
+               retainedPayload.hasRenderableGraph,
+               (retainedPayload.detailLevel.pathDetailRank > incoming.detailLevel.pathDetailRank
+                || (retainedPayload.detailLevel.isDetailed
+                    && incoming.detailLevel.isDetailed
+                    && retainedPayload.pointCount > incoming.pointCount)) {
+                displayPayload = retainedPayload
+                AppLogger.debug(
+                    .lifecycle,
+                    "[GraphDetailDebug] \(marketIdentity.logFields) action=redraw_skipped reason=retained_refined_prevents_coarse_reverse oldDetail=\(retainedPayload.detailLevel.cacheComponent) newDetail=\(incoming.detailLevel.cacheComponent)"
+                )
+            } else {
+                displayPayload = incoming
+            }
+            if shouldReplaceRetainedPayload(existing: retainedPayload, incoming: incoming) {
+                payloadsByBindingKey[incoming.bindingKey] = incoming
+            }
+            let source = displayPayload.graphState == .liveVisible ? "live" : "retained"
             return RetainedSparklineResolution(
-                payload: incoming,
-                visualState: incoming.graphVisualState,
+                payload: displayPayload,
+                visualState: displayPayload.graphVisualState,
                 firstPaintSource: source
             )
         }
@@ -42,7 +59,7 @@ private final class RetainedSparklineStore {
 
         AppLogger.debug(
             .lifecycle,
-            "[GraphReuseDebug] symbol=\(symbol) action=prepare_for_reuse keptGraph=true exchange=\(exchange.rawValue)"
+            "[GraphReuseDebug] \(marketIdentity.logFields) action=prepare_for_reuse keptGraph=true"
         )
 
         let retainedVisualState: MarketSparklineVisualState
@@ -61,6 +78,22 @@ private final class RetainedSparklineStore {
             firstPaintSource: "retained"
         )
     }
+
+    private func shouldReplaceRetainedPayload(
+        existing: MarketSparklineRenderPayload?,
+        incoming: MarketSparklineRenderPayload
+    ) -> Bool {
+        guard let existing, existing.hasRenderableGraph else {
+            return true
+        }
+        if incoming.detailLevel.pathDetailRank > existing.detailLevel.pathDetailRank {
+            return true
+        }
+        if incoming.detailLevel.pathDetailRank < existing.detailLevel.pathDetailRank {
+            return false
+        }
+        return incoming.pointCount >= existing.pointCount
+    }
 }
 
 private final class MarketSparklinePathCache {
@@ -71,9 +104,11 @@ private final class MarketSparklinePathCache {
 
     func path(
         graphRenderIdentity: String,
+        detailLevel: MarketSparklineDetailLevel,
         graphPathVersion: Int,
         size: CGSize,
-        geometry: MarketSparklineGeometry
+        geometry: MarketSparklineGeometry,
+        marketIdentity: MarketIdentity
     ) -> CGPath? {
         guard size.width > 0, size.height > 0 else {
             return nil
@@ -81,7 +116,11 @@ private final class MarketSparklinePathCache {
 
         let scaledWidth = Int(size.width.rounded(.toNearestOrEven))
         let scaledHeight = Int(size.height.rounded(.toNearestOrEven))
-        let cacheKey = "\(graphRenderIdentity)|\(graphPathVersion)|\(scaledWidth)x\(scaledHeight)"
+        let cacheKey = "\(graphRenderIdentity)|detail=\(detailLevel.cacheComponent)|path=\(graphPathVersion)|\(scaledWidth)x\(scaledHeight)"
+        AppLogger.debug(
+            .lifecycle,
+            "[GraphDetailDebug] \(marketIdentity.logFields) action=cache_key key=\(cacheKey) detailLevel=\(detailLevel.cacheComponent)"
+        )
 
         lock.lock()
         if let cachedPath = pathsByKey[cacheKey] {
@@ -150,8 +189,7 @@ struct SparklineCanvasConfiguration: Equatable {
     let payload: MarketSparklineRenderPayload
     let visualState: MarketSparklineVisualState
     let isUp: Bool
-    let exchange: Exchange
-    let symbol: String
+    let marketIdentity: MarketIdentity
     let width: CGFloat
     let height: CGFloat
     let firstPaintSource: String
@@ -162,7 +200,10 @@ struct SparklineRenderDebugSnapshot: Equatable {
     let hasPlaceholder: Bool
     let graphPathVersion: Int?
     let renderVersion: Int?
+    let detailLevel: MarketSparklineDetailLevel?
     let visualState: MarketSparklineVisualState?
+    let redrawCount: Int
+    let lastRedrawReason: String?
 }
 
 final class SparklineRenderView: UIView {
@@ -172,6 +213,11 @@ final class SparklineRenderView: UIView {
 
     private var currentConfiguration: SparklineCanvasConfiguration?
     private var lastRenderSignature: String?
+    private var currentRenderedPathIdentity: String?
+    private var pendingRedrawReason: String?
+    private var hasScheduledDeferredLayoutRender = false
+    private var redrawCount = 0
+    private var lastRedrawReason: String?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -197,7 +243,10 @@ final class SparklineRenderView: UIView {
             hasPlaceholder: placeholderFillLayer.isHidden == false && placeholderFillLayer.path != nil,
             graphPathVersion: currentConfiguration?.payload.graphPathVersion,
             renderVersion: currentConfiguration?.payload.renderVersion,
-            visualState: currentConfiguration?.visualState
+            detailLevel: currentConfiguration?.payload.detailLevel,
+            visualState: currentConfiguration?.visualState,
+            redrawCount: redrawCount,
+            lastRedrawReason: lastRedrawReason
         )
     }
 
@@ -208,11 +257,16 @@ final class SparklineRenderView: UIView {
         if isBindingKeyChanged, let previousConfiguration {
             AppLogger.debug(
                 .lifecycle,
-                "[GraphReuseDebug] symbol=\(previousConfiguration.symbol) action=prepare_for_reuse keptGraph=\(previousConfiguration.payload.hasRenderableGraph)"
+                "[GraphReuseDebug] \(previousConfiguration.marketIdentity.logFields) action=prepare_for_reuse keptGraph=\(previousConfiguration.payload.hasRenderableGraph)"
             )
             clearRenderedGraph()
         }
 
+        pendingRedrawReason = redrawReason(
+            previousConfiguration: previousConfiguration,
+            nextConfiguration: configuration,
+            bindingKeyChanged: isBindingKeyChanged
+        )
         currentConfiguration = configuration
 
         renderCurrentConfiguration(reason: "update")
@@ -222,8 +276,7 @@ final class SparklineRenderView: UIView {
         payload: MarketSparklineRenderPayload,
         visualState: MarketSparklineVisualState,
         isUp: Bool,
-        exchange: Exchange,
-        symbol: String,
+        marketIdentity: MarketIdentity,
         size: CGSize
     ) {
         frame = CGRect(origin: .zero, size: size)
@@ -233,8 +286,7 @@ final class SparklineRenderView: UIView {
                 payload: payload,
                 visualState: visualState,
                 isUp: isUp,
-                exchange: exchange,
-                symbol: symbol,
+                marketIdentity: marketIdentity,
                 width: size.width,
                 height: size.height,
                 firstPaintSource: "debug"
@@ -263,37 +315,48 @@ final class SparklineRenderView: UIView {
         guard let currentConfiguration else {
             AppLogger.debug(
                 .lifecycle,
-                "[GraphRenderDebug] symbol=<none> action=draw_skipped reason=no_configuration"
+                "[GraphRenderDebug] exchange=- marketId=- symbol=- action=draw_skipped reason=no_configuration"
             )
             return
         }
 
-        guard bounds.width > 0, bounds.height > 0 else {
-            AppLogger.debug(
-                .lifecycle,
-                "[GraphRenderDebug] symbol=\(currentConfiguration.symbol) action=draw_skipped reason=layout_zero"
-            )
+        let renderSize = effectiveRenderSize(for: currentConfiguration, reason: reason)
+        guard renderSize.width > 0, renderSize.height > 0 else {
             return
         }
 
         let renderSignature = [
             currentConfiguration.payload.graphRenderIdentity,
+            currentConfiguration.payload.detailLevel.cacheComponent,
             String(currentConfiguration.payload.graphPathVersion),
             String(currentConfiguration.payload.renderVersion),
-            String(Int(bounds.width.rounded(.toNearestOrEven))),
-            String(Int(bounds.height.rounded(.toNearestOrEven))),
+            String(currentConfiguration.payload.pointCount),
+            String(Int(renderSize.width.rounded(.toNearestOrEven))),
+            String(Int(renderSize.height.rounded(.toNearestOrEven))),
             String(currentConfiguration.visualState.rawValue)
         ].joined(separator: "|")
 
-        if lastRenderSignature == renderSignature, reason == "layout" {
+        let effectiveReason = pendingRedrawReason ?? reason
+        if lastRenderSignature == renderSignature {
+            AppLogger.debug(
+                .lifecycle,
+                "[GraphDetailDebug] \(currentConfiguration.marketIdentity.logFields) action=redraw_skipped reason=same_render_signature detailLevel=\(currentConfiguration.payload.detailLevel.cacheComponent) pointCount=\(currentConfiguration.payload.pointCount)"
+            )
             return
+        }
+
+        if effectiveReason == "first_paint" {
+            AppLogger.debug(
+                .lifecycle,
+                "[GraphDetailDebug] \(currentConfiguration.marketIdentity.logFields) action=first_paint detailLevel=\(currentConfiguration.payload.detailLevel.cacheComponent) pointCount=\(currentConfiguration.payload.pointCount) source=\(currentConfiguration.firstPaintSource)"
+            )
         }
 
         let placeholderFrame = CGRect(
             x: 0,
-            y: bounds.height * 0.14,
-            width: bounds.width,
-            height: bounds.height * 0.72
+            y: renderSize.height * 0.14,
+            width: renderSize.width,
+            height: renderSize.height * 0.72
         )
         let placeholderPath = UIBezierPath(
             roundedRect: placeholderFrame,
@@ -305,32 +368,59 @@ final class SparklineRenderView: UIView {
             guard let geometry = currentConfiguration.payload.geometry,
                   let graphPath = MarketSparklinePathCache.shared.path(
                     graphRenderIdentity: currentConfiguration.payload.graphRenderIdentity,
+                    detailLevel: currentConfiguration.payload.detailLevel,
                     graphPathVersion: currentConfiguration.payload.graphPathVersion,
-                    size: bounds.size,
-                    geometry: geometry
+                    size: renderSize,
+                    geometry: geometry,
+                    marketIdentity: currentConfiguration.marketIdentity
                   ) else {
                 AppLogger.debug(
                     .lifecycle,
-                    "[GraphRenderDebug] symbol=\(currentConfiguration.symbol) action=draw_skipped reason=missing_path"
+                    "[GraphRenderDebug] \(currentConfiguration.marketIdentity.logFields) action=draw_skipped reason=missing_path"
                 )
                 showPlaceholder(
                     path: placeholderPath,
                     isUnavailable: false
                 )
                 lastRenderSignature = renderSignature
+                pendingRedrawReason = nil
                 return
             }
 
+            let pathIdentity = [
+                currentConfiguration.payload.graphRenderIdentity,
+                currentConfiguration.payload.detailLevel.cacheComponent,
+                String(currentConfiguration.payload.graphPathVersion),
+                String(currentConfiguration.payload.renderVersion),
+                String(currentConfiguration.payload.pointCount),
+                String(Int(renderSize.width.rounded(.toNearestOrEven))),
+                String(Int(renderSize.height.rounded(.toNearestOrEven)))
+            ].joined(separator: "|")
             strokeLayer.path = graphPath
             strokeLayer.strokeColor = (currentConfiguration.isUp ? UIColor(Color.up) : UIColor(Color.down)).cgColor
             strokeLayer.opacity = currentConfiguration.visualState.strokeOpacity
             strokeLayer.isHidden = false
             placeholderFillLayer.isHidden = true
             placeholderBorderLayer.isHidden = true
+            strokeLayer.setNeedsDisplay()
+            layer.setNeedsDisplay()
+            currentRenderedPathIdentity = pathIdentity
+            redrawCount += 1
+            lastRedrawReason = effectiveReason
 
             AppLogger.debug(
                 .lifecycle,
-                "[GraphRenderDebug] symbol=\(currentConfiguration.symbol) action=draw_started size=\(Int(bounds.width.rounded(.toNearestOrEven)))x\(Int(bounds.height.rounded(.toNearestOrEven))) pointCount=\(currentConfiguration.payload.pointCount)"
+                "[GraphRenderDebug] \(currentConfiguration.marketIdentity.logFields) action=draw_started size=\(Int(renderSize.width.rounded(.toNearestOrEven)))x\(Int(renderSize.height.rounded(.toNearestOrEven))) pointCount=\(currentConfiguration.payload.pointCount)"
+            )
+            if effectiveReason == "detail_upgrade" {
+                AppLogger.debug(
+                    .lifecycle,
+                    "[GraphDetailDebug] \(currentConfiguration.marketIdentity.logFields) action=redraw_triggered reason=detail_upgrade"
+                )
+            }
+            AppLogger.debug(
+                .lifecycle,
+                "[GraphDetailDebug] \(currentConfiguration.marketIdentity.logFields) action=refined_patch_applied renderVersion=\(currentConfiguration.payload.renderVersion) pathVersion=\(currentConfiguration.payload.graphPathVersion)"
             )
         case .placeholder:
             showPlaceholder(
@@ -347,6 +437,71 @@ final class SparklineRenderView: UIView {
         }
 
         lastRenderSignature = renderSignature
+        pendingRedrawReason = nil
+    }
+
+    private func effectiveRenderSize(
+        for configuration: SparklineCanvasConfiguration,
+        reason: String
+    ) -> CGSize {
+        if bounds.width > 0, bounds.height > 0 {
+            hasScheduledDeferredLayoutRender = false
+            return bounds.size
+        }
+
+        MarketPerformanceDebugClient.shared.increment(.graphLayoutZero)
+        let fallbackSize = CGSize(width: configuration.width, height: configuration.height)
+        guard fallbackSize.width > 0, fallbackSize.height > 0 else {
+            AppLogger.debug(
+                .lifecycle,
+                "[GraphRenderDebug] \(configuration.marketIdentity.logFields) action=draw_skipped reason=layout_zero"
+            )
+            return .zero
+        }
+
+        AppLogger.debug(
+            .lifecycle,
+            "[GraphRenderDebug] \(configuration.marketIdentity.logFields) action=draw_deferred reason=layout_zero fallbackSize=\(Int(fallbackSize.width))x\(Int(fallbackSize.height)) source=\(reason)"
+        )
+        if hasScheduledDeferredLayoutRender == false {
+            hasScheduledDeferredLayoutRender = true
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.renderCurrentConfiguration(reason: "deferred_layout")
+            }
+        }
+        return fallbackSize
+    }
+
+    private func redrawReason(
+        previousConfiguration: SparklineCanvasConfiguration?,
+        nextConfiguration: SparklineCanvasConfiguration,
+        bindingKeyChanged: Bool
+    ) -> String {
+        guard let previousConfiguration else {
+            return "first_paint"
+        }
+        if bindingKeyChanged {
+            return "binding_change"
+        }
+        let oldDetail = previousConfiguration.payload.detailLevel
+        let newDetail = nextConfiguration.payload.detailLevel
+        if newDetail.pathDetailRank > oldDetail.pathDetailRank
+            || (newDetail.isDetailed && nextConfiguration.payload.pointCount > previousConfiguration.payload.pointCount) {
+            AppLogger.debug(
+                .lifecycle,
+                "[GraphDetailDebug] \(nextConfiguration.marketIdentity.logFields) action=refined_patch_received oldDetail=\(oldDetail.cacheComponent) newDetail=\(newDetail.cacheComponent) oldPointCount=\(previousConfiguration.payload.pointCount) newPointCount=\(nextConfiguration.payload.pointCount)"
+            )
+            return "detail_upgrade"
+        }
+        if previousConfiguration.payload.graphPathVersion != nextConfiguration.payload.graphPathVersion {
+            return "path_update"
+        }
+        if previousConfiguration.payload.renderVersion != nextConfiguration.payload.renderVersion
+            || previousConfiguration.visualState != nextConfiguration.visualState {
+            return "visual_state"
+        }
+        return "same_render_signature"
     }
 
     private func showPlaceholder(path: CGPath, isUnavailable: Bool) {
@@ -363,6 +518,7 @@ final class SparklineRenderView: UIView {
     private func clearRenderedGraph() {
         strokeLayer.path = nil
         strokeLayer.isHidden = true
+        currentRenderedPathIdentity = nil
         placeholderFillLayer.path = nil
         placeholderFillLayer.isHidden = true
         placeholderBorderLayer.path = nil
@@ -403,8 +559,7 @@ private extension MarketSparklineVisualState {
 struct SparklineView: View, Equatable {
     let payload: MarketSparklineRenderPayload
     let isUp: Bool
-    let exchange: Exchange
-    let symbol: String
+    let marketIdentity: MarketIdentity
     let width: CGFloat
     let height: CGFloat
 
@@ -413,29 +568,25 @@ struct SparklineView: View, Equatable {
     init(
         payload: MarketSparklineRenderPayload,
         isUp: Bool,
-        exchange: Exchange,
-        symbol: String,
+        marketIdentity: MarketIdentity,
         width: CGFloat = 76,
         height: CGFloat = 20
     ) {
         let resolution = RetainedSparklineStore.shared.resolve(
             incoming: payload,
-            exchange: exchange,
-            symbol: symbol
+            marketIdentity: marketIdentity
         )
 
         self.payload = payload
         self.isUp = isUp
-        self.exchange = exchange
-        self.symbol = symbol
+        self.marketIdentity = marketIdentity
         self.width = width
         self.height = height
         self.resolvedConfiguration = SparklineCanvasConfiguration(
             payload: resolution.payload,
             visualState: resolution.visualState,
             isUp: isUp,
-            exchange: exchange,
-            symbol: symbol,
+            marketIdentity: marketIdentity,
             width: width,
             height: height,
             firstPaintSource: resolution.firstPaintSource
@@ -447,8 +598,7 @@ struct SparklineView: View, Equatable {
             && lhs.isUp == rhs.isUp
             && lhs.width == rhs.width
             && lhs.height == rhs.height
-            && lhs.exchange == rhs.exchange
-            && lhs.symbol == rhs.symbol
+            && lhs.marketIdentity == rhs.marketIdentity
     }
 
     var body: some View {

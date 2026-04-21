@@ -268,6 +268,79 @@ enum MarketSparklineRenderPolicy {
     }
 }
 
+enum MarketSparklineDetailLevel: Int, Equatable {
+    case none = 0
+    case placeholder = 1
+    case retainedCoarse = 2
+    case liveCoarse = 3
+    case retainedDetailed = 4
+    case liveDetailed = 5
+
+    nonisolated init(
+        graphState: MarketRowGraphState,
+        points: [Double],
+        pointCount: Int
+    ) {
+        guard MarketSparklineRenderPolicy.hasRenderableGraph(points: points, pointCount: pointCount) else {
+            switch graphState {
+            case .none:
+                self = .none
+            case .placeholder, .cachedVisible, .liveVisible, .staleVisible, .unavailable:
+                self = .placeholder
+            }
+            return
+        }
+
+        let isDetailed = MarketSparklineRenderPolicy.hasHydratedGraph(
+            points: points,
+            pointCount: pointCount
+        )
+
+        switch graphState {
+        case .liveVisible:
+            self = isDetailed ? .liveDetailed : .liveCoarse
+        case .cachedVisible, .staleVisible:
+            self = isDetailed ? .retainedDetailed : .retainedCoarse
+        case .none:
+            self = .none
+        case .placeholder, .unavailable:
+            self = .placeholder
+        }
+    }
+
+    nonisolated var cacheComponent: String {
+        switch self {
+        case .none:
+            return "none"
+        case .placeholder:
+            return "placeholder"
+        case .retainedCoarse:
+            return "retainedCoarse"
+        case .liveCoarse:
+            return "liveCoarse"
+        case .retainedDetailed:
+            return "retainedDetailed"
+        case .liveDetailed:
+            return "liveDetailed"
+        }
+    }
+
+    nonisolated var pathDetailRank: Int {
+        switch self {
+        case .none, .placeholder:
+            return 0
+        case .retainedCoarse, .liveCoarse:
+            return 1
+        case .retainedDetailed, .liveDetailed:
+            return 2
+        }
+    }
+
+    nonisolated var isDetailed: Bool {
+        pathDetailRank == 2
+    }
+}
+
 enum MarketSparklineVisualState: Int, Equatable {
     case none
     case placeholder
@@ -350,7 +423,12 @@ enum MarketListDisplayMode: String, CaseIterable, Codable {
                 symbolImageSize: 20,
                 priceWidth: 80,
                 changeWidth: 54,
-                volumeWidth: 46
+                volumeWidth: 46,
+                changeColumnLeadingPadding: 8,
+                sparklineColumnLeadingPadding: 10,
+                changeBadgeMinWidth: 0,
+                changeBadgeHeight: 0,
+                sparklineMinimumWidth: 64
             )
         case .info:
             return MarketListDisplayConfiguration(
@@ -370,7 +448,12 @@ enum MarketListDisplayMode: String, CaseIterable, Codable {
                 symbolImageSize: 24,
                 priceWidth: 82,
                 changeWidth: 54,
-                volumeWidth: 46
+                volumeWidth: 46,
+                changeColumnLeadingPadding: 8,
+                sparklineColumnLeadingPadding: 0,
+                changeBadgeMinWidth: 0,
+                changeBadgeHeight: 0,
+                sparklineMinimumWidth: 0
             )
         case .emphasis:
             return MarketListDisplayConfiguration(
@@ -378,19 +461,24 @@ enum MarketListDisplayMode: String, CaseIterable, Codable {
                 title: title,
                 subtitle: subtitle,
                 showsSparkline: true,
-                sparklineWidth: 50,
-                sparklineHeight: 16,
+                sparklineWidth: 58,
+                sparklineHeight: 18,
                 showsSymbolImage: true,
                 emphasizesChangeRate: true,
                 compactLayout: true,
                 showsVolume: false,
-                rowHeight: 46,
+                rowHeight: 50,
                 rowVerticalPadding: 6,
-                symbolColumnMinimumWidth: 104,
+                symbolColumnMinimumWidth: 108,
                 symbolImageSize: 24,
-                priceWidth: 82,
-                changeWidth: 70,
-                volumeWidth: 0
+                priceWidth: 86,
+                changeWidth: 94,
+                volumeWidth: 0,
+                changeColumnLeadingPadding: 10,
+                sparklineColumnLeadingPadding: 10,
+                changeBadgeMinWidth: 74,
+                changeBadgeHeight: 30,
+                sparklineMinimumWidth: 58
             )
         }
     }
@@ -414,12 +502,77 @@ struct MarketListDisplayConfiguration: Equatable {
     let priceWidth: CGFloat
     let changeWidth: CGFloat
     let volumeWidth: CGFloat
+    let changeColumnLeadingPadding: CGFloat
+    let sparklineColumnLeadingPadding: CGFloat
+    let changeBadgeMinWidth: CGFloat
+    let changeBadgeHeight: CGFloat
+    let sparklineMinimumWidth: CGFloat
 }
 
 enum MarketRowDataState: Equatable {
     case pending
     case snapshot
     case live
+}
+
+enum MarketRowSymbolImageState: String, Equatable {
+    case missing
+    case placeholder
+    case cached
+    case live
+
+    nonisolated var renderRank: Int {
+        switch self {
+        case .missing:
+            return 0
+        case .placeholder:
+            return 1
+        case .cached:
+            return 2
+        case .live:
+            return 3
+        }
+    }
+
+    nonisolated var showsRenderedImage: Bool {
+        switch self {
+        case .cached, .live:
+            return true
+        case .missing, .placeholder:
+            return false
+        }
+    }
+}
+
+struct AssetImageRequestDescriptor: Hashable, Equatable {
+    let marketIdentity: MarketIdentity
+    let symbol: String
+    let canonicalSymbol: String
+    let imageURL: String?
+    let hasImage: Bool?
+    let localAssetName: String?
+
+    nonisolated var normalizedImageURL: URL? {
+        guard let rawValue = imageURL?.trimmingCharacters(in: .whitespacesAndNewlines),
+              rawValue.isEmpty == false else {
+            return nil
+        }
+        guard let url = URL(string: rawValue),
+              url.scheme?.isEmpty == false else {
+            return nil
+        }
+        return url
+    }
+
+    nonisolated var placeholderText: String {
+        let normalizedSymbol = canonicalSymbol
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .uppercased()
+        guard normalizedSymbol.isEmpty == false else {
+            return "?"
+        }
+        return String(normalizedSymbol.prefix(min(max(normalizedSymbol.count, 1), 2)))
+    }
 }
 
 struct MarketSparklineGeometry: Equatable {
@@ -434,6 +587,7 @@ private final class MarketSparklineGeometryCache {
 
     nonisolated func geometry(
         graphRenderIdentity: String,
+        graphDetailLevel: MarketSparklineDetailLevel,
         graphPathVersion: Int,
         points: [Double],
         pointCount: Int
@@ -442,7 +596,7 @@ private final class MarketSparklineGeometryCache {
             return nil
         }
 
-        let cacheKey = "\(graphRenderIdentity)|\(graphPathVersion)"
+        let cacheKey = "\(graphRenderIdentity)|detail=\(graphDetailLevel.cacheComponent)|\(graphPathVersion)"
 
         lock.lock()
         if let cached = geometries[cacheKey] {
@@ -500,6 +654,7 @@ private final class MarketSparklineGeometryCache {
 struct MarketSparklineRenderPayload: Equatable {
     let bindingKey: String
     let graphRenderIdentity: String
+    let detailLevel: MarketSparklineDetailLevel
     let graphVisualState: MarketSparklineVisualState
     let graphPathVersion: Int
     let renderToken: String
@@ -520,17 +675,28 @@ struct MarketSparklineRenderPayload: Equatable {
         graphPathVersion: Int? = nil,
         renderVersion: Int? = nil
     ) {
+        let resolvedDetailLevel = MarketSparklineDetailLevel(
+            graphState: graphState,
+            points: points,
+            pointCount: pointCount
+        )
+        let resolvedGraphRenderIdentity = graphRenderIdentity.contains(":detail=")
+            ? graphRenderIdentity
+            : "\(graphRenderIdentity):detail=\(resolvedDetailLevel.cacheComponent)"
         self.bindingKey = bindingKey
-        self.graphRenderIdentity = graphRenderIdentity
+        self.graphRenderIdentity = resolvedGraphRenderIdentity
+        self.detailLevel = resolvedDetailLevel
         self.graphVisualState = MarketSparklineVisualState(graphState: graphState)
         self.graphPathVersion = graphPathVersion ?? Self.sparklinePathVersion(
             graphState: graphState,
+            detailLevel: resolvedDetailLevel,
             points: points,
             pointCount: pointCount
         )
         self.renderToken = renderToken
         self.renderVersion = renderVersion ?? Self.sparklineRenderVersion(
             graphVisualState: self.graphVisualState,
+            detailLevel: resolvedDetailLevel,
             graphPathVersion: self.graphPathVersion
         )
         self.graphState = graphState
@@ -538,7 +704,8 @@ struct MarketSparklineRenderPayload: Equatable {
         self.hasEnoughData = hasEnoughData
         self.geometry = MarketSparklineRenderPolicy.hasRenderableGraph(points: points, pointCount: pointCount)
             ? MarketSparklineGeometryCache.shared.geometry(
-                graphRenderIdentity: graphRenderIdentity,
+                graphRenderIdentity: resolvedGraphRenderIdentity,
+                graphDetailLevel: resolvedDetailLevel,
                 graphPathVersion: self.graphPathVersion,
                 points: points,
                 pointCount: pointCount
@@ -554,6 +721,7 @@ struct MarketSparklineRenderPayload: Equatable {
 
     private nonisolated static func sparklinePathVersion(
         graphState: MarketRowGraphState,
+        detailLevel: MarketSparklineDetailLevel,
         points: [Double],
         pointCount: Int
     ) -> Int {
@@ -561,14 +729,17 @@ struct MarketSparklineRenderPayload: Equatable {
         for point in points {
             pointHash = pointHash &* 31 &+ Int((point * 100).rounded())
         }
-        return graphStateOrdinal(graphState) * 1_000_000 + abs(pointHash % 1_000_000)
+        return detailLevel.rawValue * 10_000_000
+            + graphStateOrdinal(graphState) * 1_000_000
+            + abs(pointHash % 1_000_000)
     }
 
     private nonisolated static func sparklineRenderVersion(
         graphVisualState: MarketSparklineVisualState,
+        detailLevel: MarketSparklineDetailLevel,
         graphPathVersion: Int
     ) -> Int {
-        abs((graphPathVersion &* 31) &+ graphVisualState.rawValue)
+        abs((graphPathVersion &* 31) &+ graphVisualState.rawValue &+ detailLevel.rawValue &* 101)
     }
 
     private nonisolated static func graphStateOrdinal(_ state: MarketRowGraphState) -> Int {
@@ -590,11 +761,12 @@ struct MarketSparklineRenderPayload: Equatable {
 }
 
 struct MarketRowViewState: Identifiable, Equatable {
-    nonisolated var id: String { "\(exchange.rawValue):\(coin.symbol)" }
+    nonisolated var id: String { marketIdentity.cacheKey }
 
     let selectedExchange: Exchange
     let exchange: Exchange
     let sourceExchange: Exchange
+    let marketIdentity: MarketIdentity
     let coin: CoinInfo
     let priceText: String
     let changeText: String
@@ -607,6 +779,7 @@ struct MarketRowViewState: Identifiable, Equatable {
     let chartPresentation: MarketRowChartPresentation
     let baseFreshnessState: MarketRowFreshnessState
     let graphState: MarketRowGraphState
+    let symbolImageState: MarketRowSymbolImageState
     let isPricePlaceholder: Bool
     let isChangePlaceholder: Bool
     let isVolumePlaceholder: Bool
@@ -616,17 +789,33 @@ struct MarketRowViewState: Identifiable, Equatable {
     let dataState: MarketRowDataState
 
     nonisolated var symbol: String { coin.symbol }
+    nonisolated var marketId: String? { marketIdentity.marketId }
+    nonisolated var canonicalSymbol: String { coin.canonicalSymbol }
+    nonisolated var displaySymbol: String { coin.displaySymbol }
     nonisolated var graphBindingKey: String { sparklinePayload.bindingKey }
     nonisolated var sparklineRenderToken: String { sparklinePayload.renderToken }
     nonisolated var displayName: String { coin.name }
     nonisolated var displayNameEn: String { coin.nameEn }
-    nonisolated var imageURL: String? { coin.imageURL }
+    nonisolated var imageURL: String? { coin.iconURL }
+    nonisolated var hasImage: Bool? { coin.resolvedHasImage }
+    nonisolated var localAssetName: String { coin.localAssetName }
+    nonisolated var symbolImageDescriptor: AssetImageRequestDescriptor {
+        AssetImageRequestDescriptor(
+            marketIdentity: marketIdentity,
+            symbol: symbol,
+            canonicalSymbol: canonicalSymbol,
+            imageURL: imageURL,
+            hasImage: hasImage,
+            localAssetName: localAssetName
+        )
+    }
     nonisolated var hasPrice: Bool { !isPricePlaceholder }
     nonisolated var hasVolume: Bool { !isVolumePlaceholder }
     nonisolated var sparklinePoints: Int { sparklinePointCount }
-    nonisolated var graphIdentity: String { "\(exchange.rawValue):\(coin.symbol):\(sparklineTimeframe)" }
+    nonisolated var graphIdentity: String { sparklinePayload.graphRenderIdentity }
     nonisolated var graphPathVersion: Int { sparklinePayload.graphPathVersion }
     nonisolated var graphRenderVersion: Int { sparklinePayload.renderVersion }
+    nonisolated var marketLogFields: String { marketIdentity.logFields }
     nonisolated var isSourceExchangeMismatch: Bool { selectedExchange != sourceExchange }
     var isSparklinePlaceholder: Bool { chartPresentation == .placeholder }
     var reusesCachedSparkline: Bool { chartPresentation == .cached }
@@ -646,6 +835,7 @@ struct MarketRowViewState: Identifiable, Equatable {
         chartPresentation: MarketRowChartPresentation,
         baseFreshnessState: MarketRowFreshnessState,
         graphState: MarketRowGraphState,
+        symbolImageState: MarketRowSymbolImageState,
         isPricePlaceholder: Bool,
         isChangePlaceholder: Bool,
         isVolumePlaceholder: Bool,
@@ -654,9 +844,11 @@ struct MarketRowViewState: Identifiable, Equatable {
         isFavorite: Bool,
         dataState: MarketRowDataState
     ) {
+        let resolvedMarketIdentity = coin.marketIdentity(exchange: exchange)
         self.selectedExchange = selectedExchange
         self.exchange = exchange
         self.sourceExchange = sourceExchange
+        self.marketIdentity = resolvedMarketIdentity
         self.coin = coin
         self.priceText = priceText
         self.changeText = changeText
@@ -664,15 +856,22 @@ struct MarketRowViewState: Identifiable, Equatable {
         self.sparkline = sparkline
         self.sparklinePointCount = sparklinePointCount
         self.sparklineTimeframe = sparklineTimeframe
-        let bindingKey = "\(exchange.rawValue):\(coin.symbol):\(sparklineTimeframe)"
-        let graphRenderIdentity = bindingKey
+        let bindingKey = "\(resolvedMarketIdentity.cacheKey):\(sparklineTimeframe)"
+        let detailLevel = MarketSparklineDetailLevel(
+            graphState: graphState,
+            points: sparkline,
+            pointCount: sparklinePointCount
+        )
+        let graphRenderIdentity = "\(bindingKey):detail=\(detailLevel.cacheComponent)"
         let graphPathVersion = Self.sparklinePathVersion(
             points: sparkline,
             pointCount: sparklinePointCount,
-            graphState: graphState
+            graphState: graphState,
+            detailLevel: detailLevel
         )
         let renderVersion = Self.sparklineRenderVersion(
             graphState: graphState,
+            detailLevel: detailLevel,
             graphPathVersion: graphPathVersion
         )
         let renderToken = Self.sparklineRenderToken(
@@ -695,6 +894,7 @@ struct MarketRowViewState: Identifiable, Equatable {
         self.chartPresentation = chartPresentation
         self.baseFreshnessState = baseFreshnessState
         self.graphState = graphState
+        self.symbolImageState = symbolImageState
         self.isPricePlaceholder = isPricePlaceholder
         self.isChangePlaceholder = isChangePlaceholder
         self.isVolumePlaceholder = isVolumePlaceholder
@@ -724,6 +924,36 @@ struct MarketRowViewState: Identifiable, Equatable {
             chartPresentation: graphState.chartPresentation,
             baseFreshnessState: baseFreshnessState,
             graphState: graphState,
+            symbolImageState: symbolImageState,
+            isPricePlaceholder: isPricePlaceholder,
+            isChangePlaceholder: isChangePlaceholder,
+            isVolumePlaceholder: isVolumePlaceholder,
+            isUp: isUp,
+            flash: flash,
+            isFavorite: isFavorite,
+            dataState: dataState
+        )
+    }
+
+    func replacingSymbolImage(
+        state: MarketRowSymbolImageState
+    ) -> MarketRowViewState {
+        MarketRowViewState(
+            selectedExchange: selectedExchange,
+            exchange: exchange,
+            sourceExchange: sourceExchange,
+            coin: coin,
+            priceText: priceText,
+            changeText: changeText,
+            volumeText: volumeText,
+            sparkline: sparkline,
+            sparklinePointCount: sparklinePointCount,
+            sparklineTimeframe: sparklineTimeframe,
+            hasEnoughSparklineData: hasEnoughSparklineData,
+            chartPresentation: chartPresentation,
+            baseFreshnessState: baseFreshnessState,
+            graphState: graphState,
+            symbolImageState: state,
             isPricePlaceholder: isPricePlaceholder,
             isChangePlaceholder: isChangePlaceholder,
             isVolumePlaceholder: isVolumePlaceholder,
@@ -745,20 +975,26 @@ struct MarketRowViewState: Identifiable, Equatable {
     private nonisolated static func sparklinePathVersion(
         points: [Double],
         pointCount: Int,
-        graphState: MarketRowGraphState
+        graphState: MarketRowGraphState,
+        detailLevel: MarketSparklineDetailLevel
     ) -> Int {
         var pointHash = pointCount
         for point in points {
             pointHash = pointHash &* 31 &+ Int((point * 100).rounded())
         }
-        return graphStateOrdinal(graphState) * 1_000_000 + abs(pointHash % 1_000_000)
+        return detailLevel.rawValue * 10_000_000
+            + graphStateOrdinal(graphState) * 1_000_000
+            + abs(pointHash % 1_000_000)
     }
 
     private nonisolated static func sparklineRenderVersion(
         graphState: MarketRowGraphState,
+        detailLevel: MarketSparklineDetailLevel,
         graphPathVersion: Int
     ) -> Int {
-        abs((graphPathVersion &* 31) &+ MarketSparklineVisualState(graphState: graphState).rawValue)
+        abs((graphPathVersion &* 31)
+            &+ MarketSparklineVisualState(graphState: graphState).rawValue
+            &+ detailLevel.rawValue &* 101)
     }
 
     private nonisolated static func graphStateOrdinal(_ state: MarketRowGraphState) -> Int {
@@ -865,7 +1101,7 @@ struct KimchiPremiumExchangeCellViewState: Identifiable, Equatable {
 }
 
 struct KimchiPremiumCoinViewState: Identifiable, Equatable {
-    var id: String { symbol }
+    var id: String { "\(selectedExchange.rawValue)|\(symbol)" }
 
     let symbol: String
     let displayName: String
