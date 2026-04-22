@@ -2,6 +2,10 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>API_BASE_URL</key>
+	<string>$(API_BASE_URL)</string>
+	<key>APP_ENV</key>
+	<string>$(APP_ENV)</string>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
@@ -31,24 +35,14 @@
 	</array>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
-	<key>APP_ENV</key>
-	<string>$(APP_ENV)</string>
-	<key>API_BASE_URL</key>
-	<string>$(API_BASE_URL)</string>
-	<key>WS_BASE_URL</key>
-	<string>$(WS_BASE_URL)</string>
-	<key>WEB_BASE_URL</key>
-	<string>$(WEB_BASE_URL)</string>
+	<key>GOOGLE_CLIENT_ID</key>
+	<string>$(GOOGLE_CLIENT_ID)</string>
 	<key>LOCAL_SERVER_HOST</key>
 	<string>$(LOCAL_SERVER_HOST)</string>
 	<key>LOCAL_SERVER_PORT</key>
 	<string>$(LOCAL_SERVER_PORT)</string>
-	<key>PUBLIC_WS_PATH</key>
-	<string>$(PUBLIC_WS_PATH)</string>
-	<key>PRIVATE_WS_PATH</key>
-	<string>$(PRIVATE_WS_PATH)</string>
-	<key>GOOGLE_CLIENT_ID</key>
-	<string>$(GOOGLE_CLIENT_ID)</string>
+	<key>LSRequiresIPhoneOS</key>
+	<true/>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsLocalNetworking</key>
@@ -69,8 +63,10 @@
 	</dict>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Dev builds connect to a local Cryptory server on your Mac or local network.</string>
-	<key>LSRequiresIPhoneOS</key>
-	<true/>
+	<key>PRIVATE_WS_PATH</key>
+	<string>$(PRIVATE_WS_PATH)</string>
+	<key>PUBLIC_WS_PATH</key>
+	<string>$(PUBLIC_WS_PATH)</string>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
 	<key>UILaunchStoryboardName</key>
@@ -78,15 +74,17 @@
 	<key>UISupportedInterfaceOrientations</key>
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>
-		<string>UIInterfaceOrientationLandscapeLeft</string>
-		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
 	<key>UISupportedInterfaceOrientations~ipad</key>
 	<array>
-		<string>UIInterfaceOrientationPortrait</string>
-		<string>UIInterfaceOrientationPortraitUpsideDown</string>
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationPortraitUpsideDown</string>
 	</array>
+	<key>WEB_BASE_URL</key>
+	<string>$(WEB_BASE_URL)</string>
+	<key>WS_BASE_URL</key>
+	<string>$(WS_BASE_URL)</string>
 </dict>
 </plist>

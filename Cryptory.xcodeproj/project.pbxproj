@@ -28,18 +28,18 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
-		C0DE00000000000000000010 /* Debug-Dev.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = "Debug-Dev.xcconfig"; sourceTree = "<group>"; };
-		C0DE00000000000000000011 /* Release-Prod.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = "Release-Prod.xcconfig"; sourceTree = "<group>"; };
 		8BDB61A22F7A0CA900987CEF /* Cryptory.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Cryptory.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		8BDB61AF2F7A0CAA00987CEF /* CryptoryTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = CryptoryTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		8BDB61B92F7A0CAA00987CEF /* CryptoryUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = CryptoryUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		C0DE00000000000000000010 /* Debug-Dev.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = "Debug-Dev.xcconfig"; sourceTree = "<group>"; };
+		C0DE00000000000000000011 /* Release-Prod.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = "Release-Prod.xcconfig"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
 		C0DE00000000000000000004 /* Exceptions for "Cryptory" folder in "Cryptory" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
-				Info-Dev.plist,
+				"Info-Dev.plist",
 				Info.plist,
 			);
 			target = 8BDB61A12F7A0CA900987CEF /* Cryptory */;
@@ -104,15 +104,6 @@
 			);
 			sourceTree = "<group>";
 		};
-		C0DE00000000000000000012 /* Configurations */ = {
-			isa = PBXGroup;
-			children = (
-				C0DE00000000000000000010 /* Debug-Dev.xcconfig */,
-				C0DE00000000000000000011 /* Release-Prod.xcconfig */,
-			);
-			path = Configurations;
-			sourceTree = "<group>";
-		};
 		8BDB61A32F7A0CA900987CEF /* Products */ = {
 			isa = PBXGroup;
 			children = (
@@ -121,6 +112,15 @@
 				8BDB61B92F7A0CAA00987CEF /* CryptoryUITests.xctest */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		C0DE00000000000000000012 /* Configurations */ = {
+			isa = PBXGroup;
+			children = (
+				C0DE00000000000000000010 /* Debug-Dev.xcconfig */,
+				C0DE00000000000000000011 /* Release-Prod.xcconfig */,
+			);
+			path = Configurations;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -439,6 +439,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = "Cryptory/Info-Dev.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = Cryptory;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = NO;
@@ -452,12 +453,16 @@
 				PRODUCT_BUNDLE_IDENTIFIER = com.hwb.Cryptory;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = "1,2";
+				TARGETED_DEVICE_FAMILY = 1;
 			};
 			name = Debug;
 		};
@@ -473,6 +478,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Cryptory/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = Cryptory;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = NO;
@@ -486,12 +492,16 @@
 				PRODUCT_BUNDLE_IDENTIFIER = com.hwb.Cryptory;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = "1,2";
+				TARGETED_DEVICE_FAMILY = 1;
 			};
 			name = Release;
 		};
