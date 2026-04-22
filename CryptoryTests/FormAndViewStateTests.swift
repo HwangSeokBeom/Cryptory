@@ -516,6 +516,82 @@ final class FormAndViewStateTests: XCTestCase {
         XCTAssertEqual(decision.reason, "quality_downgrade_blocked")
     }
 
+    func testFlatLookingLowInformationCoarseGraphFailsImmediateFirstPaintQuality() {
+        let quality = MarketSparklineQuality(
+            graphState: .cachedVisible,
+            points: [100, 100.01, 100.01, 100.01],
+            pointCount: 4
+        )
+
+        XCTAssertTrue(quality.isFlatLookingLowInformation)
+        XCTAssertTrue(quality.isLowInformationFirstPaintCandidate)
+        XCTAssertFalse(quality.isMinimumVisualQualityForFirstPaint)
+    }
+
+    func testCoinoneLowVarianceDetailedGraphCanPromoteAfterHeldCoarsePaint() {
+        let coarseQuality = MarketSparklineQuality(
+            graphState: .cachedVisible,
+            points: [790, 790.1, 790.1, 790.1],
+            pointCount: 4
+        )
+        let detailedQuality = MarketSparklineQuality(
+            graphState: .liveVisible,
+            points: [
+                790, 790.1, 790.05, 790.2, 790.12, 790.25,
+                790.18, 790.32, 790.24, 790.4, 790.35, 790.45
+            ],
+            pointCount: 12
+        )
+
+        XCTAssertTrue(coarseQuality.isFlatLookingLowInformation)
+        XCTAssertFalse(coarseQuality.isMinimumVisualQualityForFirstPaint)
+        XCTAssertEqual(detailedQuality.detailLevel, .liveDetailed)
+        XCTAssertTrue(detailedQuality.isMinimumVisualQualityForFirstPaint)
+        XCTAssertTrue(detailedQuality.promotionDecision(over: coarseQuality).accepted)
+    }
+
+    func testMarketSparklineQualityVisibleBindableChangeAllowsNewerSourceVersionWithinSameDetail() {
+        let retainedQuality = MarketSparklineQuality(
+            graphState: .cachedVisible,
+            points: [1, 2, 1.5, 2.4],
+            pointCount: 4,
+            sourceVersion: 100
+        )
+        let newerRetainedQuality = MarketSparklineQuality(
+            graphState: .cachedVisible,
+            points: [1, 2, 1.5, 2.4],
+            pointCount: 4,
+            sourceVersion: 200
+        )
+
+        XCTAssertEqual(
+            newerRetainedQuality.visibleBindableChangeReason(over: retainedQuality),
+            "newer_source_version"
+        )
+        XCTAssertFalse(newerRetainedQuality.promotionDecision(over: retainedQuality).accepted)
+    }
+
+    func testMarketSparklineQualityVisibleBindableChangeAllowsSamePointCountDifferentPoints() {
+        let cachedQuality = MarketSparklineQuality(
+            graphState: .cachedVisible,
+            points: [1, 2, 1.5, 2.4],
+            pointCount: 4,
+            sourceVersion: 100
+        )
+        let updatedQuality = MarketSparklineQuality(
+            graphState: .cachedVisible,
+            points: [1, 2.1, 1.3, 2.6],
+            pointCount: 4,
+            sourceVersion: 100
+        )
+
+        XCTAssertEqual(
+            updatedQuality.visibleBindableChangeReason(over: cachedQuality),
+            "same_count_new_points"
+        )
+        XCTAssertTrue(updatedQuality.promotionDecision(over: cachedQuality).accepted)
+    }
+
     @MainActor
     func testSparklineRenderViewRedrawsWhenGraphStateChanges() {
         let cachedRow = marketRow(
@@ -669,7 +745,129 @@ final class FormAndViewStateTests: XCTestCase {
     }
 
     @MainActor
-    func testSparklineRenderViewPrepareForReuseClearsRenderedGraph() {
+    func testSparklineRenderViewSkipsSameSignatureRedrawWhenFirstPaintSourceChanges() {
+        let row = marketRow(
+            priceText: "125,000,000",
+            graphState: .liveVisible,
+            points: [1, 2, 1.5, 2.4]
+        )
+        let sparklineRenderView = SparklineRenderView(frame: .zero)
+        let marketIdentity = MarketIdentity(exchange: .upbit, marketId: "KRW-BTC", symbol: "BTC")
+        let firstConfiguration = SparklineCanvasConfiguration(
+            payload: row.sparklinePayload,
+            visualState: row.sparklinePayload.graphVisualState,
+            isUp: true,
+            marketIdentity: marketIdentity,
+            width: 72,
+            height: 20,
+            firstPaintSource: "retained"
+        )
+        let reboundConfiguration = SparklineCanvasConfiguration(
+            payload: row.sparklinePayload,
+            visualState: row.sparklinePayload.graphVisualState,
+            isUp: true,
+            marketIdentity: marketIdentity,
+            width: 72,
+            height: 20,
+            firstPaintSource: "live"
+        )
+
+        sparklineRenderView.bounds = CGRect(origin: .zero, size: CGSize(width: 72, height: 20))
+        sparklineRenderView.apply(configuration: firstConfiguration)
+        let firstSnapshot = sparklineRenderView.debugSnapshot
+
+        sparklineRenderView.apply(configuration: reboundConfiguration)
+        let reboundSnapshot = sparklineRenderView.debugSnapshot
+
+        XCTAssertTrue(firstSnapshot.hasVisibleGraph)
+        XCTAssertEqual(firstSnapshot.redrawCount, reboundSnapshot.redrawCount)
+        XCTAssertEqual(reboundSnapshot.graphPathVersion, row.graphPathVersion)
+        XCTAssertEqual(reboundSnapshot.renderVersion, row.graphRenderVersion)
+    }
+
+    @MainActor
+    func testSparklineRenderViewRedrawsWhenPointCountMatchesButPointsChange() {
+        let firstRow = marketRow(
+            priceText: "125,000,000",
+            graphState: .liveVisible,
+            points: [1, 2, 1.5, 2.4]
+        )
+        let updatedRow = firstRow.replacingSparkline(
+            points: [1, 2.2, 1.7, 2.8],
+            pointCount: 4,
+            graphState: .liveVisible
+        )
+        let sparklineRenderView = SparklineRenderView(frame: .zero)
+        let marketIdentity = MarketIdentity(exchange: .upbit, marketId: "KRW-BTC", symbol: "BTC")
+
+        sparklineRenderView.debugApply(
+            payload: firstRow.sparklinePayload,
+            visualState: firstRow.sparklinePayload.graphVisualState,
+            isUp: true,
+            marketIdentity: marketIdentity,
+            size: CGSize(width: 72, height: 20)
+        )
+        let firstSnapshot = sparklineRenderView.debugSnapshot
+
+        sparklineRenderView.debugApply(
+            payload: updatedRow.sparklinePayload,
+            visualState: updatedRow.sparklinePayload.graphVisualState,
+            isUp: true,
+            marketIdentity: marketIdentity,
+            size: CGSize(width: 72, height: 20)
+        )
+        let updatedSnapshot = sparklineRenderView.debugSnapshot
+
+        XCTAssertGreaterThan(updatedSnapshot.redrawCount, firstSnapshot.redrawCount)
+        XCTAssertNotEqual(updatedSnapshot.graphPathVersion, firstSnapshot.graphPathVersion)
+    }
+
+    @MainActor
+    func testSparklineRenderViewTinyRangeVariationDoesNotRenderFlatLine() {
+        let row = marketRow(
+            priceText: "100.0005",
+            graphState: .liveVisible,
+            points: [100, 100.0002, 100.0001, 100.0005]
+        )
+        let sparklineRenderView = SparklineRenderView(frame: .zero)
+        let marketIdentity = MarketIdentity(exchange: .coinone, marketId: "KRW-BTC", symbol: "BTC")
+
+        sparklineRenderView.debugApply(
+            payload: row.sparklinePayload,
+            visualState: row.sparklinePayload.graphVisualState,
+            isUp: true,
+            marketIdentity: marketIdentity,
+            size: CGSize(width: 58, height: 18)
+        )
+
+        XCTAssertTrue(sparklineRenderView.debugSnapshot.hasVisibleGraph)
+        XCTAssertGreaterThan(sparklineRenderView.debugSnapshot.graphBoundsHeight, 1)
+    }
+
+    @MainActor
+    func testSparklineRenderViewTrueFlatDataRemainsFlat() {
+        let row = marketRow(
+            priceText: "100.0",
+            graphState: .liveVisible,
+            points: [100, 100, 100, 100]
+        )
+        let sparklineRenderView = SparklineRenderView(frame: .zero)
+        let marketIdentity = MarketIdentity(exchange: .coinone, marketId: "KRW-BTC", symbol: "BTC")
+
+        sparklineRenderView.debugApply(
+            payload: row.sparklinePayload,
+            visualState: row.sparklinePayload.graphVisualState,
+            isUp: true,
+            marketIdentity: marketIdentity,
+            size: CGSize(width: 58, height: 18)
+        )
+
+        XCTAssertTrue(sparklineRenderView.debugSnapshot.hasVisibleGraph)
+        XCTAssertEqual(sparklineRenderView.debugSnapshot.graphBoundsHeight, 0, accuracy: 0.001)
+    }
+
+    @MainActor
+    func testSparklineRenderViewPrepareForReuseKeepsUsableGraphUntilRebind() {
         let row = marketRow(
             priceText: "125,000,000",
             graphState: .liveVisible,
@@ -689,8 +887,52 @@ final class FormAndViewStateTests: XCTestCase {
 
         sparklineRenderView.prepareForReuse()
 
-        XCTAssertFalse(sparklineRenderView.debugSnapshot.hasVisibleGraph)
+        XCTAssertTrue(sparklineRenderView.debugSnapshot.hasVisibleGraph)
         XCTAssertFalse(sparklineRenderView.debugSnapshot.hasPlaceholder)
+    }
+
+    @MainActor
+    func testSparklineRenderViewRebindReplacesRetainedFallbackWithNewerVisibleCandidate() {
+        let retainedRow = marketRow(
+            priceText: "125,000,000",
+            graphState: .cachedVisible,
+            points: [1, 2, 3, 4],
+            sourceVersion: 100
+        )
+        let liveRow = marketRow(
+            priceText: "125,000,000",
+            graphState: .liveVisible,
+            points: [1, 2, 3.5, 4.5],
+            sourceVersion: 200
+        )
+        let sparklineRenderView = SparklineRenderView(frame: .zero)
+        let marketIdentity = MarketIdentity(exchange: .upbit, marketId: "KRW-BTC", symbol: "BTC")
+
+        sparklineRenderView.debugApply(
+            payload: retainedRow.sparklinePayload,
+            visualState: retainedRow.sparklinePayload.graphVisualState,
+            isUp: true,
+            marketIdentity: marketIdentity,
+            size: CGSize(width: 72, height: 20)
+        )
+        sparklineRenderView.prepareForReuse()
+        let retainedSnapshot = sparklineRenderView.debugSnapshot
+
+        sparklineRenderView.debugApply(
+            payload: liveRow.sparklinePayload,
+            visualState: liveRow.sparklinePayload.graphVisualState,
+            isUp: true,
+            marketIdentity: marketIdentity,
+            size: CGSize(width: 72, height: 20)
+        )
+        let liveSnapshot = sparklineRenderView.debugSnapshot
+
+        XCTAssertTrue(retainedSnapshot.hasVisibleGraph)
+        XCTAssertTrue(liveSnapshot.hasVisibleGraph)
+        XCTAssertEqual(liveSnapshot.visualState, .live)
+        XCTAssertEqual(liveSnapshot.detailLevel, .liveDetailed)
+        XCTAssertGreaterThan(liveSnapshot.redrawCount, retainedSnapshot.redrawCount)
+        XCTAssertNotEqual(liveSnapshot.graphPathVersion, retainedSnapshot.graphPathVersion)
     }
 
     @MainActor
@@ -1034,7 +1276,8 @@ final class FormAndViewStateTests: XCTestCase {
         priceText: String,
         graphState: MarketRowGraphState,
         points: [Double],
-        suppressesCoarseRetainedReuse: Bool = false
+        suppressesCoarseRetainedReuse: Bool = false,
+        sourceVersion: Int = 0
     ) -> MarketRowViewState {
         MarketRowViewState(
             selectedExchange: .upbit,
@@ -1059,7 +1302,8 @@ final class FormAndViewStateTests: XCTestCase {
             flash: nil,
             isFavorite: false,
             dataState: .live,
-            suppressesCoarseRetainedReuse: suppressesCoarseRetainedReuse
+            suppressesCoarseRetainedReuse: suppressesCoarseRetainedReuse,
+            sparklineSourceVersion: sourceVersion
         )
     }
 }

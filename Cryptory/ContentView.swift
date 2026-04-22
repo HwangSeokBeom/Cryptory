@@ -2,6 +2,8 @@ import SwiftUI
 
 struct ContentView: View {
     @StateObject private var vm: CryptoViewModel
+    @State private var isExchangeConnectionsSheetPresented = false
+    @State private var isProfilePresented = false
     @Environment(\.scenePhase) private var scenePhase
     private let instanceID: Int
     private let marketView: MarketView
@@ -41,7 +43,9 @@ struct ContentView: View {
             Color.bg.ignoresSafeArea()
 
             VStack(spacing: 0) {
-                HeaderView(vm: vm)
+                HeaderView(vm: vm) {
+                    isProfilePresented = true
+                }
 
                 TabView(selection: tabSelection) {
                     marketView
@@ -77,7 +81,6 @@ struct ContentView: View {
                 .tint(.accent)
                 .toolbarBackground(.visible, for: .tabBar)
                 .toolbarColorScheme(.dark, for: .tabBar)
-                .animation(.easeInOut(duration: 0.2), value: vm.activeTab)
             }
 
             if let notif = vm.notification {
@@ -132,6 +135,14 @@ struct ContentView: View {
             }
         }
         .onAppear {
+            vm.configureExchangeConnectionsPresentation(
+                onPresent: { isExchangeConnectionsSheetPresented = true },
+                onDismiss: { isExchangeConnectionsSheetPresented = false }
+            )
+            vm.syncExchangeConnectionsPresentationState(
+                isExchangeConnectionsSheetPresented,
+                reason: "content_view_sync"
+            )
             AppLogger.debug(.lifecycle, "ContentView onAppear #\(instanceID) tab=\(vm.activeTab.rawValue)")
             vm.onAppear()
         }
@@ -140,6 +151,12 @@ struct ContentView: View {
         }
         .onChange(of: scenePhase) { _, newValue in
             vm.onScenePhaseChanged(newValue)
+        }
+        .onChange(of: isExchangeConnectionsSheetPresented) { _, isPresented in
+            vm.syncExchangeConnectionsPresentationState(
+                isPresented,
+                reason: isPresented ? "content_sheet_presented" : "content_sheet_dismissed"
+            )
         }
         .sheet(isPresented: $vm.isLoginPresented) {
             LoginView(vm: vm)
@@ -151,8 +168,17 @@ struct ContentView: View {
                 .interactiveDismissDisabled(false)
                 .preferredColorScheme(.dark)
         }
-        .sheet(isPresented: $vm.isExchangeConnectionsPresented) {
+        .sheet(isPresented: $isExchangeConnectionsSheetPresented) {
             ExchangeConnectionsView(vm: vm)
+                .presentationDetents([.large])
+                .presentationDragIndicator(.visible)
+                .presentationContentInteraction(.scrolls)
+                .presentationCornerRadius(28)
+                .presentationBackground(Color.bg)
+                .preferredColorScheme(.dark)
+        }
+        .sheet(isPresented: $isProfilePresented) {
+            ProfileView(vm: vm)
                 .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
                 .presentationContentInteraction(.scrolls)

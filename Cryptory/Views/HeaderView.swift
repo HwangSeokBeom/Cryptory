@@ -10,6 +10,7 @@ struct ExchangeButtonBoundsPreferenceKey: PreferenceKey {
 
 struct HeaderView: View {
     @ObservedObject var vm: CryptoViewModel
+    let onOpenProfile: () -> Void
     @State private var safariDestination: SafariDestination?
     private let controlHeight: CGFloat = 48
     private let controlCornerRadius: CGFloat = 18
@@ -27,11 +28,14 @@ struct HeaderView: View {
             .accessibilityHint("홈페이지 열기")
             .frame(maxWidth: .infinity, alignment: .leading)
 
-            if vm.shouldShowExchangeSelector {
-                exchangeButton
-                    .layoutPriority(1)
-                    .anchorPreference(key: ExchangeButtonBoundsPreferenceKey.self, value: .bounds) { $0 }
-                    .transition(.opacity.combined(with: .scale(scale: 0.96)))
+            HStack(spacing: 10) {
+                if vm.shouldShowExchangeSelector {
+                    exchangeButton
+                        .layoutPriority(1)
+                        .anchorPreference(key: ExchangeButtonBoundsPreferenceKey.self, value: .bounds) { $0 }
+                }
+
+                profileButton
             }
         }
         .padding(.horizontal, 16)
@@ -55,7 +59,6 @@ struct HeaderView: View {
                     .frame(height: 1)
             }
         )
-        .animation(.easeInOut(duration: 0.2), value: vm.activeTab)
         .sheet(item: $safariDestination) { destination in
             SafariSheet(destination: destination)
                 .ignoresSafeArea()
@@ -140,6 +143,26 @@ struct HeaderView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+    }
+
+    private var profileButton: some View {
+        Button(action: onOpenProfile) {
+            ZStack(alignment: .topTrailing) {
+                Image(systemName: vm.isAuthenticated ? "person.crop.circle.fill" : "person.crop.circle")
+                    .font(.system(size: 19, weight: .semibold))
+                    .foregroundColor(vm.isAuthenticated ? .accent : .themeText)
+                    .frame(width: controlHeight, height: controlHeight)
+                    .background(controlBackground(cornerRadius: controlCornerRadius))
+
+                Circle()
+                    .fill(vm.isAuthenticated ? Color.accent : Color.textMuted)
+                    .frame(width: 8, height: 8)
+                    .offset(x: -12, y: 12)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("프로필 및 설정")
     }
 
     private func controlBackground(cornerRadius: CGFloat) -> some View {

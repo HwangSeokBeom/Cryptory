@@ -4,37 +4,48 @@ struct PortfolioView: View {
     @ObservedObject var vm: CryptoViewModel
 
     var body: some View {
-        if vm.activeTab == .portfolio, let feature = vm.activeAuthGate {
-            AuthGateView(feature: feature) {
-                vm.presentLogin(for: feature)
-            }
-        } else if vm.isSelectedExchangePortfolioUnsupported {
-            unsupportedState
-        } else {
-            ScrollView {
-                VStack(spacing: 16) {
-                    PortfolioConnectionSummaryCard(
-                        summaryText: connectionSummaryText,
-                        onManage: vm.openExchangeConnections
-                    )
-                    .equatable()
-                    .padding(.horizontal, 16)
-                    .padding(.top, 14)
-
-                    ScreenStatusBannerView(viewState: vm.portfolioStatusViewState)
+        Group {
+            if vm.activeTab == .portfolio, let feature = vm.activeAuthGate {
+                AuthGateView(feature: feature) {
+                    vm.presentLogin(for: feature)
+                }
+            } else if vm.isSelectedExchangePortfolioUnsupported {
+                unsupportedState
+            } else {
+                ScrollView {
+                    VStack(spacing: 16) {
+                        PortfolioConnectionSummaryCard(
+                            summaryText: connectionSummaryText,
+                            onManage: vm.openExchangeConnections
+                        )
+                        .equatable()
                         .padding(.horizontal, 16)
+                        .padding(.top, 14)
 
-                    if let summary = vm.portfolioSummaryCardState {
-                        TotalAssetCard(summary: summary)
-                            .equatable()
+                        ScreenStatusBannerView(viewState: vm.portfolioStatusViewState)
                             .padding(.horizontal, 16)
+
+                        if let summary = vm.portfolioSummaryCardState {
+                            TotalAssetCard(summary: summary)
+                                .equatable()
+                                .padding(.horizontal, 16)
+                        } else if shouldShowSummaryPlaceholder {
+                            PortfolioSummaryPlaceholderCard()
+                                .padding(.horizontal, 16)
+                        }
+
+                        portfolioBodySection
+
+                        Spacer(minLength: 20)
                     }
-
-                    portfolioBodySection
-
-                    Spacer(minLength: 20)
                 }
             }
+        }
+        .onAppear {
+            AppLogger.debug(
+                .lifecycle,
+                "[AssetScreenRenderDebug] render_reason=portfolio_view_appear state_transition=current:\(portfolioStateDescription)"
+            )
         }
     }
 
@@ -67,6 +78,26 @@ struct PortfolioView: View {
         case .loaded:
             let tradableCount = vm.exchangeConnections.filter { $0.permission == .tradeEnabled && $0.isActive }.count
             return "총 \(vm.exchangeConnections.count)개 연결, 주문 가능 \(tradableCount)개"
+        }
+    }
+
+    private var shouldShowSummaryPlaceholder: Bool {
+        vm.portfolioSummaryCardState == nil
+            && (vm.portfolioState.isLoading || vm.portfolioState == .idle)
+    }
+
+    private var portfolioStateDescription: String {
+        switch vm.portfolioState {
+        case .idle:
+            return "idle"
+        case .loading:
+            return "loading"
+        case .loaded(let snapshot):
+            return "loaded(holdings:\(snapshot.holdings.count))"
+        case .empty:
+            return "empty"
+        case .failed:
+            return "failed"
         }
     }
 
@@ -206,6 +237,50 @@ struct PortfolioView: View {
                 )
         )
         .padding(.horizontal, 16)
+    }
+}
+
+private struct PortfolioSummaryPlaceholderCard: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                .fill(Color.bgTertiary)
+                .frame(width: 74, height: 10)
+
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color.bgTertiary)
+                .frame(maxWidth: .infinity)
+                .frame(height: 34)
+
+            HStack(spacing: 10) {
+                placeholderMetric
+                placeholderMetric
+            }
+        }
+        .padding(16)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(Color.bgSecondary)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .stroke(Color.themeBorder, lineWidth: 1)
+                )
+        )
+        .redacted(reason: .placeholder)
+    }
+
+    private var placeholderMetric: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                .fill(Color.bgTertiary)
+                .frame(width: 58, height: 10)
+
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(Color.bgTertiary)
+                .frame(maxWidth: .infinity)
+                .frame(height: 16)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 

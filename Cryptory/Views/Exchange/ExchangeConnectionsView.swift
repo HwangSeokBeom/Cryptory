@@ -3,7 +3,11 @@ import SwiftUI
 struct ExchangeConnectionsView: View {
     @ObservedObject var vm: CryptoViewModel
     @State private var activeSheet: ActiveSheet?
-    @State private var safariDestination: SafariDestination?
+    @State private var isAddExchangeSheetPresented = false
+    @State private var pendingCreateExchange: Exchange?
+
+    private let horizontalPadding: CGFloat = 20
+    private let contentSpacing: CGFloat = 14
 
     private enum ActiveSheet: Identifiable {
         case create(Exchange)
@@ -23,18 +27,46 @@ struct ExchangeConnectionsView: View {
         ZStack {
             Color.bg.ignoresSafeArea()
 
-            VStack(spacing: 14) {
+            VStack(spacing: 0) {
                 header
 
                 if let noticeState = vm.exchangeConnectionsNoticeState,
                    shouldShowNotice(for: vm.exchangeConnectionsState) {
                     noticeCard(noticeState)
-                        .padding(.horizontal, 20)
+                        .padding(.horizontal, horizontalPadding)
+                        .padding(.bottom, 12)
                 }
 
-                content
+                ScrollView {
+                    VStack(spacing: contentSpacing) {
+                        content
+                    }
+                    .padding(.horizontal, horizontalPadding)
+                    .padding(.top, 6)
+                    .padding(.bottom, bottomContentInset)
+                }
+                .scrollIndicators(.hidden)
             }
-            .padding(.top, 8)
+        }
+        .safeAreaInset(edge: .bottom) {
+            if vm.exchangeConnectionCRUDCapability.canCreate {
+                addExchangeBar
+            }
+        }
+        .sheet(
+            isPresented: $isAddExchangeSheetPresented,
+            onDismiss: handleAddExchangeSheetDismiss
+        ) {
+            ExchangeAddSheet(
+                exchanges: Exchange.allCases.filter(\.supportsConnectionManagement),
+                onSelect: handleAddExchangeSelection
+            )
+            .presentationDetents([.height(356), .medium])
+            .presentationDragIndicator(.visible)
+            .presentationContentInteraction(.scrolls)
+            .presentationCornerRadius(28)
+            .presentationBackground(Color.bg)
+            .preferredColorScheme(.dark)
         }
         .sheet(item: $activeSheet) { sheet in
             switch sheet {
@@ -55,107 +87,108 @@ struct ExchangeConnectionsView: View {
                 )
             }
         }
-        .sheet(item: $safariDestination) { destination in
-            SafariSheet(destination: destination)
-                .ignoresSafeArea()
+        .onAppear {
+            AppLogger.debug(
+                .lifecycle,
+                "[ExchangeConnectionSheetDebug] presentation_reason=sheet_appear render_reason=initial_state state_transition=\(sheetStateDescription)"
+            )
         }
     }
 
+    @ViewBuilder
     private var content: some View {
-        Group {
-            switch vm.exchangeConnectionsState {
-            case .idle, .loading:
-                loadingState
-            case .failed(let message):
-                errorState(message: message)
-            case .empty:
-                emptyState
-            case .loaded(let cards):
-                loadedState(cards)
-            }
+        switch vm.exchangeConnectionsState {
+        case .idle, .loading:
+            loadingState
+        case .failed(let message):
+            errorState(message: message)
+        case .empty:
+            emptyState
+        case .loaded(let cards):
+            loadedState(cards)
         }
     }
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 10) {
             Text("거래소 연결 관리")
-                .font(.system(size: 23, weight: .heavy))
+                .font(.system(size: 24, weight: .heavy))
                 .foregroundColor(.themeText)
 
-            Text("연결된 거래소를 확인하고, 필요한 경우 본문에서 새 API 키를 추가할 수 있어요.")
+            Text("연결 상태를 확인하고, 필요할 때 새 API 키를 추가하거나 기존 연결을 안전하게 수정할 수 있어요.")
                 .font(.system(size: 13))
                 .foregroundColor(.textSecondary)
-                .lineSpacing(2)
+                .lineSpacing(3)
+                .fixedSize(horizontal: false, vertical: true)
         }
-        .padding(.horizontal, 20)
-        .padding(.top, 4)
-        .padding(.bottom, 2)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, horizontalPadding)
+        .padding(.top, 24)
+        .padding(.bottom, 18)
     }
 
-    private var primaryAddExchangeMenu: some View {
-        Menu {
-            ForEach(Exchange.allCases.filter(\.supportsConnectionManagement)) { exchange in
-                Button(exchange.displayName) {
-                    activeSheet = .create(exchange)
-                }
-            }
-        } label: {
-            HStack(spacing: 8) {
-                Image(systemName: "plus.circle.fill")
-                    .font(.system(size: 15, weight: .semibold))
+    private var addExchangeBar: some View {
+        VStack(spacing: 0) {
+            Rectangle()
+                .fill(Color.themeBorder.opacity(0.68))
+                .frame(height: 1)
 
-                Text("추가")
-                    .font(.system(size: 15, weight: .bold))
+            Button {
+                presentAddExchangeSheet(reason: "bottom_cta")
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "plus.circle.fill")
+                        .font(.system(size: 15, weight: .semibold))
+
+                    Text("추가")
+                        .font(.system(size: 15, weight: .bold))
+                }
+                .foregroundColor(.white)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 15)
+                .background(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .fill(Color.accent)
+                )
+                .padding(.horizontal, horizontalPadding)
+                .padding(.top, 12)
+                .padding(.bottom, 10)
+                .background(
+                    Rectangle()
+                        .fill(Color.bg.opacity(0.98))
+                        .ignoresSafeArea()
+                )
             }
-            .foregroundColor(.white)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 14)
-            .background(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(Color.accent)
-            )
+            .buttonStyle(.plain)
         }
-        .buttonStyle(.plain)
-        .padding(.horizontal, 20)
     }
 
     private var loadingState: some View {
-        VStack(spacing: 16) {
-            Spacer()
+        VStack(spacing: contentSpacing) {
+            managementGuideCard
 
-            ProgressView()
-                .tint(.accent)
-                .scaleEffect(1.08)
-
-            Text("거래소 연결 상태를 확인하고 있어요")
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundColor(.themeText)
-
-            Text("기존 연결 정보가 있으면 그대로 유지한 채 최신 상태를 다시 확인할게요.")
-                .font(.system(size: 13))
-                .foregroundColor(.textSecondary)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 32)
-
-            Spacer()
+            stateCard(
+                icon: "clock.arrow.circlepath",
+                iconColor: .accent,
+                title: "거래소 연결 상태를 확인하고 있어요",
+                detail: "기존 연결 정보가 있으면 그대로 유지하고, 최신 상태만 다시 맞춰둘게요."
+            ) {
+                ProgressView()
+                    .tint(.accent)
+                    .padding(.top, 2)
+            }
         }
-        .frame(maxWidth: .infinity)
     }
 
     private func loadedState(_ cards: [ExchangeConnectionCardViewState]) -> some View {
-        ScrollView {
-            VStack(spacing: 12) {
-                managementGuideCard
-                supportLinksCard
+        VStack(spacing: contentSpacing) {
+            managementGuideCard
 
-                ForEach(cards) { card in
-                    connectionCard(card)
-                }
-
-                securityNoticeCard
+            ForEach(cards) { card in
+                connectionCard(card)
             }
-            .padding(.horizontal, 20)
-            .padding(.bottom, 28)
+
+            securityNoticeCard
         }
     }
 
@@ -175,87 +208,58 @@ struct ExchangeConnectionsView: View {
     }
 
     private var emptyState: some View {
-        VStack(spacing: 16) {
-            Spacer()
-
-            Image(systemName: "link.badge.plus")
-                .font(.system(size: 42, weight: .semibold))
-                .foregroundColor(.accent)
-
-            Text("아직 연결된 거래소가 없어요")
-                .font(.system(size: 20, weight: .bold))
-                .foregroundColor(.themeText)
-
-            Text("거래소를 연결하면 자산, 잔고, 주문 상태를 한 곳에서 확인할 수 있어요.")
-                .font(.system(size: 13))
-                .foregroundColor(.textSecondary)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 28)
+        VStack(spacing: contentSpacing) {
+            stateCard(
+                icon: "link.badge.plus",
+                iconColor: .accent,
+                title: "아직 연결된 거래소가 없어요",
+                detail: "거래소를 연결하면 자산, 잔고, 주문 상태를 한 곳에서 한 번에 확인할 수 있어요."
+            )
 
             managementGuideCard
-                .padding(.horizontal, 20)
-
-            supportLinksCard
-                .padding(.horizontal, 20)
-
-            if vm.exchangeConnectionCRUDCapability.canCreate {
-                primaryAddExchangeMenu
-            }
-
-            Spacer()
+            securityNoticeCard
         }
-        .frame(maxWidth: .infinity)
     }
 
     private func errorState(message: String) -> some View {
         let isRetryingState = vm.isExchangeConnectionsRetrying || message.contains("다시 확인")
 
-        return VStack(spacing: 14) {
-            Spacer()
-
-            Image(systemName: isRetryingState ? "clock.arrow.circlepath" : "exclamationmark.triangle")
-                .font(.system(size: 38, weight: .semibold))
-                .foregroundColor(isRetryingState ? .accent : .down)
-
-            Text(isRetryingState ? "연결 상태를 다시 확인하고 있어요" : "연결 상태를 불러오지 못했어요")
-                .font(.system(size: 18, weight: .bold))
-                .foregroundColor(.themeText)
-
-            Text(message)
-                .font(.system(size: 13))
-                .foregroundColor(.textSecondary)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 28)
-
-            Button {
-                Task {
-                    await vm.loadExchangeConnections(reason: "connections_retry_tap")
-                }
-            } label: {
-                HStack(spacing: 8) {
-                    if vm.isExchangeConnectionsRetrying {
-                        ProgressView()
-                            .progressViewStyle(.circular)
-                            .tint(.accent)
+        return VStack(spacing: contentSpacing) {
+            stateCard(
+                icon: isRetryingState ? "clock.arrow.circlepath" : "exclamationmark.triangle",
+                iconColor: isRetryingState ? .accent : .down,
+                title: isRetryingState ? "연결 상태를 다시 확인하고 있어요" : "연결 상태를 불러오지 못했어요",
+                detail: message
+            ) {
+                Button {
+                    Task {
+                        await vm.loadExchangeConnections(reason: "connections_retry_tap")
                     }
+                } label: {
+                    HStack(spacing: 8) {
+                        if vm.isExchangeConnectionsRetrying {
+                            ProgressView()
+                                .progressViewStyle(.circular)
+                                .tint(.accent)
+                        }
 
-                    Text(vm.isExchangeConnectionsRetrying ? "확인 중..." : "다시 확인")
-                        .font(.system(size: 14, weight: .bold))
+                        Text(vm.isExchangeConnectionsRetrying ? "확인 중..." : "다시 확인")
+                            .font(.system(size: 14, weight: .bold))
+                    }
+                    .foregroundColor(vm.isExchangeConnectionsRetrying ? .textMuted : .accent)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .background(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .fill(Color.accent.opacity(0.12))
+                    )
                 }
-                .foregroundColor(vm.isExchangeConnectionsRetrying ? .textMuted : .accent)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-                .background(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .fill(Color.accent.opacity(0.12))
-                )
+                .buttonStyle(.plain)
+                .disabled(vm.isExchangeConnectionsRetrying)
             }
-            .buttonStyle(.plain)
-            .disabled(vm.isExchangeConnectionsRetrying)
 
-            Spacer()
+            managementGuideCard
         }
-        .frame(maxWidth: .infinity)
     }
 
     private func connectionCard(_ card: ExchangeConnectionCardViewState) -> some View {
@@ -337,87 +341,15 @@ struct ExchangeConnectionsView: View {
             Text("거래소 비밀번호는 요구하지 않으며, API 키는 연결 확인과 기능 제공을 위해서만 사용해요. 가능하면 조회 권한부터 시작하고 출금 권한은 비활성화해 주세요.")
                 .font(.system(size: 12))
                 .foregroundColor(.textSecondary)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(14)
-        .background(cardBackground)
-    }
+                .lineSpacing(2)
 
-    private var supportLinksCard: some View {
-        VStack(alignment: .leading, spacing: 11) {
-            Text("도움말 및 정책")
-                .font(.system(size: 12, weight: .bold))
-                .foregroundColor(.themeText)
-
-            policyLinkRow(
-                .support,
-                subtitle: "문의, 문제 신고, 앱 사용 지원 페이지를 엽니다."
-            )
-            policyLinkRow(
-                .deleteAccount,
-                subtitle: "계정삭제 및 회원탈퇴 안내를 확인합니다."
-            )
-            policyLinkRow(
-                .investmentDisclaimer,
-                subtitle: "거래와 자산 정보 이용 전 유의사항을 확인합니다."
-            )
-
-            Divider()
-                .background(Color.themeBorder)
-
-            HStack(spacing: 12) {
-                compactPolicyLink(.privacyPolicy)
-                compactPolicyLink(.termsOfService)
-                compactPolicyLink(.home)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(14)
-        .background(cardBackground)
-    }
-
-    private func policyLinkRow(_ link: AppExternalLink, subtitle: String) -> some View {
-        Button {
-            openExternalLink(link)
-        } label: {
-            HStack(alignment: .top, spacing: 10) {
-                Image(systemName: "safari")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundColor(.accent)
-                    .frame(width: 18)
-                    .padding(.top, 2)
-
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(link.title)
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundColor(.accent)
-
-                    Text(subtitle)
-                        .font(.system(size: 11))
-                        .foregroundColor(.textSecondary)
-                        .lineSpacing(2)
-                        .multilineTextAlignment(.leading)
-                }
-
-                Spacer(minLength: 0)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .buttonStyle(.plain)
-    }
-
-    private func compactPolicyLink(_ link: AppExternalLink) -> some View {
-        Button {
-            openExternalLink(link)
-        } label: {
-            Text(link.title)
-                .font(.system(size: 11, weight: .semibold))
+            Text("고객지원과 정책 링크는 프로필에서 확인할 수 있어요.")
+                .font(.system(size: 11, weight: .medium))
                 .foregroundColor(.textMuted)
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
-                .frame(maxWidth: .infinity)
         }
-        .buttonStyle(.plain)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
+        .background(cardBackground)
     }
 
     private func noticeCard(_ noticeState: ExchangeConnectionsNoticeState) -> some View {
@@ -517,8 +449,162 @@ struct ExchangeConnectionsView: View {
             )
     }
 
-    private func openExternalLink(_ link: AppExternalLink) {
-        safariDestination = SafariDestination(link: link)
+    private var bottomContentInset: CGFloat {
+        vm.exchangeConnectionCRUDCapability.canCreate ? 112 : 24
+    }
+
+    private var sheetStateDescription: String {
+        switch vm.exchangeConnectionsState {
+        case .idle:
+            return "idle"
+        case .loading:
+            return "loading"
+        case .loaded(let cards):
+            return "loaded(count:\(cards.count))"
+        case .empty:
+            return "empty"
+        case .failed:
+            return "failed"
+        }
+    }
+
+    private func stateCard<Accessory: View>(
+        icon: String,
+        iconColor: Color,
+        title: String,
+        detail: String,
+        @ViewBuilder accessory: () -> Accessory = { EmptyView() }
+    ) -> some View {
+        VStack(spacing: 14) {
+            Image(systemName: icon)
+                .font(.system(size: 34, weight: .semibold))
+                .foregroundColor(iconColor)
+
+            VStack(spacing: 8) {
+                Text(title)
+                    .font(.system(size: 18, weight: .bold))
+                    .foregroundColor(.themeText)
+
+                Text(detail)
+                    .font(.system(size: 13))
+                    .foregroundColor(.textSecondary)
+                    .lineSpacing(2)
+                    .multilineTextAlignment(.center)
+            }
+
+            accessory()
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 20)
+        .padding(.vertical, 26)
+        .background(cardBackground)
+    }
+
+    private func presentAddExchangeSheet(reason: String) {
+        guard !isAddExchangeSheetPresented else {
+            return
+        }
+        AppLogger.debug(
+            .lifecycle,
+            "[ExchangeAddSheetDebug] presentation_reason=\(reason) state_transition=false->true"
+        )
+        isAddExchangeSheetPresented = true
+    }
+
+    private func handleAddExchangeSelection(_ exchange: Exchange) {
+        pendingCreateExchange = exchange
+        AppLogger.debug(
+            .lifecycle,
+            "[ExchangeAddSheetDebug] presentation_reason=exchange_selected state_transition=true->false exchange=\(exchange.rawValue)"
+        )
+        isAddExchangeSheetPresented = false
+    }
+
+    private func handleAddExchangeSheetDismiss() {
+        guard let exchange = pendingCreateExchange else {
+            AppLogger.debug(
+                .lifecycle,
+                "[ExchangeAddSheetDebug] presentation_reason=dismiss_without_selection state_transition=true->false"
+            )
+            return
+        }
+
+        pendingCreateExchange = nil
+        Task { @MainActor in
+            await Task.yield()
+            AppLogger.debug(
+                .lifecycle,
+                "[ExchangeConnectionSheetDebug] presentation_reason=add_sheet_selection state_transition=form:nil->create-\(exchange.rawValue)"
+            )
+            activeSheet = .create(exchange)
+        }
+    }
+}
+
+private struct ExchangeAddSheet: View {
+    let exchanges: [Exchange]
+    let onSelect: (Exchange) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("거래소 선택")
+                    .font(.system(size: 22, weight: .heavy))
+                    .foregroundColor(.themeText)
+
+                Text("추가할 거래소를 선택하면 다음 단계에서 API 키를 바로 등록할 수 있어요.")
+                    .font(.system(size: 13))
+                    .foregroundColor(.textSecondary)
+                    .lineSpacing(3)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            ScrollView {
+                VStack(spacing: 10) {
+                    ForEach(exchanges) { exchange in
+                        Button {
+                            onSelect(exchange)
+                        } label: {
+                            HStack(spacing: 12) {
+                                ExchangeIcon(exchange: exchange, size: 18)
+
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(exchange.displayName)
+                                        .font(.system(size: 15, weight: .bold))
+                                        .foregroundColor(.themeText)
+
+                                    Text(exchange.supportsOrder ? "자산 조회와 주문 연동에 사용할 수 있어요." : "자산 조회 연결에 사용할 수 있어요.")
+                                        .font(.system(size: 12))
+                                        .foregroundColor(.textSecondary)
+                                        .multilineTextAlignment(.leading)
+                                }
+
+                                Spacer(minLength: 12)
+
+                                Image(systemName: "chevron.right")
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundColor(.textMuted)
+                            }
+                            .padding(14)
+                            .background(
+                                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                    .fill(Color.bgSecondary)
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                            .stroke(Color.themeBorder, lineWidth: 1)
+                                    )
+                            )
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+            .scrollIndicators(.hidden)
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 12)
+        .padding(.bottom, 20)
+        .background(Color.bg)
     }
 }
 
