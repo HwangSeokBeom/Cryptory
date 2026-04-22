@@ -18,6 +18,10 @@ enum AppLogger {
         #endif
     }
 
+    nonisolated static func configuration(_ message: String) {
+        print("[CONFIG] \(message)")
+    }
+
     nonisolated static func nextInstanceID(scope: String) -> Int {
         counterLock.lock()
         defer { counterLock.unlock() }

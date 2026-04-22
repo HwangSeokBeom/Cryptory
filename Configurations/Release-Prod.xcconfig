@@ -1,0 +1,15 @@
+APP_ENV = Prod
+APP_DISPLAY_NAME = Cryptory
+
+LOCAL_SERVER_HOST = 127.0.0.1
+LOCAL_SERVER_PORT = 3002
+
+API_BASE_URL = http:/$()/crytory.duckdns.org
+WS_BASE_URL = ws:/$()/crytory.duckdns.org
+WEB_BASE_URL = http:/$()/crytory.duckdns.org
+
+PUBLIC_WS_PATH = /ws/market
+PRIVATE_WS_PATH = /ws/trading
+
+GOOGLE_CLIENT_ID = 142113558371-t5s22ri6gjl5aur76s81910gf2hb8p09.apps.googleusercontent.com
+GOOGLE_REVERSED_CLIENT_ID = com.googleusercontent.apps.142113558371-t5s22ri6gjl5aur76s81910gf2hb8p09

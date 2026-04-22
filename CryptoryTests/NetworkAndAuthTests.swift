@@ -31,28 +31,43 @@ final class NetworkAndAuthTests: XCTestCase {
         XCTAssertEqual(configuration.exchangeConnectionsPath, "/exchange-connections")
     }
 
-    func testRuntimeConfigurationDefaultsToLocalForDebugBuilds() {
+    func testRuntimeConfigurationDefaultsToDevelopmentForDebugBuilds() {
         let configuration = AppRuntimeConfiguration.resolve(
             environment: [:],
             buildConfiguration: .debug
         )
 
-        XCTAssertEqual(configuration.environment, .local)
+        XCTAssertEqual(configuration.environment, .development)
         XCTAssertEqual(configuration.restBaseURL.absoluteString, "http://127.0.0.1:3002")
+        XCTAssertEqual(configuration.webBaseURL.absoluteString, "http://127.0.0.1:3002")
         XCTAssertEqual(configuration.publicMarketWebSocketURL.absoluteString, "ws://127.0.0.1:3002/ws/market")
         XCTAssertEqual(configuration.privateTradingWebSocketURL.absoluteString, "ws://127.0.0.1:3002/ws/trading")
+    }
+
+    func testRuntimeConfigurationDefaultsToProductionForReleaseBuilds() {
+        let configuration = AppRuntimeConfiguration.resolve(
+            environment: [:],
+            buildConfiguration: .release
+        )
+
+        XCTAssertEqual(configuration.environment, .production)
+        XCTAssertEqual(configuration.restBaseURL.absoluteString, "http://crytory.duckdns.org")
+        XCTAssertEqual(configuration.webBaseURL.absoluteString, "http://crytory.duckdns.org")
+        XCTAssertEqual(configuration.publicMarketWebSocketURL.absoluteString, "ws://crytory.duckdns.org/ws/market")
+        XCTAssertEqual(configuration.privateTradingWebSocketURL.absoluteString, "ws://crytory.duckdns.org/ws/trading")
     }
 
     func testRuntimeConfigurationSupportsLocalHostOverrideForDeviceTesting() {
         let configuration = AppRuntimeConfiguration.resolve(
             environment: [
-                "CRYPTORY_APP_ENV": "local",
-                "CRYPTORY_LOCAL_SERVER_HOST": "192.168.0.24",
-                "CRYPTORY_LOCAL_SERVER_PORT": "3002"
+                "APP_ENV": "Dev",
+                "LOCAL_SERVER_HOST": "192.168.0.24",
+                "LOCAL_SERVER_PORT": "3002"
             ],
             buildConfiguration: .debug
         )
 
+        XCTAssertEqual(configuration.environment, .development)
         XCTAssertEqual(configuration.restBaseURL.absoluteString, "http://192.168.0.24:3002")
         XCTAssertEqual(configuration.publicMarketWebSocketURL.absoluteString, "ws://192.168.0.24:3002/ws/market")
     }

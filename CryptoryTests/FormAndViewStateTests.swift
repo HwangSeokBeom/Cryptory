@@ -10,14 +10,16 @@ final class FormAndViewStateTests: XCTestCase {
         AssetImageClient.shared.debugReset()
     }
 
-    func testAppExternalLinksPointToProductionLegalPages() {
+    func testAppExternalLinksUseConfiguredWebBaseURL() {
+        let baseURLString = AppConfig.current.webBaseURL.absoluteString
+        let normalizedBaseURLString = baseURLString.hasSuffix("/") ? baseURLString : baseURLString + "/"
         let expectedLinks: [(AppExternalLink, String, String)] = [
-            (.home, "홈페이지", "https://hwangseokbeom.github.io/Cryptory-legal/"),
-            (.privacyPolicy, "개인정보처리방침", "https://hwangseokbeom.github.io/Cryptory-legal/privacy.html"),
-            (.termsOfService, "이용약관", "https://hwangseokbeom.github.io/Cryptory-legal/terms.html"),
-            (.support, "고객지원", "https://hwangseokbeom.github.io/Cryptory-legal/support.html"),
-            (.deleteAccount, "계정삭제 안내", "https://hwangseokbeom.github.io/Cryptory-legal/delete-account.html"),
-            (.investmentDisclaimer, "투자 유의 및 면책", "https://hwangseokbeom.github.io/Cryptory-legal/disclaimer.html")
+            (.home, "홈페이지", normalizedBaseURLString),
+            (.privacyPolicy, "개인정보처리방침", normalizedBaseURLString + "privacy.html"),
+            (.termsOfService, "이용약관", normalizedBaseURLString + "terms.html"),
+            (.support, "고객지원", normalizedBaseURLString + "support.html"),
+            (.deleteAccount, "계정삭제 안내", normalizedBaseURLString + "delete-account.html"),
+            (.investmentDisclaimer, "투자 유의 및 면책", normalizedBaseURLString + "disclaimer.html")
         ]
 
         XCTAssertEqual(AppExternalLink.allCases.count, expectedLinks.count)

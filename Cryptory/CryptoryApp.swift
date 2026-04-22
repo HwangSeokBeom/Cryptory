@@ -4,6 +4,7 @@ import SwiftUI
 struct CryptoryApp: App {
     init() {
         AppTabBarAppearance.configure()
+        _ = AppConfig.current
     }
 
     var body: some Scene {

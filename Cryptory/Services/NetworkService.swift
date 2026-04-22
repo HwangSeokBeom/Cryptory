@@ -98,21 +98,24 @@ enum BuildConfiguration: String {
 }
 
 enum AppEnvironment: String {
-    case local
-    case staging
-    case production
+    case development = "Dev"
+    case production = "Prod"
+
+    static var current: AppEnvironment {
+        AppRuntimeConfiguration.live.environment
+    }
 
     static func resolve(
         environment: [String: String],
         buildConfiguration: BuildConfiguration = .current
     ) -> AppEnvironment {
-        if let configuredValue = environment["CRYPTORY_APP_ENV"]?.trimmedNonEmpty
-            ?? environment["CRYPTORY_ENVIRONMENT"]?.trimmedNonEmpty {
+        if let configuredValue = runtimeSetting(
+            in: environment,
+            keys: "APP_ENV", "CRYPTORY_APP_ENV", "CRYPTORY_ENVIRONMENT"
+        ) {
             switch configuredValue.lowercased() {
-            case "local", "development", "debug":
-                return .local
-            case "staging", "stage":
-                return .staging
+            case "dev", "development", "local", "debug":
+                return .development
             case "production", "prod", "release":
                 return .production
             default:
@@ -122,10 +125,16 @@ enum AppEnvironment: String {
 
         switch buildConfiguration {
         case .debug:
-            return .local
+            return .development
         case .release:
             return .production
         }
+    }
+}
+
+enum AppConfig {
+    static var current: AppRuntimeConfiguration {
+        AppRuntimeConfiguration.live
     }
 }
 
@@ -133,46 +142,67 @@ struct AppRuntimeConfiguration {
     let environment: AppEnvironment
     let restBaseURL: URL
     let webSocketBaseURL: URL
+    let webBaseURL: URL
     let publicMarketWebSocketURL: URL
     let privateTradingWebSocketURL: URL
 
-    static let live: AppRuntimeConfiguration = resolve(environment: ProcessInfo.processInfo.environment)
+    static let live: AppRuntimeConfiguration = resolve(
+        environment: ProcessInfo.processInfo.environment,
+        includeBundleSettings: true
+    )
 
     static func resolve(
         environment: [String: String],
-        buildConfiguration: BuildConfiguration = .current
+        buildConfiguration: BuildConfiguration = .current,
+        includeBundleSettings: Bool = false
     ) -> AppRuntimeConfiguration {
-        let resolvedEnvironment = AppEnvironment.resolve(
+        let values = mergedRuntimeSettings(
             environment: environment,
+            includeBundleSettings: includeBundleSettings
+        )
+        let resolvedEnvironment = AppEnvironment.resolve(
+            environment: values,
             buildConfiguration: buildConfiguration
         )
-        let publicWebSocketPath = environment["CRYPTORY_PUBLIC_WS_PATH"]?.trimmedNonEmpty ?? "/ws/market"
-        let privateWebSocketPath = environment["CRYPTORY_PRIVATE_WS_PATH"]?.trimmedNonEmpty ?? "/ws/trading"
+        let publicWebSocketPath = runtimeSetting(
+            in: values,
+            keys: "PUBLIC_WS_PATH", "CRYPTORY_PUBLIC_WS_PATH"
+        ) ?? "/ws/market"
+        let privateWebSocketPath = runtimeSetting(
+            in: values,
+            keys: "PRIVATE_WS_PATH", "CRYPTORY_PRIVATE_WS_PATH"
+        ) ?? "/ws/trading"
 
         let defaultRESTBaseURL = makeDefaultRESTBaseURL(
             for: resolvedEnvironment,
-            environment: environment
+            environment: values
         )
         let restBaseURL = sanitizedURL(
-            string: environment["CRYPTORY_API_BASE_URL"]?.trimmedNonEmpty
-                ?? environmentSpecificRESTBaseURLString(for: resolvedEnvironment, environment: environment),
+            string: runtimeSetting(in: values, keys: "API_BASE_URL", "CRYPTORY_API_BASE_URL")
+                ?? environmentSpecificRESTBaseURLString(for: resolvedEnvironment, environment: values),
             fallback: defaultRESTBaseURL,
             label: "REST base URL"
         )
         let defaultWebSocketBaseURL = deriveWebSocketBaseURL(from: restBaseURL)
         let webSocketBaseURL = sanitizedURL(
-            string: environment["CRYPTORY_WS_BASE_URL"]?.trimmedNonEmpty
-                ?? environmentSpecificWebSocketBaseURLString(for: resolvedEnvironment, environment: environment),
+            string: runtimeSetting(in: values, keys: "WS_BASE_URL", "CRYPTORY_WS_BASE_URL")
+                ?? environmentSpecificWebSocketBaseURLString(for: resolvedEnvironment, environment: values),
             fallback: defaultWebSocketBaseURL,
             label: "WebSocket base URL"
         )
+        let webBaseURL = sanitizedURL(
+            string: runtimeSetting(in: values, keys: "WEB_BASE_URL", "CRYPTORY_WEB_BASE_URL")
+                ?? environmentSpecificWebBaseURLString(for: resolvedEnvironment, environment: values),
+            fallback: restBaseURL,
+            label: "Web base URL"
+        )
         let publicMarketWebSocketURL = sanitizedURL(
-            string: environment["CRYPTORY_PUBLIC_WS_URL"]?.trimmedNonEmpty,
+            string: runtimeSetting(in: values, keys: "PUBLIC_WS_URL", "CRYPTORY_PUBLIC_WS_URL"),
             fallback: webSocketBaseURL.appendingEndpointPath(publicWebSocketPath),
             label: "Public WebSocket URL"
         )
         let privateTradingWebSocketURL = sanitizedURL(
-            string: environment["CRYPTORY_PRIVATE_WS_URL"]?.trimmedNonEmpty,
+            string: runtimeSetting(in: values, keys: "PRIVATE_WS_URL", "CRYPTORY_PRIVATE_WS_URL"),
             fallback: webSocketBaseURL.appendingEndpointPath(privateWebSocketPath),
             label: "Private WebSocket URL"
         )
@@ -181,14 +211,16 @@ struct AppRuntimeConfiguration {
             environment: resolvedEnvironment,
             restBaseURL: restBaseURL,
             webSocketBaseURL: webSocketBaseURL,
+            webBaseURL: webBaseURL,
             publicMarketWebSocketURL: publicMarketWebSocketURL,
             privateTradingWebSocketURL: privateTradingWebSocketURL
         )
 
-        AppLogger.debug(.network, "Environment -> \(configuration.environment.rawValue)")
-        AppLogger.debug(.network, "REST base URL -> \(configuration.restBaseURL.absoluteString)")
-        AppLogger.debug(.websocket, "Public WS URL -> \(configuration.publicMarketWebSocketURL.absoluteString)")
-        AppLogger.debug(.websocket, "Private WS URL -> \(configuration.privateTradingWebSocketURL.absoluteString)")
+        AppLogger.configuration("Environment -> \(configuration.environment.rawValue)")
+        AppLogger.configuration("REST base URL -> \(configuration.restBaseURL.absoluteString)")
+        AppLogger.configuration("Web base URL -> \(configuration.webBaseURL.absoluteString)")
+        AppLogger.configuration("Public WS URL -> \(configuration.publicMarketWebSocketURL.absoluteString)")
+        AppLogger.configuration("Private WS URL -> \(configuration.privateTradingWebSocketURL.absoluteString)")
 
         return configuration
     }
@@ -199,20 +231,24 @@ struct AppRuntimeConfiguration {
     ) -> URL {
         let defaultString: String
         switch environment {
-        case .local:
-            let host = values["CRYPTORY_LOCAL_SERVER_HOST"]?.trimmedNonEmpty ?? "127.0.0.1"
-            let port = values["CRYPTORY_LOCAL_SERVER_PORT"]?.trimmedNonEmpty ?? "3002"
+        case .development:
+            let host = runtimeSetting(
+                in: values,
+                keys: "LOCAL_SERVER_HOST", "CRYPTORY_LOCAL_SERVER_HOST"
+            ) ?? "127.0.0.1"
+            let port = runtimeSetting(
+                in: values,
+                keys: "LOCAL_SERVER_PORT", "CRYPTORY_LOCAL_SERVER_PORT"
+            ) ?? "3002"
             defaultString = "http://\(host):\(port)"
-        case .staging:
-            defaultString = values["CRYPTORY_STAGING_API_BASE_URL"]?.trimmedNonEmpty
-                ?? values["CRYPTORY_PRODUCTION_API_BASE_URL"]?.trimmedNonEmpty
-                ?? "https://api.cryptomts.com"
         case .production:
-            defaultString = values["CRYPTORY_PRODUCTION_API_BASE_URL"]?.trimmedNonEmpty
-                ?? "https://api.cryptomts.com"
+            defaultString = runtimeSetting(
+                in: values,
+                keys: "PROD_API_BASE_URL", "PRODUCTION_API_BASE_URL", "CRYPTORY_PRODUCTION_API_BASE_URL"
+            ) ?? "http://crytory.duckdns.org"
         }
 
-        return URL(string: defaultString) ?? URL(string: "https://api.cryptomts.com")!
+        return URL(string: defaultString) ?? URL(string: "http://crytory.duckdns.org")!
     }
 
     private static func environmentSpecificRESTBaseURLString(
@@ -220,12 +256,16 @@ struct AppRuntimeConfiguration {
         environment values: [String: String]
     ) -> String? {
         switch environment {
-        case .local:
-            return values["CRYPTORY_LOCAL_API_BASE_URL"]?.trimmedNonEmpty
-        case .staging:
-            return values["CRYPTORY_STAGING_API_BASE_URL"]?.trimmedNonEmpty
+        case .development:
+            return runtimeSetting(
+                in: values,
+                keys: "DEV_API_BASE_URL", "DEVELOPMENT_API_BASE_URL", "LOCAL_API_BASE_URL", "CRYPTORY_LOCAL_API_BASE_URL"
+            )
         case .production:
-            return values["CRYPTORY_PRODUCTION_API_BASE_URL"]?.trimmedNonEmpty
+            return runtimeSetting(
+                in: values,
+                keys: "PROD_API_BASE_URL", "PRODUCTION_API_BASE_URL", "CRYPTORY_PRODUCTION_API_BASE_URL"
+            )
         }
     }
 
@@ -234,12 +274,34 @@ struct AppRuntimeConfiguration {
         environment values: [String: String]
     ) -> String? {
         switch environment {
-        case .local:
-            return values["CRYPTORY_LOCAL_WS_BASE_URL"]?.trimmedNonEmpty
-        case .staging:
-            return values["CRYPTORY_STAGING_WS_BASE_URL"]?.trimmedNonEmpty
+        case .development:
+            return runtimeSetting(
+                in: values,
+                keys: "DEV_WS_BASE_URL", "DEVELOPMENT_WS_BASE_URL", "LOCAL_WS_BASE_URL", "CRYPTORY_LOCAL_WS_BASE_URL"
+            )
         case .production:
-            return values["CRYPTORY_PRODUCTION_WS_BASE_URL"]?.trimmedNonEmpty
+            return runtimeSetting(
+                in: values,
+                keys: "PROD_WS_BASE_URL", "PRODUCTION_WS_BASE_URL", "CRYPTORY_PRODUCTION_WS_BASE_URL"
+            )
+        }
+    }
+
+    private static func environmentSpecificWebBaseURLString(
+        for environment: AppEnvironment,
+        environment values: [String: String]
+    ) -> String? {
+        switch environment {
+        case .development:
+            return runtimeSetting(
+                in: values,
+                keys: "DEV_WEB_BASE_URL", "DEVELOPMENT_WEB_BASE_URL", "LOCAL_WEB_BASE_URL", "CRYPTORY_LOCAL_WEB_BASE_URL"
+            )
+        case .production:
+            return runtimeSetting(
+                in: values,
+                keys: "PROD_WEB_BASE_URL", "PRODUCTION_WEB_BASE_URL", "CRYPTORY_PRODUCTION_WEB_BASE_URL"
+            )
         }
     }
 
@@ -270,6 +332,45 @@ struct AppRuntimeConfiguration {
         }
         return url
     }
+}
+
+private func mergedRuntimeSettings(
+    environment: [String: String],
+    includeBundleSettings: Bool
+) -> [String: String] {
+    var values: [String: String] = includeBundleSettings ? bundleRuntimeSettings() : [:]
+    values.merge(environment) { _, runtimeValue in runtimeValue }
+    return values
+}
+
+private func bundleRuntimeSettings() -> [String: String] {
+    guard let infoDictionary = Bundle.main.infoDictionary else {
+        return [:]
+    }
+
+    var values: [String: String] = [:]
+    for (key, value) in infoDictionary {
+        guard let stringValue = value as? String,
+              let resolvedValue = stringValue.trimmedNonEmpty,
+              resolvedValue.hasPrefix("$(") == false else {
+            continue
+        }
+        values[key] = resolvedValue
+    }
+    return values
+}
+
+private func runtimeSetting(in values: [String: String], keys: String...) -> String? {
+    runtimeSetting(in: values, keys: keys)
+}
+
+private func runtimeSetting(in values: [String: String], keys: [String]) -> String? {
+    for key in keys {
+        if let value = values[key]?.trimmedNonEmpty {
+            return value
+        }
+    }
+    return nil
 }
 
 struct TransportFailureDetails {
@@ -629,15 +730,20 @@ struct APIConfiguration {
         "\(tradingOrdersPath)/\(exchange.rawValue)/\(orderID)"
     }
 
-    static let live: APIConfiguration = resolve(environment: ProcessInfo.processInfo.environment)
+    static let live: APIConfiguration = resolve(
+        environment: ProcessInfo.processInfo.environment,
+        includeBundleSettings: true
+    )
 
     static func resolve(
         environment: [String: String],
-        buildConfiguration: BuildConfiguration = .current
+        buildConfiguration: BuildConfiguration = .current,
+        includeBundleSettings: Bool = false
     ) -> APIConfiguration {
         let runtimeConfiguration = AppRuntimeConfiguration.resolve(
             environment: environment,
-            buildConfiguration: buildConfiguration
+            buildConfiguration: buildConfiguration,
+            includeBundleSettings: includeBundleSettings
         )
 
         return APIConfiguration(

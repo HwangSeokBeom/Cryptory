@@ -9,7 +9,10 @@ enum AppExternalLink: String, CaseIterable, Identifiable {
     case deleteAccount
     case investmentDisclaimer
 
-    private static let baseURLString = "https://hwangseokbeom.github.io/Cryptory-legal/"
+    private static var baseURLString: String {
+        let rawValue = AppRuntimeConfiguration.live.webBaseURL.absoluteString
+        return rawValue.hasSuffix("/") ? rawValue : rawValue + "/"
+    }
 
     var id: String { rawValue }
 

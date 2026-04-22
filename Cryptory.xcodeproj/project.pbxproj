@@ -28,6 +28,8 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		C0DE00000000000000000010 /* Debug-Dev.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = "Debug-Dev.xcconfig"; sourceTree = "<group>"; };
+		C0DE00000000000000000011 /* Release-Prod.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = "Release-Prod.xcconfig"; sourceTree = "<group>"; };
 		8BDB61A22F7A0CA900987CEF /* Cryptory.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Cryptory.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		8BDB61AF2F7A0CAA00987CEF /* CryptoryTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = CryptoryTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		8BDB61B92F7A0CAA00987CEF /* CryptoryUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = CryptoryUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -37,6 +39,7 @@
 		C0DE00000000000000000004 /* Exceptions for "Cryptory" folder in "Cryptory" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
+				Info-Dev.plist,
 				Info.plist,
 			);
 			target = 8BDB61A12F7A0CA900987CEF /* Cryptory */;
@@ -93,11 +96,21 @@
 		8BDB61992F7A0CA900987CEF = {
 			isa = PBXGroup;
 			children = (
+				C0DE00000000000000000012 /* Configurations */,
 				8BDB61A42F7A0CA900987CEF /* Cryptory */,
 				8BDB61B22F7A0CAA00987CEF /* CryptoryTests */,
 				8BDB61BC2F7A0CAA00987CEF /* CryptoryUITests */,
 				8BDB61A32F7A0CA900987CEF /* Products */,
 			);
+			sourceTree = "<group>";
+		};
+		C0DE00000000000000000012 /* Configurations */ = {
+			isa = PBXGroup;
+			children = (
+				C0DE00000000000000000010 /* Debug-Dev.xcconfig */,
+				C0DE00000000000000000011 /* Release-Prod.xcconfig */,
+			);
+			path = Configurations;
 			sourceTree = "<group>";
 		};
 		8BDB61A32F7A0CA900987CEF /* Products */ = {
@@ -293,6 +306,7 @@
 /* Begin XCBuildConfiguration section */
 		8BDB61C12F7A0CAA00987CEF /* Debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = C0DE00000000000000000010 /* Debug-Dev.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
@@ -357,6 +371,7 @@
 		};
 		8BDB61C22F7A0CAA00987CEF /* Release */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = C0DE00000000000000000011 /* Release-Prod.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
@@ -423,8 +438,7 @@
 				DEVELOPMENT_TEAM = 63SB2B8YJ5;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = Cryptory/Info.plist;
-				INFOPLIST_KEY_NSAppTransportSecurity = "{NSAllowsLocalNetworking = YES;NSExceptionDomains = {127.0.0.1 = {NSExceptionAllowsInsecureHTTPLoads = YES;};localhost = {NSExceptionAllowsInsecureHTTPLoads = YES;};};}";
+				INFOPLIST_FILE = "Cryptory/Info-Dev.plist";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = NO;
@@ -459,7 +473,6 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Cryptory/Info.plist;
-				INFOPLIST_KEY_NSAppTransportSecurity = "{NSAllowsLocalNetworking = YES;NSExceptionDomains = {127.0.0.1 = {NSExceptionAllowsInsecureHTTPLoads = YES;};localhost = {NSExceptionAllowsInsecureHTTPLoads = YES;};};}";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = NO;

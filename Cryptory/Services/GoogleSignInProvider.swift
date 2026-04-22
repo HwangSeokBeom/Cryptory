@@ -23,7 +23,11 @@ protocol GoogleSignInProviding {
 final class LiveGoogleSignInProvider: GoogleSignInProviding {
     static let shared = LiveGoogleSignInProvider()
 
-    private let clientID = "142113558371-t5s22ri6gjl5aur76s81910gf2hb8p09.apps.googleusercontent.com"
+    private let fallbackClientID = "142113558371-t5s22ri6gjl5aur76s81910gf2hb8p09.apps.googleusercontent.com"
+
+    private var clientID: String {
+        Bundle.main.object(forInfoDictionaryKey: "GOOGLE_CLIENT_ID") as? String ?? fallbackClientID
+    }
 
     private init() {
         GIDSignIn.sharedInstance.configuration = GIDConfiguration(clientID: clientID)
