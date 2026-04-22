@@ -179,6 +179,7 @@ final class AssetImageClient: @unchecked Sendable {
     nonisolated(unsafe) private var stateByRequestKey: [String: AssetImageState] = [:]
     nonisolated(unsafe) private var fallbackReasonByRequestKey: [String: AssetImageFallbackReason] = [:]
     nonisolated(unsafe) private var inFlightTasks: [URL: Task<AssetImageRequestOutcome, Never>] = [:]
+    nonisolated(unsafe) private var requestStartedAtByURL: [URL: Date] = [:]
     nonisolated(unsafe) private var failureCooldownUntilByURL: [URL: Date] = [:]
 
     nonisolated init(
@@ -326,6 +327,37 @@ final class AssetImageClient: @unchecked Sendable {
              .missingCachedImage:
             return false
         }
+    }
+
+    nonisolated func placeholderGraceDecision(
+        for descriptor: AssetImageRequestDescriptor
+    ) -> (shouldDelay: Bool, reason: String) {
+        if descriptor.isExplicitlyUnsupportedAsset {
+            return (false, "unsupported_asset")
+        }
+
+        guard let url = descriptor.normalizedImageURL else {
+            let fallback = fallbackReason(for: descriptor)
+            return (false, fallback == .unsupportedAsset ? "unsupported_asset" : "network_only")
+        }
+
+        let symbolKey = symbolCacheKey(for: descriptor)
+        let state = lock.withLock { () -> (Bool, Date?, Bool) in
+            let hasSource = sourceByCanonicalSymbol[symbolKey] != nil || sourceByURL[url] != nil
+            let startedAt = requestStartedAtByURL[url]
+            let inflight = inFlightTasks[url] != nil
+            return (hasSource, startedAt, inflight)
+        }
+        let hasMemoryAffinity = state.0 || cachedSymbolImage(for: descriptor) != nil
+        let isInflight = state.2
+        let isWithinGraceWindow = state.1.map {
+            Date().timeIntervalSince($0) < (hasMemoryAffinity ? 0.18 : 0.08)
+        } ?? false
+
+        if isInflight && hasMemoryAffinity && isWithinGraceWindow {
+            return (true, "memory_expected")
+        }
+        return (false, hasMemoryAffinity ? "memory_expected" : "network_only")
     }
 
     nonisolated func prepareImageRequest(
@@ -535,6 +567,7 @@ final class AssetImageClient: @unchecked Sendable {
 
         lock.withLock {
             inFlightTasks[url] = task
+            requestStartedAtByURL[url] = Date()
         }
         return AssetImageRequestHandle(immediateOutcome: nil, task: task)
     }
@@ -565,6 +598,7 @@ final class AssetImageClient: @unchecked Sendable {
             sourceByCanonicalSymbol.removeAll()
             stateByRequestKey.removeAll()
             fallbackReasonByRequestKey.removeAll()
+            requestStartedAtByURL.removeAll()
             failureCooldownUntilByURL.removeAll()
             memoryCache.removeAllObjects()
             symbolMemoryCache.removeAllObjects()
@@ -754,6 +788,7 @@ final class AssetImageClient: @unchecked Sendable {
     private nonisolated func clearInFlightTask(for url: URL) {
         lock.withLock {
             inFlightTasks[url] = nil
+            requestStartedAtByURL[url] = nil
         }
     }
 
@@ -891,9 +926,11 @@ final class SymbolImageRenderView: UIView {
     private let fallbackView = UIView()
     private let fallbackGradientLayer = CAGradientLayer()
     private let fallbackLabel = UILabel()
+    private let placeholderGraceDelay: TimeInterval = 0.08
 
     private var currentConfiguration: SymbolImageConfiguration?
     private var currentDebugState: SymbolImageRenderDebugState = .idle
+    private var deferredPlaceholderWorkItem: DispatchWorkItem?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -952,6 +989,7 @@ final class SymbolImageRenderView: UIView {
 
     func apply(configuration: SymbolImageConfiguration) {
         let previousConfiguration = currentConfiguration
+        cancelDeferredPlaceholder()
         if previousConfiguration == configuration {
             if configuration.state.showsRenderedImage, imageView.image != nil {
                 return
@@ -997,13 +1035,14 @@ final class SymbolImageRenderView: UIView {
                 state: configuration.state
             )
         case .missing:
-            showFallback(reason: AssetImageClient.shared.fallbackReason(for: configuration.descriptor))
+            renderFallbackWithGrace(reason: AssetImageClient.shared.fallbackReason(for: configuration.descriptor))
         case .placeholder:
-            showFallback(reason: AssetImageClient.shared.fallbackReason(for: configuration.descriptor))
+            renderFallbackWithGrace(reason: AssetImageClient.shared.fallbackReason(for: configuration.descriptor))
         }
     }
 
     func prepareForReuse() {
+        cancelDeferredPlaceholder()
         guard let configuration = currentConfiguration else {
             resetVisuals()
             return
@@ -1104,6 +1143,51 @@ final class SymbolImageRenderView: UIView {
         )
     }
 
+    private func renderFallbackWithGrace(reason: AssetImageFallbackReason) {
+        guard let configuration = currentConfiguration else {
+            showFallback(reason: reason)
+            return
+        }
+
+        let graceDecision = AssetImageClient.shared.placeholderGraceDecision(for: configuration.descriptor)
+        AppLogger.debug(
+            .lifecycle,
+            "[ImageGraceDebug] \(configuration.descriptor.marketIdentity.logFields) placeholder_skipped=\(graceDecision.shouldDelay) reason=\(graceDecision.reason)"
+        )
+        guard graceDecision.shouldDelay else {
+            showFallback(reason: reason)
+            return
+        }
+
+        showGraceLoadingState()
+        let descriptor = configuration.descriptor
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self,
+                  let currentConfiguration = self.currentConfiguration,
+                  currentConfiguration.descriptor == descriptor else {
+                return
+            }
+            if let cachedImage = AssetImageClient.shared.cachedImage(for: descriptor) {
+                self.renderImage(
+                    cachedImage,
+                    source: AssetImageClient.shared.source(for: descriptor),
+                    state: AssetImageClient.shared.renderState(for: descriptor)
+                )
+                return
+            }
+            self.showFallback(reason: reason)
+        }
+        deferredPlaceholderWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + placeholderGraceDelay, execute: workItem)
+    }
+
+    private func showGraceLoadingState() {
+        imageView.isHidden = true
+        fallbackView.isHidden = true
+        layer.borderColor = UIColor(Color.themeBorder.opacity(0.24)).cgColor
+        currentDebugState = .idle
+    }
+
     private func applyFallbackBranding(for configuration: SymbolImageConfiguration) {
         let symbolText = configuration.descriptor.placeholderText
         fallbackLabel.text = symbolText
@@ -1136,6 +1220,7 @@ final class SymbolImageRenderView: UIView {
     }
 
     private func resetVisuals() {
+        cancelDeferredPlaceholder()
         layer.removeAllAnimations()
         layer.mask = nil
         imageView.layer.removeAllAnimations()
@@ -1149,6 +1234,11 @@ final class SymbolImageRenderView: UIView {
         fallbackLabel.text = nil
         layer.borderColor = UIColor(Color.themeBorder.opacity(0.65)).cgColor
         currentDebugState = .idle
+    }
+
+    private func cancelDeferredPlaceholder() {
+        deferredPlaceholderWorkItem?.cancel()
+        deferredPlaceholderWorkItem = nil
     }
 }
 

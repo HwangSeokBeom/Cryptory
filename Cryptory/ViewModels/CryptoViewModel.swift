@@ -736,6 +736,11 @@ final class CryptoViewModel: ObservableObject {
     private let sparklineRepresentativeLimit = 20
     private let sparklineFailureCooldownInterval: TimeInterval = 4
     private let sparklineRefreshThrottleInterval: TimeInterval = 1.2
+    private let sparklineVisiblePriorityThrottleInterval: TimeInterval = 0.35
+    private let sparklineNoImprovementBackoffInterval: TimeInterval = 0.75
+    private let sparklineActiveScrollWindow: TimeInterval = 0.18
+    private let sparklineScrollSettleDelayNanoseconds: UInt64 = 180_000_000
+    private let sparklineMaxConcurrentFetchCount = 3
     private let marketRepresentativeRowLimit = 4
     private let marketFirstPaintRowLimit = 24
     private let marketHydrationDelayNanoseconds: UInt64 = 650_000_000
@@ -827,6 +832,8 @@ final class CryptoViewModel: ObservableObject {
     private var scheduledSparklineRequestsByKey: [SparklineCacheKey: ScheduledSparklineRequestState] = [:]
     private var sparklineFailureCooldownUntilByKey: [SparklineCacheKey: Date] = [:]
     private var lastSparklineRefreshAttemptAtByKey: [SparklineCacheKey: Date] = [:]
+    private var lastPriorityVisibleSparklineEnqueueAtByKey: [SparklineCacheKey: Date] = [:]
+    private var sparklineNoImprovementUntilByKey: [SparklineCacheKey: Date] = [:]
     private var runningSparklineHydrationExchanges: Set<Exchange> = []
     private var pendingSparklineHydrationReasonsByExchange: [Exchange: String] = [:]
     private var lastLoggedGraphDisplaySignaturesByBindingKey: [String: String] = [:]
@@ -1441,6 +1448,59 @@ final class CryptoViewModel: ObservableObject {
         return score
     }
 
+    private nonisolated static func sparklineQuality(
+        for row: MarketRowViewState
+    ) -> MarketSparklineQuality {
+        MarketSparklineQuality(
+            detailLevel: row.sparklinePayload.detailLevel,
+            graphState: row.graphState,
+            pointCount: row.sparklinePointCount,
+            hasRenderableGraph: row.graphState.keepsVisibleGraph
+                && MarketSparklineRenderPolicy.hasRenderableGraph(
+                    points: row.sparkline,
+                    pointCount: row.sparklinePointCount
+                ),
+            graphPathVersion: row.graphPathVersion,
+            renderVersion: row.graphRenderVersion
+        )
+    }
+
+    private nonisolated static func sparklineQuality(
+        for snapshot: SparklineLayerSnapshot,
+        staleInterval: TimeInterval,
+        now: Date
+    ) -> MarketSparklineQuality {
+        let graphState = snapshot.graphState(staleInterval: staleInterval, now: now)
+        return MarketSparklineQuality(
+            graphState: graphState,
+            points: snapshot.points,
+            pointCount: snapshot.pointCount
+        )
+    }
+
+    private nonisolated static func sparklineQuality(
+        for display: StableSparklineDisplay
+    ) -> MarketSparklineQuality {
+        MarketSparklineQuality(
+            graphState: display.graphState,
+            points: display.points,
+            pointCount: display.pointCount
+        )
+    }
+
+    private nonisolated static func logGraphQualityDecision(
+        marketIdentity: MarketIdentity,
+        existing: MarketSparklineQuality?,
+        incoming: MarketSparklineQuality,
+        decision: MarketSparklineQualityDecision,
+        category: AppLogCategory = .network
+    ) {
+        AppLogger.debug(
+            category,
+            "[GraphQualityDebug] \(marketIdentity.logFields) action=promote_or_reject oldDetail=\(existing?.detailLevel.cacheComponent ?? "none") newDetail=\(incoming.detailLevel.cacheComponent) oldPointCount=\(existing?.pointCount ?? 0) newPointCount=\(incoming.pointCount) accepted=\(decision.accepted) reason=\(decision.reason)"
+        )
+    }
+
     private nonisolated static func preferredTicker(_ existing: TickerData, _ incoming: TickerData) -> TickerData {
         let existingLiveScore = existing.delivery == .live ? 2 : 0
         let incomingLiveScore = incoming.delivery == .live ? 2 : 0
@@ -1473,40 +1533,18 @@ final class CryptoViewModel: ObservableObject {
         _ existing: StableSparklineDisplay,
         _ incoming: StableSparklineDisplay
     ) -> StableSparklineDisplay {
-        let existingRenderableScore = existing.hasRenderableGraph ? 1 : 0
-        let incomingRenderableScore = incoming.hasRenderableGraph ? 1 : 0
-        if existingRenderableScore != incomingRenderableScore {
-            return incomingRenderableScore > existingRenderableScore ? incoming : existing
+        let existingQuality = sparklineQuality(for: existing)
+        let incomingQuality = sparklineQuality(for: incoming)
+        let decision = incomingQuality.promotionDecision(over: existingQuality)
+        if decision.accepted {
+            return incoming
         }
-
-        func freshnessScore(for state: MarketRowGraphState) -> Int {
-            switch state {
-            case .liveVisible:
-                return 3
-            case .cachedVisible:
-                return 2
-            case .staleVisible:
-                return 1
-            case .none, .placeholder, .unavailable:
-                return 0
-            }
+        if decision.reason == "same_quality_skip",
+           incoming.updatedAt > existing.updatedAt,
+           incoming.generation >= existing.generation {
+            return incoming
         }
-
-        let existingFreshness = freshnessScore(for: existing.graphState)
-        let incomingFreshness = freshnessScore(for: incoming.graphState)
-        if existingFreshness != incomingFreshness {
-            return incomingFreshness > existingFreshness ? incoming : existing
-        }
-
-        if existing.pointCount != incoming.pointCount {
-            return incoming.pointCount > existing.pointCount ? incoming : existing
-        }
-
-        if existing.updatedAt != incoming.updatedAt {
-            return incoming.updatedAt > existing.updatedAt ? incoming : existing
-        }
-
-        return incoming.generation >= existing.generation ? incoming : existing
+        return existing
     }
 
     private func canonicalMarketIdentityMapping(for exchange: Exchange) -> [MarketIdentity: MarketIdentity] {
@@ -1759,16 +1797,11 @@ final class CryptoViewModel: ObservableObject {
         }
         visibleMarketIdentitiesByExchange[exchange] = Array(orderedMarketIdentities.prefix(48))
         lastVisibleMarketRowAtByExchange[exchange] = Date()
-        if shouldPrioritizeVisibleSparklineHydration(marketIdentity: marketIdentity) {
-            AppLogger.debug(
-                .network,
-                "[GraphDetailDebug] \(marketIdentity.logFields) action=visible_priority_refine queued=true"
-            )
-            schedulePriorityVisibleSparklineRefresh(
-                for: exchange,
-                reason: "row_visible_priority_\(marketIdentity.cacheKey)"
-            )
-        }
+        enqueueVisiblePriorityRefineIfNeeded(
+            for: marketIdentity,
+            exchange: exchange,
+            reason: "row_visible_priority_\(marketIdentity.cacheKey)"
+        )
         scheduleVisibleSparklineHydration(
             for: exchange,
             reason: "row_visible_\(marketIdentity.cacheKey)"
@@ -2189,6 +2222,154 @@ final class CryptoViewModel: ObservableObject {
             return true
         }
         return row.graphState != .liveVisible || row.sparklinePayload.detailLevel.isDetailed == false
+    }
+
+    private func bestAvailableSparklineQuality(
+        for marketIdentity: MarketIdentity,
+        now: Date
+    ) -> MarketSparklineQuality? {
+        var bestQuality: MarketSparklineQuality?
+
+        func consider(_ candidate: MarketSparklineQuality?) {
+            guard let candidate else { return }
+            guard let existing = bestQuality else {
+                bestQuality = candidate
+                return
+            }
+            if candidate.promotionDecision(over: existing).accepted {
+                bestQuality = candidate
+            }
+        }
+
+        if let display = stableSparklineDisplay(marketIdentity: marketIdentity),
+           display.hasRenderableGraph {
+            consider(Self.sparklineQuality(for: display))
+        }
+
+        if let snapshot = sparklineSnapshot(marketIdentity: marketIdentity) {
+            consider(
+                Self.sparklineQuality(
+                    for: snapshot,
+                    staleInterval: sparklineCacheStaleInterval,
+                    now: now
+                )
+            )
+        }
+
+        if let row = marketPresentationSnapshotsByExchange[marketIdentity.exchange]?.rows.first(where: { $0.marketIdentity == marketIdentity }) {
+            consider(Self.sparklineQuality(for: row))
+        }
+
+        return bestQuality
+    }
+
+    private func hasPotentialSparklineQualityGain(
+        for marketIdentity: MarketIdentity,
+        now: Date
+    ) -> Bool {
+        guard let bestQuality = bestAvailableSparklineQuality(for: marketIdentity, now: now) else {
+            return true
+        }
+
+        if bestQuality.isUsableGraph == false {
+            return true
+        }
+        if bestQuality.detailLevel.isDetailed == false {
+            return true
+        }
+        if bestQuality.graphState != .liveVisible {
+            return true
+        }
+        if bestQuality.pointCount < MarketSparklineRenderPolicy.promotedGraphPointCountThreshold {
+            return true
+        }
+        if let snapshot = sparklineSnapshot(marketIdentity: marketIdentity) {
+            return now.timeIntervalSince(snapshot.fetchedAt) > sparklineCacheStaleInterval
+        }
+        return false
+    }
+
+    private func noteSparklineNoImprovement(
+        for marketIdentity: MarketIdentity,
+        now: Date = Date()
+    ) {
+        sparklineNoImprovementUntilByKey[sparklineCacheKey(marketIdentity: marketIdentity)] = now
+            .addingTimeInterval(sparklineNoImprovementBackoffInterval)
+    }
+
+    private func clearSparklineNoImprovement(
+        for marketIdentity: MarketIdentity
+    ) {
+        sparklineNoImprovementUntilByKey.removeValue(forKey: sparklineCacheKey(marketIdentity: marketIdentity))
+    }
+
+    private func enqueueVisiblePriorityRefineIfNeeded(
+        for marketIdentity: MarketIdentity,
+        exchange: Exchange,
+        reason: String
+    ) {
+        let now = Date()
+        let generation = marketPresentationGeneration
+        let key = sparklineCacheKey(marketIdentity: marketIdentity)
+
+        let skipReason: String?
+        if shouldPrioritizeVisibleSparklineHydration(marketIdentity: marketIdentity) == false {
+            skipReason = "no_quality_gain"
+        } else if sparklineFetchTasksByKey[key] != nil {
+            skipReason = "inflight_duplicate"
+        } else if let scheduled = scheduledSparklineRequestsByKey[key], scheduled.generation == generation {
+            skipReason = "queued_duplicate"
+        } else if let noImprovementUntil = sparklineNoImprovementUntilByKey[key],
+                  noImprovementUntil > now,
+                  hasUsableSparklineGraph(marketIdentity: marketIdentity) {
+            skipReason = "no_quality_gain"
+        } else if let lastEnqueueAt = lastPriorityVisibleSparklineEnqueueAtByKey[key],
+                  now.timeIntervalSince(lastEnqueueAt) < sparklineVisiblePriorityThrottleInterval {
+            skipReason = "throttled"
+        } else if hasPotentialSparklineQualityGain(for: marketIdentity, now: now) == false {
+            skipReason = "no_quality_gain"
+        } else {
+            skipReason = nil
+        }
+
+        if let skipReason {
+            AppLogger.debug(
+                .network,
+                "[GraphEnqueueDebug] \(marketIdentity.logFields) action=skip reason=\(skipReason)"
+            )
+            return
+        }
+
+        lastPriorityVisibleSparklineEnqueueAtByKey[key] = now
+        let scheduled = schedulePriorityVisibleSparklineRefresh(
+            for: exchange,
+            reason: reason
+        )
+        if scheduled {
+            AppLogger.debug(
+                .network,
+                "[GraphEnqueueDebug] \(marketIdentity.logFields) action=enqueue reason=visible_priority"
+            )
+            AppLogger.debug(
+                .network,
+                "[GraphDetailDebug] \(marketIdentity.logFields) action=visible_priority_refine queued=true"
+            )
+        } else {
+            AppLogger.debug(
+                .network,
+                "[GraphEnqueueDebug] \(marketIdentity.logFields) action=skip reason=queued_duplicate"
+            )
+        }
+    }
+
+    private func isActivelyScrollingMarketRows(
+        for exchange: Exchange,
+        now: Date
+    ) -> Bool {
+        guard let lastVisibleAt = lastVisibleMarketRowAtByExchange[exchange] else {
+            return false
+        }
+        return now.timeIntervalSince(lastVisibleAt) < sparklineActiveScrollWindow
     }
 
     private func priorityVisibleSparklineMarketIdentities(
@@ -5982,57 +6163,65 @@ final class CryptoViewModel: ObservableObject {
         marketIdentity: MarketIdentity
     ) -> Bool {
         guard let existing else {
+            let incomingQuality = Self.sparklineQuality(
+                for: incoming,
+                staleInterval: sparklineCacheStaleInterval,
+                now: Date()
+            )
+            Self.logGraphQualityDecision(
+                marketIdentity: marketIdentity,
+                existing: nil,
+                incoming: incomingQuality,
+                decision: .accept("quality_upgrade")
+            )
+            if incoming.source == .tickerSnapshot && incomingQuality.isVeryLowCoarse {
+                AppLogger.debug(
+                    .network,
+                    "[GraphDetailDebug] \(marketIdentity.logFields) action=coarse_snapshot_retained_as_fallback pointCount=\(incoming.pointCount)"
+                )
+            }
             return true
         }
 
         let now = Date()
-        let oldDetail = MarketSparklineDetailLevel(
-            graphState: existing.graphState(staleInterval: sparklineCacheStaleInterval, now: now),
-            points: existing.points,
-            pointCount: existing.pointCount
+        let existingQuality = Self.sparklineQuality(
+            for: existing,
+            staleInterval: sparklineCacheStaleInterval,
+            now: now
         )
-        let newDetail = MarketSparklineDetailLevel(
-            graphState: incoming.graphState(staleInterval: sparklineCacheStaleInterval, now: now),
-            points: incoming.points,
-            pointCount: incoming.pointCount
+        let incomingQuality = Self.sparklineQuality(
+            for: incoming,
+            staleInterval: sparklineCacheStaleInterval,
+            now: now
         )
-        if existing.source != .tickerSnapshot,
-           oldDetail == .liveDetailed,
-           incoming.source == .tickerSnapshot {
+        let decision = incomingQuality.promotionDecision(over: existingQuality)
+        Self.logGraphQualityDecision(
+            marketIdentity: marketIdentity,
+            existing: existingQuality,
+            incoming: incomingQuality,
+            decision: decision
+        )
+        guard decision.accepted else {
             AppLogger.debug(
                 .network,
-                "[GraphDetailDebug] \(marketIdentity.logFields) action=coarse_snapshot_ignored_after_live_detail oldPointCount=\(existing.pointCount) newPointCount=\(incoming.pointCount)"
+                "[GraphDetailDebug] \(marketIdentity.logFields) action=redraw_skipped reason=\(decision.reason == "same_quality_skip" ? "same_quality_snapshot_skipped" : "coarse_snapshot_rejected") oldDetail=\(existingQuality.detailLevel.cacheComponent) newDetail=\(incomingQuality.detailLevel.cacheComponent)"
             )
+            noteSparklineNoImprovement(for: marketIdentity, now: now)
             return false
         }
-        if oldDetail.pathDetailRank > newDetail.pathDetailRank {
-            AppLogger.debug(
-                .network,
-                "[GraphDetailDebug] \(marketIdentity.logFields) action=redraw_skipped reason=coarse_snapshot_rejected oldDetail=\(oldDetail.cacheComponent) newDetail=\(newDetail.cacheComponent)"
-            )
-            return false
-        }
-        if oldDetail.isDetailed,
-           newDetail.isDetailed,
-           existing.pointCount > incoming.pointCount {
-            AppLogger.debug(
-                .network,
-                "[GraphDetailDebug] \(marketIdentity.logFields) action=redraw_skipped reason=lower_point_snapshot_rejected oldPointCount=\(existing.pointCount) newPointCount=\(incoming.pointCount)"
-            )
-            return false
-        }
-        if incoming.source == .tickerSnapshot && newDetail.isDetailed == false {
+        if incoming.source == .tickerSnapshot && incomingQuality.isVeryLowCoarse {
             AppLogger.debug(
                 .network,
                 "[GraphDetailDebug] \(marketIdentity.logFields) action=coarse_snapshot_retained_as_fallback pointCount=\(incoming.pointCount)"
             )
         }
-        if (incoming.source == .candleSnapshot || incoming.source == .stream) && newDetail == .liveDetailed {
+        if (incoming.source == .candleSnapshot || incoming.source == .stream) && incomingQuality.detailLevel == .liveDetailed {
             AppLogger.debug(
                 .network,
                 "[GraphDetailDebug] \(marketIdentity.logFields) action=live_detail_locked pointCount=\(incoming.pointCount)"
             )
         }
+        clearSparklineNoImprovement(for: marketIdentity)
         return true
     }
 
@@ -6101,12 +6290,7 @@ final class CryptoViewModel: ObservableObject {
                 continue
             }
             if let existing = displays[key.marketIdentity] {
-                let shouldReplace = value.graphState.keepsVisibleGraph && existing.graphState.keepsVisibleGraph == false
-                    || value.pointCount > existing.pointCount
-                    || value.updatedAt > existing.updatedAt
-                if shouldReplace {
-                    displays[key.marketIdentity] = value
-                }
+                displays[key.marketIdentity] = Self.preferredStableSparklineDisplay(existing, value)
             } else {
                 displays[key.marketIdentity] = value
             }
@@ -6177,6 +6361,10 @@ final class CryptoViewModel: ObservableObject {
                     skippedCount += 1
                     AppLogger.debug(
                         .network,
+                        "[GraphEnqueueDebug] \(marketIdentity.logFields) action=skip reason=queued_duplicate"
+                    )
+                    AppLogger.debug(
+                        .network,
                         "[GraphRequestDebug] \(marketIdentity.logFields) action=graph_queue_skipped_duplicate phase=\(phase) priority=\(priority.logValue)"
                     )
                     AppLogger.debug(
@@ -6205,6 +6393,10 @@ final class CryptoViewModel: ObservableObject {
                 phase: phase
             )
             enqueued.append(marketIdentity)
+            AppLogger.debug(
+                .network,
+                "[GraphEnqueueDebug] \(marketIdentity.logFields) action=enqueue reason=\(priority == .visibleMissing || priority == .visibleCoarse ? "visible_priority" : priority.logValue)"
+            )
             AppLogger.debug(
                 .network,
                 "[GraphRequestDebug] \(marketIdentity.logFields) action=graph_queue_enqueued phase=\(phase) priority=\(priority.logValue)"
@@ -6312,7 +6504,7 @@ final class CryptoViewModel: ObservableObject {
                     self.priorityVisibleSparklineTask = nil
                 }
             }
-            try? await Task.sleep(for: .milliseconds(20))
+            try? await Task.sleep(for: .milliseconds(5))
             guard !Task.isCancelled else { return }
             guard self.scheduledPriorityVisibleSparklineContext == context else {
                 return
@@ -6339,6 +6531,7 @@ final class CryptoViewModel: ObservableObject {
         }
 
         let rowsByMarketIdentity = Dictionary(uniqueKeysWithValues: snapshot.rows.map { ($0.marketIdentity, $0) })
+        let now = Date()
         let priorityCandidates = Array(
             priorityVisibleSparklineMarketIdentities(
                 for: exchange,
@@ -6349,12 +6542,13 @@ final class CryptoViewModel: ObservableObject {
                     return true
                 }
                 return shouldPrioritizeVisibleSparklineHydration(marketIdentity: marketIdentity)
+                    && hasPotentialSparklineQualityGain(for: marketIdentity, now: now)
                     && row.sparklinePayload.detailLevel.isDetailed == false
             }
             .prefix(sparklineVisibleBatchSize)
         )
         let priorityBatch = reserveScheduledSparklineRequests(
-            marketIdentities: priorityCandidates.filter { shouldFetchSparkline(marketIdentity: $0, now: Date()) },
+            marketIdentities: priorityCandidates.filter { shouldFetchSparkline(marketIdentity: $0, now: now) },
             exchange: exchange,
             generation: generation,
             priority: .visibleMissing,
@@ -6515,8 +6709,23 @@ final class CryptoViewModel: ObservableObject {
                 return row.graphState != .liveVisible || row.sparklinePayload.detailLevel.isDetailed == false
             }
         )
+        let isActivelyScrolling = isActivelyScrollingMarketRows(for: exchange, now: Date())
+        let orderedVisibleCandidates = candidates.filter { visiblePrioritySet.contains($0) }
+        let immediateVisibleCandidates = orderedVisibleCandidates.filter { marketIdentity in
+            guard let row = rowsByMarketIdentity[marketIdentity] else {
+                return true
+            }
+            let quality = Self.sparklineQuality(for: row)
+            return quality.isUsableGraph == false
+                || quality.detailLevel.isDetailed == false
+                || quality.isVeryLowCoarse
+        }
+        let deferredVisibleCandidates = orderedVisibleCandidates.filter { marketIdentity in
+            immediateVisibleCandidates.contains(marketIdentity) == false
+                && hasPotentialSparklineQualityGain(for: marketIdentity, now: Date())
+        }
         let visibleBatch = reserveScheduledSparklineRequests(
-            marketIdentities: Array(candidates.filter { visiblePrioritySet.contains($0) }.prefix(sparklineVisibleBatchSize)),
+            marketIdentities: Array((isActivelyScrolling ? immediateVisibleCandidates : orderedVisibleCandidates).prefix(sparklineVisibleBatchSize)),
             exchange: exchange,
             generation: generation,
             priority: .visibleCoarse,
@@ -6533,11 +6742,41 @@ final class CryptoViewModel: ObservableObject {
             )
         }
 
+        var settledVisibleBatch = [MarketIdentity]()
+        if isActivelyScrolling,
+           deferredVisibleCandidates.isEmpty == false {
+            try? await Task.sleep(nanoseconds: sparklineScrollSettleDelayNanoseconds)
+            guard shouldRunSparklineHydration(exchange: exchange, generation: generation) else {
+                return
+            }
+            if isActivelyScrollingMarketRows(for: exchange, now: Date()) {
+                pendingSparklineHydrationReasonsByExchange[exchange] = "\(reason)_scroll_settling"
+                return
+            }
+            settledVisibleBatch = reserveScheduledSparklineRequests(
+                marketIdentities: Array(deferredVisibleCandidates.prefix(sparklineVisibleBatchSize)),
+                exchange: exchange,
+                generation: generation,
+                priority: .visibleCoarse,
+                phase: "visible_refine_batch"
+            )
+            if settledVisibleBatch.isEmpty == false {
+                await hydrateSparklineBatch(
+                    marketIdentities: settledVisibleBatch,
+                    exchange: exchange,
+                    generation: generation,
+                    phase: "visible_refine_batch",
+                    batchIndex: nil,
+                    reason: reason
+                )
+            }
+        }
+
         guard shouldRunSparklineHydration(exchange: exchange, generation: generation) else {
             return
         }
 
-        let alreadyRequested = Set(visibleBatch)
+        let alreadyRequested = Set(visibleBatch + settledVisibleBatch)
         let backgroundCandidates = candidates.filter { alreadyRequested.contains($0) == false }
         guard backgroundCandidates.isEmpty == false else {
             return
@@ -6565,6 +6804,16 @@ final class CryptoViewModel: ObservableObject {
             }
             try? await Task.sleep(for: .milliseconds(index == 0 ? 120 : 220))
             guard !Task.isCancelled else {
+                return
+            }
+            if let lastVisibleAt = lastVisibleMarketRowAtByExchange[exchange],
+               Date().timeIntervalSince(lastVisibleAt) < 0.45 {
+                marketOffscreenDeferredGraphCountByExchange[exchange, default: 0] += backgroundCandidates.count
+                pendingSparklineHydrationReasonsByExchange[exchange] = "\(reason)_visible_preempted"
+                AppLogger.debug(
+                    .network,
+                    "[GraphPipeline] exchange=\(exchange.rawValue) generation=\(generation) phase=deferred_offscreen_preempted markets=\(backgroundCandidates.prefix(10).map(\.cacheKey).joined(separator: ","))"
+                )
                 return
             }
             MarketPerformanceDebugClient.shared.increment(.offscreenBatch)
@@ -6775,6 +7024,10 @@ final class CryptoViewModel: ObservableObject {
         if sparklineFetchTasksByKey[key] != nil {
             AppLogger.debug(
                 .network,
+                "[GraphEnqueueDebug] \(marketIdentity.logFields) action=skip reason=inflight_duplicate"
+            )
+            AppLogger.debug(
+                .network,
                 "[GraphRequestDebug] \(marketIdentity.logFields) action=deduped_existing_inflight"
             )
             return false
@@ -6794,9 +7047,27 @@ final class CryptoViewModel: ObservableObject {
             return false
         }
 
+        if let noImprovementUntil = sparklineNoImprovementUntilByKey[key],
+           noImprovementUntil > now,
+           hasUsableSparklineGraph(marketIdentity: marketIdentity) {
+            AppLogger.debug(
+                .network,
+                "[GraphEnqueueDebug] \(marketIdentity.logFields) action=skip reason=no_quality_gain"
+            )
+            AppLogger.debug(
+                .network,
+                "[GraphRequestDebug] \(marketIdentity.logFields) action=graph_request_skipped reason=no_quality_gain_backoff"
+            )
+            return false
+        }
+
         if let lastAttemptAt = lastSparklineRefreshAttemptAtByKey[key],
            now.timeIntervalSince(lastAttemptAt) < sparklineRefreshThrottleInterval,
            hasUsableSparklineGraph(marketIdentity: marketIdentity) {
+            AppLogger.debug(
+                .network,
+                "[GraphEnqueueDebug] \(marketIdentity.logFields) action=skip reason=throttled"
+            )
             AppLogger.debug(
                 .network,
                 "[GraphRequestDebug] \(marketIdentity.logFields) action=skip_refresh reason=stale_usable_within_cooldown"
@@ -7013,20 +7284,47 @@ final class CryptoViewModel: ObservableObject {
         }
 
         var results: [(marketIdentity: MarketIdentity, result: Result<SparklineLayerSnapshot, Error>)] = []
-        for request in tasks {
-            do {
-                let snapshot = try await request.task.value
-                sparklineFetchTasksByKey[request.key] = nil
-                sparklineFailureCooldownUntilByKey[request.key] = nil
-                unsupportedSparklineMarketIdentitiesByExchange[request.marketIdentity.exchange, default: []].remove(request.marketIdentity)
-                results.append((request.marketIdentity, .success(snapshot)))
-            } catch {
-                sparklineFetchTasksByKey[request.key] = nil
-                sparklineFailureCooldownUntilByKey[request.key] = Date().addingTimeInterval(sparklineFailureCooldownInterval)
-                if isUnsupportedSparklineError(error) {
-                    unsupportedSparklineMarketIdentitiesByExchange[request.marketIdentity.exchange, default: []].insert(request.marketIdentity)
+        for taskChunk in tasks.chunked(into: sparklineMaxConcurrentFetchCount) {
+            guard Task.isCancelled == false else {
+                break
+            }
+            let chunkResults = await withTaskGroup(
+                of: (MarketIdentity, SparklineCacheKey, Result<SparklineLayerSnapshot, Error>).self,
+                returning: [(MarketIdentity, SparklineCacheKey, Result<SparklineLayerSnapshot, Error>)].self
+            ) { group in
+                for request in taskChunk {
+                    group.addTask {
+                        do {
+                            let snapshot = try await request.task.value
+                            return (request.marketIdentity, request.key, .success(snapshot))
+                        } catch {
+                            return (request.marketIdentity, request.key, .failure(error))
+                        }
+                    }
                 }
-                results.append((request.marketIdentity, .failure(error)))
+
+                var collected = [(MarketIdentity, SparklineCacheKey, Result<SparklineLayerSnapshot, Error>)]()
+                for await result in group {
+                    collected.append(result)
+                }
+                return collected
+            }
+
+            for (marketIdentity, key, result) in chunkResults {
+                switch result {
+                case .success(let snapshot):
+                    sparklineFetchTasksByKey[key] = nil
+                    sparklineFailureCooldownUntilByKey[key] = nil
+                    unsupportedSparklineMarketIdentitiesByExchange[marketIdentity.exchange, default: []].remove(marketIdentity)
+                    results.append((marketIdentity, .success(snapshot)))
+                case .failure(let error):
+                    sparklineFetchTasksByKey[key] = nil
+                    sparklineFailureCooldownUntilByKey[key] = Date().addingTimeInterval(sparklineFailureCooldownInterval)
+                    if isUnsupportedSparklineError(error) {
+                        unsupportedSparklineMarketIdentitiesByExchange[marketIdentity.exchange, default: []].insert(marketIdentity)
+                    }
+                    results.append((marketIdentity, .failure(error)))
+                }
             }
         }
         return results
@@ -7874,19 +8172,6 @@ final class CryptoViewModel: ObservableObject {
         }
     }
 
-    private nonisolated static func graphPreservationTuple(
-        detailLevel: MarketSparklineDetailLevel,
-        graphState: MarketRowGraphState,
-        pointCount: Int
-    ) -> (detailRank: Int, stateRank: Int, promoted: Int, pointCount: Int) {
-        (
-            detailLevel.pathDetailRank,
-            graphState.preservationRank,
-            MarketSparklineRenderPolicy.isPromotedPointCount(pointCount) ? 1 : 0,
-            pointCount
-        )
-    }
-
     private nonisolated static func shouldCarryForwardGraph(
         existing: MarketRowViewState,
         over incoming: MarketRowViewState
@@ -7896,45 +8181,17 @@ final class CryptoViewModel: ObservableObject {
             return false
         }
 
-        let existingRenderable = MarketSparklineRenderPolicy.hasRenderableGraph(
-            points: existing.sparkline,
-            pointCount: existing.sparklinePointCount
-        ) && existing.graphState.keepsVisibleGraph
-        guard existingRenderable else {
+        let existingQuality = sparklineQuality(for: existing)
+        guard existingQuality.isUsableGraph else {
             return false
         }
 
-        let incomingRenderable = MarketSparklineRenderPolicy.hasRenderableGraph(
-            points: incoming.sparkline,
-            pointCount: incoming.sparklinePointCount
-        ) && incoming.graphState.keepsVisibleGraph
-        if incomingRenderable == false {
+        let incomingQuality = sparklineQuality(for: incoming)
+        if incomingQuality.isUsableGraph == false {
             return true
         }
 
-        let existingTuple = graphPreservationTuple(
-            detailLevel: existing.sparklinePayload.detailLevel,
-            graphState: existing.graphState,
-            pointCount: existing.sparklinePointCount
-        )
-        let incomingTuple = graphPreservationTuple(
-            detailLevel: incoming.sparklinePayload.detailLevel,
-            graphState: incoming.graphState,
-            pointCount: incoming.sparklinePointCount
-        )
-        if existingTuple.detailRank != incomingTuple.detailRank {
-            return existingTuple.detailRank > incomingTuple.detailRank
-        }
-        if existingTuple.stateRank != incomingTuple.stateRank {
-            return existingTuple.stateRank > incomingTuple.stateRank
-        }
-        if existingTuple.promoted != incomingTuple.promoted {
-            return existingTuple.promoted > incomingTuple.promoted
-        }
-        if existingTuple.pointCount != incomingTuple.pointCount {
-            return existingTuple.pointCount > incomingTuple.pointCount
-        }
-        return existing.graphState == .liveVisible && incoming.graphState != .liveVisible
+        return incomingQuality.promotionDecision(over: existingQuality).accepted == false
     }
 
     private nonisolated static func rowByCarryingForwardGraph(
@@ -8213,12 +8470,40 @@ final class CryptoViewModel: ObservableObject {
             )
         }
 
+        let hasRetainedUsableGraph = stableSparklineDisplay?.hasRenderableGraph == true
+            || (cachedRow.map {
+                MarketSparklineRenderPolicy.hasRenderableGraph(
+                    points: $0.sparkline,
+                    pointCount: $0.sparklinePointCount
+                ) && $0.graphState.keepsVisibleGraph
+            } ?? false)
+        let graphLogFields = cachedRow?.marketLogFields
+            ?? stableSparklineDisplay?.key.marketIdentity.logFields
+            ?? "exchange=- marketId=- symbol=-"
+
         if let preferredCandidate {
-            let preferredDetail = MarketSparklineDetailLevel(
+            let preferredQuality = MarketSparklineQuality(
                 graphState: preferredCandidate.graphState,
                 points: preferredCandidate.points,
                 pointCount: preferredCandidate.pointCount
             )
+            if preferDetailedVisibleGraph,
+               preferredCandidate.source == .snapshot,
+               preferredQuality.isVeryLowCoarse,
+               hasRetainedUsableGraph == false {
+                let placeholderState: MarketRowGraphState = hasResolvedBaseData ? .placeholder : .none
+                AppLogger.debug(
+                    .network,
+                    "[GraphFirstPaintDebug] \(graphLogFields) action=skip reason=coarse_too_small detailLevel=\(preferredQuality.detailLevel.cacheComponent) pointCount=\(preferredCandidate.pointCount)"
+                )
+                return (
+                    [],
+                    0,
+                    placeholderState,
+                    placeholderState == .placeholder ? .placeholder : .none
+                )
+            }
+            let preferredDetail = preferredQuality.detailLevel
             if preferredCandidate.graphState.keepsVisibleGraph,
                preferredCandidate.source == .displayCache || preferredCandidate.source == .rowState {
                 let source = preferredCandidate.source == .displayCache ? "display_cache" : "row_state"
@@ -8270,36 +8555,22 @@ final class CryptoViewModel: ObservableObject {
             return incoming
         }
 
-        let existingDetail = MarketSparklineDetailLevel(
+        let existingQuality = MarketSparklineQuality(
             graphState: existing.graphState,
             points: existing.points,
             pointCount: existing.pointCount
         )
-        let incomingDetail = MarketSparklineDetailLevel(
+        let incomingQuality = MarketSparklineQuality(
             graphState: incoming.graphState,
             points: incoming.points,
             pointCount: incoming.pointCount
         )
-        if incomingDetail.pathDetailRank != existingDetail.pathDetailRank {
-            return incomingDetail.pathDetailRank > existingDetail.pathDetailRank ? incoming : existing
+        let decision = incomingQuality.promotionDecision(over: existingQuality)
+        if decision.accepted {
+            return incoming
         }
-        if incoming.graphState.keepsVisibleGraph != existing.graphState.keepsVisibleGraph {
-            return incoming.graphState.keepsVisibleGraph ? incoming : existing
-        }
-        if incoming.pointCount != existing.pointCount {
-            return incoming.pointCount > existing.pointCount ? incoming : existing
-        }
-
-        let existingStateRank = graphStateResolutionRank(existing.graphState)
-        let incomingStateRank = graphStateResolutionRank(incoming.graphState)
-        if incomingStateRank != existingStateRank {
-            return incomingStateRank > existingStateRank ? incoming : existing
-        }
-
-        let existingBucket = MarketSparklineRenderPolicy.pointCountBucket(existing.pointCount)
-        let incomingBucket = MarketSparklineRenderPolicy.pointCountBucket(incoming.pointCount)
-        if incomingBucket != existingBucket {
-            return incomingBucket > existingBucket ? incoming : existing
+        guard decision.reason == "same_quality_skip" else {
+            return existing
         }
 
         let existingSourceRank = sparklineResolutionSourceRank(existing.source)
@@ -8309,10 +8580,6 @@ final class CryptoViewModel: ObservableObject {
         }
 
         return existing
-    }
-
-    private nonisolated static func graphStateResolutionRank(_ graphState: MarketRowGraphState) -> Int {
-        graphState.preservationRank
     }
 
     private nonisolated static func sparklineResolutionSourceRank(
@@ -8757,6 +9024,18 @@ final class CryptoViewModel: ObservableObject {
                     "[MarketRows] row_patch_batch_saved count=\(savedCount) exchange=\(exchange.rawValue)"
                 )
             }
+            let patchKinds: String
+            if reconfigureTraces.allSatisfy({ $0.patchKind == "image_only" }) {
+                patchKinds = "image_only"
+            } else if reconfigureTraces.allSatisfy({ $0.patchKind == "graph_only" }) {
+                patchKinds = "graph_only"
+            } else {
+                patchKinds = "mixed"
+            }
+            AppLogger.debug(
+                .network,
+                "[MarketRowsPatchDebug] exchange=\(exchange.rawValue) batchedCount=\(rawPatchCount) debounceWindowMs=\(marketRowPatchCoalesceNanoseconds / 1_000_000) patchKinds=\(patchKinds)"
+            )
             recordMarketRowPatchMetrics(reconfigureTraces, exchange: exchange)
         }
 
@@ -8944,86 +9223,45 @@ final class CryptoViewModel: ObservableObject {
             }
         }
 
-        let previousDetail = previousRow.sparklinePayload.detailLevel
-        let nextDetail = MarketSparklineDetailLevel(
+        let previousQuality = Self.sparklineQuality(for: previousRow)
+        let nextQuality = MarketSparklineQuality(
             graphState: nextGraphState,
             points: nextPoints,
             pointCount: nextPointCount
         )
-        let forcedUpgradeReason: String?
-        if previousDetail == .placeholder && nextDetail == .liveDetailed {
-            forcedUpgradeReason = "placeholder_to_live"
-        } else if previousRow.sparklinePointCount == 0 && nextPointCount > 0 {
-            forcedUpgradeReason = "placeholder_to_live"
-        } else if previousDetail == .retainedCoarse && nextPointCount > previousRow.sparklinePointCount {
-            forcedUpgradeReason = "coarse_to_live"
-        } else if (previousRow.graphState == .placeholder || previousRow.graphState == .staleVisible || previousRow.graphState == .cachedVisible)
-            && nextGraphState == .liveVisible {
-            forcedUpgradeReason = "placeholder_to_live"
-        } else if (previousDetail == .retainedCoarse || previousDetail == .liveCoarse)
-            && (MarketSparklineRenderPolicy.minimumRenderablePointCount...MarketSparklineRenderPolicy.coarseUpperBoundPointCount).contains(previousRow.sparklinePointCount)
-            && MarketSparklineRenderPolicy.isPromotedPointCount(nextPointCount)
-            && nextDetail.isDetailed {
-            forcedUpgradeReason = "coarse_to_live"
-        } else {
-            forcedUpgradeReason = nil
+        let decision = nextQuality.promotionDecision(over: previousQuality)
+        Self.logGraphQualityDecision(
+            marketIdentity: patch.marketIdentity,
+            existing: previousQuality,
+            incoming: nextQuality,
+            decision: decision
+        )
+        guard decision.accepted else {
+            AppLogger.debug(
+                .network,
+                "[GraphDetailDebug] \(patch.marketIdentity.logFields) action=redraw_skipped reason=\(decision.reason == "same_quality_skip" ? "same_quality_patch_skipped" : "quality_downgrade_blocked") oldDetail=\(previousQuality.detailLevel.cacheComponent) newDetail=\(nextQuality.detailLevel.cacheComponent)"
+            )
+            noteSparklineNoImprovement(for: patch.marketIdentity)
+            return nil
         }
-        let oldBucket = MarketSparklineRenderPolicy.pointCountBucket(previousRow.sparklinePointCount)
-        let newBucket = MarketSparklineRenderPolicy.pointCountBucket(nextPointCount)
 
-        if previousDetail.pathDetailRank > nextDetail.pathDetailRank && forcedUpgradeReason == nil {
-            AppLogger.debug(
-                .network,
-                "[GraphDetailDebug] \(patch.marketIdentity.logFields) action=redraw_skipped reason=coarse_patch_rejected oldDetail=\(previousDetail.cacheComponent) newDetail=\(nextDetail.cacheComponent)"
-            )
-            return nil
-        }
-        if previousDetail.isDetailed,
-           nextDetail.isDetailed,
-           previousRow.sparklinePointCount > nextPointCount,
-           forcedUpgradeReason == nil {
-            AppLogger.debug(
-                .network,
-                "[GraphDetailDebug] \(patch.marketIdentity.logFields) action=redraw_skipped reason=lower_point_patch_rejected oldPointCount=\(previousRow.sparklinePointCount) newPointCount=\(nextPointCount)"
-            )
-            return nil
-        }
-        if let forcedUpgradeReason {
-            AppLogger.debug(
-                .network,
-                "[GraphDetailDebug] \(patch.marketIdentity.logFields) action=detail_upgrade_forced oldDetail=\(previousDetail.cacheComponent) newDetail=\(nextDetail.cacheComponent) oldPointCount=\(previousRow.sparklinePointCount) newPointCount=\(nextPointCount)"
-            )
-            AppLogger.debug(
-                .network,
-                "[GraphDetailDebug] \(patch.marketIdentity.logFields) action=redraw_allowed_override reason=detail_upgrade"
-            )
-            AppLogger.debug(
-                .network,
-                "[GraphDetailDebug] \(patch.marketIdentity.logFields) action=suppression_bypassed reason=\(forcedUpgradeReason)"
-            )
-        }
-        if forcedUpgradeReason != nil
-            || nextDetail.pathDetailRank > previousDetail.pathDetailRank
-            || (nextDetail.isDetailed && nextPointCount > previousRow.sparklinePointCount)
-            || newBucket > oldBucket {
-            AppLogger.debug(
-                .network,
-                "[GraphDetailDebug] \(patch.marketIdentity.logFields) action=refined_patch_received oldDetail=\(previousDetail.cacheComponent) newDetail=\(nextDetail.cacheComponent) oldPointCount=\(previousRow.sparklinePointCount) newPointCount=\(nextPointCount)"
-            )
-        }
+        AppLogger.debug(
+            .network,
+            "[GraphDetailDebug] \(patch.marketIdentity.logFields) action=refined_patch_received oldDetail=\(previousQuality.detailLevel.cacheComponent) newDetail=\(nextQuality.detailLevel.cacheComponent) oldPointCount=\(previousRow.sparklinePointCount) newPointCount=\(nextPointCount)"
+        )
 
         let isFreshnessOnlyVisiblePatch = previousRow.graphState.keepsVisibleGraph
             && nextGraphState.keepsVisibleGraph
             && previousRow.sparkline == nextPoints
             && previousRow.sparklinePointCount == nextPointCount
-            && previousDetail == nextDetail
+            && previousQuality.detailLevel == nextQuality.detailLevel
             && previousRow.graphState == nextGraphState
-            && forcedUpgradeReason == nil
         if isFreshnessOnlyVisiblePatch {
             AppLogger.debug(
                 .network,
                 "[GraphDetailDebug] \(patch.marketIdentity.logFields) action=redraw_skipped reason=freshness_only_visible_patch_suppressed oldState=\(previousRow.graphState) newState=\(nextGraphState)"
             )
+            noteSparklineNoImprovement(for: patch.marketIdentity)
             return nil
         }
 
@@ -9035,8 +9273,9 @@ final class CryptoViewModel: ObservableObject {
         guard updatedRow != previousRow else {
             AppLogger.debug(
                 .network,
-                "[GraphDetailDebug] \(patch.marketIdentity.logFields) action=redraw_skipped reason=detailed_same_signature detailLevel=\(previousDetail.cacheComponent) pointCount=\(previousRow.sparklinePointCount)"
+                "[GraphDetailDebug] \(patch.marketIdentity.logFields) action=redraw_skipped reason=detailed_same_signature detailLevel=\(previousQuality.detailLevel.cacheComponent) pointCount=\(previousRow.sparklinePointCount)"
             )
+            noteSparklineNoImprovement(for: patch.marketIdentity)
             return nil
         }
 
@@ -9052,6 +9291,7 @@ final class CryptoViewModel: ObservableObject {
             .network,
             "[GraphPipeline] \(patch.marketIdentity.logFields) generation=\(generation) phase=row_patch state=\(nextGraphState) reason=\(patch.reason) scope=graph_subview_payload"
         )
+        clearSparklineNoImprovement(for: patch.marketIdentity)
         return updatedRow
     }
 
@@ -9970,9 +10210,12 @@ final class CryptoViewModel: ObservableObject {
             lastLoggedGraphDisplaySignaturesByBindingKey[row.graphBindingKey] = signature
 
             guard let previousRow = oldRowsByID[row.id] else {
+                let firstPaintReason = row.sparklinePayload.hasRenderableGraph
+                    ? "usable_graph_ready"
+                    : "no_usable_graph"
                 AppLogger.debug(
                     .network,
-                    "[GraphFirstPaintDebug] \(row.marketLogFields) source=\(graphLogSource(for: row)) graphState=\(row.graphState)"
+                    "[GraphFirstPaintDebug] \(row.marketLogFields) action=paint reason=\(firstPaintReason) source=\(graphLogSource(for: row)) graphState=\(row.graphState)"
                 )
                 AppLogger.debug(
                     .network,

@@ -479,6 +479,43 @@ final class FormAndViewStateTests: XCTestCase {
         XCTAssertEqual(originalRow.sparklineRenderToken, textOnlyRow.sparklineRenderToken)
     }
 
+    func testMarketSparklineQualityBlocksLiveDetailedDowngradeToRetainedDetailed() {
+        let liveQuality = MarketSparklineQuality(
+            graphState: .liveVisible,
+            points: [1, 2, 1.5, 2.4, 2.1, 3],
+            pointCount: 6
+        )
+        let retainedQuality = MarketSparklineQuality(
+            graphState: .cachedVisible,
+            points: [1, 2, 1.5, 2.4, 2.1, 3],
+            pointCount: 6
+        )
+
+        let decision = retainedQuality.promotionDecision(over: liveQuality)
+
+        XCTAssertFalse(decision.accepted)
+        XCTAssertEqual(decision.reason, "quality_downgrade_blocked")
+    }
+
+    func testMarketSparklineQualityBlocksVeryLowCoarseFallbackWhenUsableGraphExists() {
+        let detailedQuality = MarketSparklineQuality(
+            graphState: .cachedVisible,
+            points: [1, 2, 1.5, 2.4, 2.1, 3],
+            pointCount: 6
+        )
+        let coarseFallbackQuality = MarketSparklineQuality(
+            graphState: .cachedVisible,
+            points: [1, 2],
+            pointCount: 2
+        )
+
+        let decision = coarseFallbackQuality.promotionDecision(over: detailedQuality)
+
+        XCTAssertTrue(coarseFallbackQuality.isVeryLowCoarse)
+        XCTAssertFalse(decision.accepted)
+        XCTAssertEqual(decision.reason, "quality_downgrade_blocked")
+    }
+
     @MainActor
     func testSparklineRenderViewRedrawsWhenGraphStateChanges() {
         let cachedRow = marketRow(
@@ -786,6 +823,41 @@ final class FormAndViewStateTests: XCTestCase {
         XCTAssertEqual(outcome.state, .live)
         XCTAssertEqual(outcome.fallbackReason, nil)
         XCTAssertEqual(AssetImageClient.shared.renderState(for: descriptor), .live)
+    }
+
+    @MainActor
+    func testAssetImageClientPlaceholderGraceDecisionReportsMemoryExpectedAfterCachedLoad() async throws {
+        let renderer = UIGraphicsImageRenderer(size: CGSize(width: 24, height: 24))
+        let renderedImage = renderer.image { context in
+            UIColor.systemOrange.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 24, height: 24))
+        }
+        guard let pngData = renderedImage.pngData() else {
+            return XCTFail("Expected png data")
+        }
+
+        let imageURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("png")
+        try pngData.write(to: imageURL)
+
+        let assetImageClient = AssetImageClient(namespace: UUID().uuidString)
+        let marketIdentity = MarketIdentity(exchange: .upbit, marketId: "KRW-BTC", symbol: "BTC")
+        let descriptor = AssetImageRequestDescriptor(
+            marketIdentity: marketIdentity,
+            symbol: "BTC",
+            canonicalSymbol: "BTC",
+            imageURL: imageURL.absoluteString,
+            hasImage: true,
+            localAssetName: nil
+        )
+
+        let outcome = await assetImageClient.requestImage(for: descriptor, mode: .prefetch)
+        let graceDecision = assetImageClient.placeholderGraceDecision(for: descriptor)
+
+        XCTAssertEqual(outcome.state, .live)
+        XCTAssertFalse(graceDecision.shouldDelay)
+        XCTAssertEqual(graceDecision.reason, "memory_expected")
     }
 
     func testAssetImageRequestDescriptorNormalizesSchemeLessURL() {

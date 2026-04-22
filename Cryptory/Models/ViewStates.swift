@@ -379,6 +379,190 @@ enum MarketSparklineDetailLevel: Int, Equatable {
     }
 }
 
+enum MarketSparklineQualityDecision: Equatable {
+    case accept(String)
+    case reject(String)
+
+    nonisolated var accepted: Bool {
+        switch self {
+        case .accept:
+            return true
+        case .reject:
+            return false
+        }
+    }
+
+    nonisolated var reason: String {
+        switch self {
+        case .accept(let reason), .reject(let reason):
+            return reason
+        }
+    }
+}
+
+struct MarketSparklineQuality: Equatable {
+    let detailLevel: MarketSparklineDetailLevel
+    let graphState: MarketRowGraphState
+    let pointCount: Int
+    let pointBucket: Int
+    let hasRenderableGraph: Bool
+    let graphPathVersion: Int
+    let renderVersion: Int
+
+    nonisolated init(
+        detailLevel: MarketSparklineDetailLevel,
+        graphState: MarketRowGraphState,
+        pointCount: Int,
+        hasRenderableGraph: Bool,
+        graphPathVersion: Int,
+        renderVersion: Int
+    ) {
+        self.detailLevel = detailLevel
+        self.graphState = graphState
+        self.pointCount = pointCount
+        self.pointBucket = MarketSparklineRenderPolicy.pointCountBucket(pointCount)
+        self.hasRenderableGraph = hasRenderableGraph
+        self.graphPathVersion = graphPathVersion
+        self.renderVersion = renderVersion
+    }
+
+    nonisolated init(
+        graphState: MarketRowGraphState,
+        points: [Double],
+        pointCount: Int
+    ) {
+        let detailLevel = MarketSparklineDetailLevel(
+            graphState: graphState,
+            points: points,
+            pointCount: pointCount
+        )
+        let hasRenderableGraph = graphState.keepsVisibleGraph
+            && MarketSparklineRenderPolicy.hasRenderableGraph(points: points, pointCount: pointCount)
+        let graphPathVersion = Self.makeGraphPathVersion(
+            graphState: graphState,
+            detailLevel: detailLevel,
+            points: points,
+            pointCount: pointCount
+        )
+        self.init(
+            detailLevel: detailLevel,
+            graphState: graphState,
+            pointCount: pointCount,
+            hasRenderableGraph: hasRenderableGraph,
+            graphPathVersion: graphPathVersion,
+            renderVersion: Self.makeRenderVersion(
+                graphState: graphState,
+                detailLevel: detailLevel,
+                graphPathVersion: graphPathVersion
+            )
+        )
+    }
+
+    nonisolated var isUsableGraph: Bool {
+        hasRenderableGraph && graphState.keepsVisibleGraph
+    }
+
+    nonisolated var isVeryLowCoarse: Bool {
+        isUsableGraph
+            && detailLevel.isDetailed == false
+            && pointCount <= 3
+    }
+
+    nonisolated func promotionDecision(
+        over existing: MarketSparklineQuality?
+    ) -> MarketSparklineQualityDecision {
+        guard let existing else {
+            return .accept("quality_upgrade")
+        }
+
+        if existing.detailLevel == detailLevel,
+           existing.graphState == graphState,
+           existing.pointCount == pointCount,
+           existing.graphPathVersion == graphPathVersion,
+           existing.renderVersion == renderVersion,
+           existing.hasRenderableGraph == hasRenderableGraph {
+            return .reject("same_quality_skip")
+        }
+
+        if existing.isUsableGraph && isUsableGraph == false {
+            return .reject("quality_downgrade_blocked")
+        }
+
+        if existing.detailLevel == .liveDetailed,
+           detailLevel != .liveDetailed {
+            return .reject("quality_downgrade_blocked")
+        }
+
+        if existing.detailLevel.pathDetailRank > detailLevel.pathDetailRank {
+            return .reject("quality_downgrade_blocked")
+        }
+
+        if existing.pointCount > pointCount,
+           existing.detailLevel.pathDetailRank >= detailLevel.pathDetailRank,
+           existing.isUsableGraph {
+            return .reject("quality_downgrade_blocked")
+        }
+
+        if existing.detailLevel == detailLevel,
+           existing.graphState.preservationRank > graphState.preservationRank,
+           existing.pointCount >= pointCount {
+            return .reject("quality_downgrade_blocked")
+        }
+
+        if detailLevel.pathDetailRank > existing.detailLevel.pathDetailRank
+            || pointBucket > existing.pointBucket
+            || pointCount > existing.pointCount
+            || graphState.preservationRank > existing.graphState.preservationRank
+            || (graphPathVersion != existing.graphPathVersion && pointCount >= existing.pointCount)
+            || renderVersion != existing.renderVersion {
+            return .accept("quality_upgrade")
+        }
+
+        return .reject("same_quality_skip")
+    }
+
+    private nonisolated static func makeGraphPathVersion(
+        graphState: MarketRowGraphState,
+        detailLevel: MarketSparklineDetailLevel,
+        points: [Double],
+        pointCount: Int
+    ) -> Int {
+        var pointHash = pointCount
+        for point in points {
+            pointHash = pointHash &* 31 &+ Int((point * 100).rounded())
+        }
+        return detailLevel.rawValue * 10_000_000
+            + graphStateOrdinal(graphState) * 1_000_000
+            + abs(pointHash % 1_000_000)
+    }
+
+    private nonisolated static func makeRenderVersion(
+        graphState: MarketRowGraphState,
+        detailLevel: MarketSparklineDetailLevel,
+        graphPathVersion: Int
+    ) -> Int {
+        let visualState = MarketSparklineVisualState(graphState: graphState)
+        return abs((graphPathVersion &* 31) &+ visualState.rawValue &+ detailLevel.rawValue &* 101)
+    }
+
+    private nonisolated static func graphStateOrdinal(_ state: MarketRowGraphState) -> Int {
+        switch state {
+        case .none:
+            return 0
+        case .placeholder:
+            return 1
+        case .cachedVisible:
+            return 2
+        case .liveVisible:
+            return 3
+        case .staleVisible:
+            return 4
+        case .unavailable:
+            return 5
+        }
+    }
+}
+
 enum MarketSparklineVisualState: Int, Equatable {
     case none
     case placeholder

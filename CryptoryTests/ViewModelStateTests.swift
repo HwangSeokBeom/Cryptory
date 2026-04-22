@@ -2092,7 +2092,8 @@ final class ViewModelStateTests: XCTestCase {
 
         vm.onAppear()
         await waitUntil(timeoutNanoseconds: 2_000_000_000) {
-            vm.displayedMarketRows.first(where: { $0.symbol == "BTC" })?.sparklinePayload.detailLevel == .liveDetailed
+            repository.fetchedCandles.contains(where: { $0.symbol == "BTC" })
+                && vm.displayedMarketRows.first(where: { $0.symbol == "BTC" })?.sparklinePayload.detailLevel == .liveDetailed
         }
 
         vm.updateExchange(.coinone, source: "graph_revisit_seed")
@@ -2751,7 +2752,8 @@ final class ViewModelStateTests: XCTestCase {
 
         vm.onAppear()
         await waitUntil(timeoutNanoseconds: 2_000_000_000) {
-            vm.displayedMarketRows.first?.graphState.keepsVisibleGraph == true
+            repository.fetchedCandles.count >= 1
+                && vm.displayedMarketRows.first?.graphState.keepsVisibleGraph == true
                 && vm.displayedMarketRows.first?.sparkline.count == 4
         }
 

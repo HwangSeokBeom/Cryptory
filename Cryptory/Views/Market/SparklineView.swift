@@ -7,6 +7,31 @@ private struct RetainedSparklineResolution {
     let firstPaintSource: String
 }
 
+private func sparklineQuality(
+    for payload: MarketSparklineRenderPayload
+) -> MarketSparklineQuality {
+    MarketSparklineQuality(
+        detailLevel: payload.detailLevel,
+        graphState: payload.graphState,
+        pointCount: payload.pointCount,
+        hasRenderableGraph: payload.hasRenderableGraph,
+        graphPathVersion: payload.graphPathVersion,
+        renderVersion: payload.renderVersion
+    )
+}
+
+private func logGraphQualityDecision(
+    marketIdentity: MarketIdentity,
+    existing: MarketSparklineQuality?,
+    incoming: MarketSparklineQuality,
+    decision: MarketSparklineQualityDecision
+) {
+    AppLogger.debug(
+        .lifecycle,
+        "[GraphQualityDebug] \(marketIdentity.logFields) action=promote_or_reject oldDetail=\(existing?.detailLevel.cacheComponent ?? "none") newDetail=\(incoming.detailLevel.cacheComponent) oldPointCount=\(existing?.pointCount ?? 0) newPointCount=\(incoming.pointCount) accepted=\(decision.accepted) reason=\(decision.reason)"
+    )
+}
+
 private final class RetainedSparklineStore {
     static let shared = RetainedSparklineStore()
 
@@ -22,20 +47,38 @@ private final class RetainedSparklineStore {
 
         if incoming.hasRenderableGraph {
             let retainedPayload = payloadsByBindingKey[incoming.bindingKey]
+            let retainedQuality = retainedPayload.map(sparklineQuality(for:))
+            let incomingQuality = sparklineQuality(for: incoming)
+            let decision = incomingQuality.promotionDecision(over: retainedQuality)
             let displayPayload: MarketSparklineRenderPayload
             if let retainedPayload,
                retainedPayload.hasRenderableGraph,
-               (retainedPayload.detailLevel.pathDetailRank > incoming.detailLevel.pathDetailRank
-                || (retainedPayload.detailLevel.isDetailed
-                    && incoming.detailLevel.isDetailed
-                    && retainedPayload.pointCount > incoming.pointCount)) {
+               decision.accepted == false {
                 displayPayload = retainedPayload
+                logGraphQualityDecision(
+                    marketIdentity: marketIdentity,
+                    existing: retainedQuality,
+                    incoming: incomingQuality,
+                    decision: decision
+                )
+                AppLogger.debug(
+                    .lifecycle,
+                    "[GraphFirstPaintDebug] \(marketIdentity.logFields) action=skip reason=existing_better_graph_retained"
+                )
                 AppLogger.debug(
                     .lifecycle,
                     "[GraphDetailDebug] \(marketIdentity.logFields) action=redraw_skipped reason=retained_refined_prevents_coarse_reverse oldDetail=\(retainedPayload.detailLevel.cacheComponent) newDetail=\(incoming.detailLevel.cacheComponent)"
                 )
             } else {
                 displayPayload = incoming
+                if retainedQuality != nil {
+                    logGraphQualityDecision(
+                        marketIdentity: marketIdentity,
+                        existing: retainedQuality,
+                        incoming: incomingQuality,
+                        decision: decision
+                    )
+                }
             }
             if shouldReplaceRetainedPayload(existing: retainedPayload, incoming: incoming) {
                 payloadsByBindingKey[incoming.bindingKey] = incoming
@@ -90,13 +133,9 @@ private final class RetainedSparklineStore {
         guard let existing, existing.hasRenderableGraph else {
             return true
         }
-        if incoming.detailLevel.pathDetailRank > existing.detailLevel.pathDetailRank {
-            return true
-        }
-        if incoming.detailLevel.pathDetailRank < existing.detailLevel.pathDetailRank {
-            return false
-        }
-        return incoming.pointCount >= existing.pointCount
+        let existingQuality = sparklineQuality(for: existing)
+        let incomingQuality = sparklineQuality(for: incoming)
+        return incomingQuality.promotionDecision(over: existingQuality).accepted
     }
 }
 
@@ -358,7 +397,8 @@ final class SparklineRenderView: UIView {
             MarketSparklineRenderPolicy.isPromotedPointCount(currentConfiguration.payload.pointCount) ? "promoted" : "fallback",
             String(Int(renderSize.width.rounded(.toNearestOrEven))),
             String(Int(renderSize.height.rounded(.toNearestOrEven))),
-            String(currentConfiguration.visualState.rawValue)
+            String(currentConfiguration.visualState.rawValue),
+            currentConfiguration.isUp ? "up" : "down"
         ].joined(separator: "|")
 
         let effectiveReason = pendingRedrawReason ?? reason
@@ -368,7 +408,7 @@ final class SparklineRenderView: UIView {
                     .lifecycle,
                     "[GraphDetailDebug] \(currentConfiguration.marketIdentity.logFields) action=redraw_allowed_override reason=detail_upgrade"
                 )
-            } else if lastRedrawReason != "same_render_signature" {
+            } else if lastRedrawReason == nil {
                 AppLogger.debug(
                     .lifecycle,
                     "[GraphDetailDebug] \(currentConfiguration.marketIdentity.logFields) action=redraw_skipped reason=same_render_signature detailLevel=\(currentConfiguration.payload.detailLevel.cacheComponent) pointCount=\(currentConfiguration.payload.pointCount)"
@@ -430,12 +470,14 @@ final class SparklineRenderView: UIView {
                 currentConfiguration.payload.graphRenderIdentity,
                 currentConfiguration.payload.detailLevel.cacheComponent,
                 String(currentConfiguration.payload.graphPathVersion),
-                String(currentConfiguration.payload.renderVersion),
                 String(currentConfiguration.payload.pointCount),
                 String(Int(renderSize.width.rounded(.toNearestOrEven))),
                 String(Int(renderSize.height.rounded(.toNearestOrEven)))
             ].joined(separator: "|")
-            strokeLayer.path = graphPath
+            if currentRenderedPathIdentity != pathIdentity || strokeLayer.path == nil {
+                strokeLayer.path = graphPath
+                currentRenderedPathIdentity = pathIdentity
+            }
             strokeLayer.strokeColor = (currentConfiguration.isUp ? UIColor(Color.up) : UIColor(Color.down)).cgColor
             strokeLayer.opacity = currentConfiguration.visualState.strokeOpacity
             strokeLayer.isHidden = false
@@ -443,7 +485,6 @@ final class SparklineRenderView: UIView {
             placeholderBorderLayer.isHidden = true
             strokeLayer.setNeedsDisplay()
             layer.setNeedsDisplay()
-            currentRenderedPathIdentity = pathIdentity
             redrawCount += 1
             lastRedrawReason = effectiveReason
 
