@@ -348,7 +348,7 @@ struct ChartView: View {
                     sectionWarningBanner(warningMessage)
                         .padding(.horizontal, 16)
                 }
-                RecentTradesView(trades: trades)
+                RecentTradesView(trades: vm.recentTradeRows(for: trades))
                     .overlay(alignment: .topTrailing) {
                         if case .refreshing = vm.recentTradesState {
                             ProgressView()

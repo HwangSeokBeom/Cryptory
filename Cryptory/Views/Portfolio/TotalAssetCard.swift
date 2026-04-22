@@ -1,9 +1,9 @@
 import SwiftUI
 
-struct TotalAssetCard: View {
-    @ObservedObject var vm: CryptoViewModel
+struct TotalAssetCard: View, Equatable {
+    let summary: PortfolioSummaryCardState
 
-    private var isUp: Bool { vm.totalPnl >= 0 }
+    private var isUp: Bool { summary.totalPnl >= 0 }
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
@@ -24,34 +24,31 @@ struct TotalAssetCard: View {
                     .font(.system(size: 12))
                     .foregroundColor(.textMuted)
 
-                Text("₩" + PriceFormatter.formatInteger(vm.totalAsset))
+                Text("₩" + PriceFormatter.formatInteger(summary.totalAsset))
                     .font(.mono(28, weight: .heavy))
                     .foregroundColor(.themeText)
 
                 HStack(spacing: 16) {
                     statColumn(
                         label: "평가손익",
-                        value: "\(vm.totalPnl >= 0 ? "+" : "")₩" + PriceFormatter.formatInteger(vm.totalPnl),
+                        value: "\(summary.totalPnl >= 0 ? "+" : "")₩" + PriceFormatter.formatInteger(summary.totalPnl),
                         color: isUp ? .up : .down
                     )
                     statColumn(
                         label: "수익률",
-                        value: String(format: "%@%.2f%%", vm.totalPnlPercent >= 0 ? "+" : "", vm.totalPnlPercent),
+                        value: String(format: "%@%.2f%%", summary.totalPnlPercent >= 0 ? "+" : "", summary.totalPnlPercent),
                         color: isUp ? .up : .down
                     )
-
-                    if let snapshot = vm.portfolioState.value {
-                        statColumn(
-                            label: "가용자산",
-                            value: "₩" + PriceFormatter.formatInteger(snapshot.availableAsset),
-                            color: .accent
-                        )
-                        statColumn(
-                            label: "잠금자산",
-                            value: "₩" + PriceFormatter.formatInteger(snapshot.lockedAsset),
-                            color: .themeText
-                        )
-                    }
+                    statColumn(
+                        label: "가용자산",
+                        value: "₩" + PriceFormatter.formatInteger(summary.availableAsset),
+                        color: .accent
+                    )
+                    statColumn(
+                        label: "잠금자산",
+                        value: "₩" + PriceFormatter.formatInteger(summary.lockedAsset),
+                        color: .themeText
+                    )
                 }
             }
         }

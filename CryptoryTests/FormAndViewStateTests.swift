@@ -10,6 +10,33 @@ final class FormAndViewStateTests: XCTestCase {
         AssetImageClient.shared.debugReset()
     }
 
+    func testAppExternalLinksPointToProductionLegalPages() {
+        let expectedLinks: [(AppExternalLink, String, String)] = [
+            (.home, "홈페이지", "https://hwangseokbeom.github.io/Cryptory-legal/"),
+            (.privacyPolicy, "개인정보처리방침", "https://hwangseokbeom.github.io/Cryptory-legal/privacy.html"),
+            (.termsOfService, "이용약관", "https://hwangseokbeom.github.io/Cryptory-legal/terms.html"),
+            (.support, "고객지원", "https://hwangseokbeom.github.io/Cryptory-legal/support.html"),
+            (.deleteAccount, "계정삭제 안내", "https://hwangseokbeom.github.io/Cryptory-legal/delete-account.html"),
+            (.investmentDisclaimer, "투자 유의 및 면책", "https://hwangseokbeom.github.io/Cryptory-legal/disclaimer.html")
+        ]
+
+        XCTAssertEqual(AppExternalLink.allCases.count, expectedLinks.count)
+
+        for (link, title, urlString) in expectedLinks {
+            XCTAssertEqual(link.title, title)
+            XCTAssertEqual(link.urlString, urlString)
+            XCTAssertEqual(link.url?.absoluteString, urlString)
+            XCTAssertNotNil(SafariDestination(link: link))
+        }
+    }
+
+    func testSafariDestinationRejectsInvalidExternalURLs() {
+        XCTAssertNil(SafariDestination(title: "비어 있는 링크", urlString: " "))
+        XCTAssertNil(SafariDestination(title: "스킴 없는 링크", urlString: "hwangseokbeom.github.io/Cryptory-legal/"))
+        XCTAssertNil(SafariDestination(title: "지원하지 않는 링크", urlString: "ftp://hwangseokbeom.github.io/Cryptory-legal/"))
+        XCTAssertNotNil(SafariDestination(title: "정상 링크", urlString: "https://hwangseokbeom.github.io/Cryptory-legal/"))
+    }
+
     func testExchangeConnectionFormValidationRequiresFieldsOnCreate() {
         let validator = ExchangeConnectionFormValidator()
 
@@ -54,6 +81,22 @@ final class FormAndViewStateTests: XCTestCase {
         XCTAssertEqual(viewState.refreshMode, .pollingFallback)
     }
 
+    func testScreenStatusFactoryKeepsRecentTimestampStableWithinFirstMinute() {
+        let factory = ScreenStatusFactory()
+        let viewState = factory.makeStatusViewState(
+            meta: ResponseMeta(
+                fetchedAt: Date().addingTimeInterval(-24),
+                isStale: false,
+                warningMessage: nil,
+                partialFailureMessage: nil
+            ),
+            streamingStatus: .live,
+            context: .market
+        )
+
+        XCTAssertEqual(viewState.lastUpdatedText, "업데이트 방금 전")
+    }
+
     func testExchangeConnectionsUseCaseBuildsValidationChip() {
         let useCase = ExchangeConnectionsUseCase()
         let connection = ExchangeConnection(
@@ -77,6 +120,53 @@ final class FormAndViewStateTests: XCTestCase {
         XCTAssertEqual(cards.count, 1)
         XCTAssertTrue(cards[0].statusChips.contains(where: { $0.contains("검증") }))
         XCTAssertEqual(cards[0].secondaryMessage, "테스트 성공")
+    }
+
+    func testCoinCatalogPrefersMarketIdWhenBaseAssetLooksTruncated() {
+        let coin = CoinCatalog.coin(
+            symbol: "FI",
+            exchange: .upbit,
+            marketId: "KRW-ETHFI",
+            baseAsset: "FI",
+            displayName: "Ether.fi"
+        )
+
+        XCTAssertEqual(coin.symbol, "ETHFI")
+        XCTAssertEqual(coin.canonicalSymbol, "ETHFI")
+        XCTAssertEqual(coin.marketId, "KRW-ETHFI")
+    }
+
+    func testExchangeConnectionsUseCaseRoundsRecentStatusChipToJustNow() {
+        let useCase = ExchangeConnectionsUseCase()
+        let connection = ExchangeConnection(
+            id: "upbit-1",
+            exchange: .upbit,
+            permission: .tradeEnabled,
+            nickname: nil,
+            isActive: true,
+            status: .connected,
+            statusMessage: nil,
+            maskedCredentialSummary: nil,
+            lastValidatedAt: Date().addingTimeInterval(-18),
+            updatedAt: Date().addingTimeInterval(-42)
+        )
+
+        let cards = useCase.makeCardViewStates(
+            connections: [connection],
+            crudCapability: .readOnly
+        )
+
+        XCTAssertTrue(cards[0].statusChips.contains("검증 방금 전"))
+        XCTAssertTrue(cards[0].statusChips.contains("수정 방금 전"))
+    }
+
+    func testLoadableEquatableComparesLoadedValues() {
+        let lhs: Loadable<[String]> = .loaded(["BTC", "ETH"])
+        let rhs: Loadable<[String]> = .loaded(["BTC", "ETH"])
+        let different: Loadable<[String]> = .loaded(["BTC"])
+
+        XCTAssertEqual(lhs, rhs)
+        XCTAssertNotEqual(lhs, different)
     }
 
     func testKimchiPremiumViewStateUseCaseGroupsRows() {
@@ -469,6 +559,46 @@ final class FormAndViewStateTests: XCTestCase {
     }
 
     @MainActor
+    func testSparklineRenderViewForcesPlaceholderToLiveDetailedUpgrade() {
+        let placeholderRow = marketRow(
+            priceText: "125,000,000",
+            graphState: .placeholder,
+            points: []
+        )
+        let liveRow = marketRow(
+            priceText: "125,000,000",
+            graphState: .liveVisible,
+            points: [1, 2, 1.5, 2.4, 2.1, 3]
+        )
+        let sparklineRenderView = SparklineRenderView(frame: .zero)
+        let marketIdentity = MarketIdentity(exchange: .upbit, marketId: "KRW-BTC", symbol: "BTC")
+
+        sparklineRenderView.debugApply(
+            payload: placeholderRow.sparklinePayload,
+            visualState: placeholderRow.sparklinePayload.graphVisualState,
+            isUp: true,
+            marketIdentity: marketIdentity,
+            size: CGSize(width: 72, height: 20)
+        )
+        let placeholderSnapshot = sparklineRenderView.debugSnapshot
+
+        sparklineRenderView.debugApply(
+            payload: liveRow.sparklinePayload,
+            visualState: liveRow.sparklinePayload.graphVisualState,
+            isUp: true,
+            marketIdentity: marketIdentity,
+            size: CGSize(width: 72, height: 20)
+        )
+        let liveSnapshot = sparklineRenderView.debugSnapshot
+
+        XCTAssertTrue(placeholderSnapshot.hasPlaceholder)
+        XCTAssertTrue(liveSnapshot.hasVisibleGraph)
+        XCTAssertEqual(liveSnapshot.detailLevel, .liveDetailed)
+        XCTAssertGreaterThan(liveSnapshot.redrawCount, placeholderSnapshot.redrawCount)
+        XCTAssertNotEqual(placeholderSnapshot.graphPathVersion, liveSnapshot.graphPathVersion)
+    }
+
+    @MainActor
     func testSparklineRenderViewSkipsSameGraphApplyForTextOnlyUpdate() {
         let row = marketRow(
             priceText: "125,000,000",
@@ -502,6 +632,31 @@ final class FormAndViewStateTests: XCTestCase {
     }
 
     @MainActor
+    func testSparklineRenderViewPrepareForReuseClearsRenderedGraph() {
+        let row = marketRow(
+            priceText: "125,000,000",
+            graphState: .liveVisible,
+            points: [1, 2, 1.5, 2.4]
+        )
+        let sparklineRenderView = SparklineRenderView(frame: .zero)
+        let marketIdentity = MarketIdentity(exchange: .upbit, marketId: "KRW-BTC", symbol: "BTC")
+
+        sparklineRenderView.debugApply(
+            payload: row.sparklinePayload,
+            visualState: row.sparklinePayload.graphVisualState,
+            isUp: true,
+            marketIdentity: marketIdentity,
+            size: CGSize(width: 72, height: 20)
+        )
+        XCTAssertTrue(sparklineRenderView.debugSnapshot.hasVisibleGraph)
+
+        sparklineRenderView.prepareForReuse()
+
+        XCTAssertFalse(sparklineRenderView.debugSnapshot.hasVisibleGraph)
+        XCTAssertFalse(sparklineRenderView.debugSnapshot.hasPlaceholder)
+    }
+
+    @MainActor
     func testSymbolImageRenderViewFallsBackForNilURL() {
         let symbolImageRenderView = SymbolImageRenderView(frame: .zero)
         let marketIdentity = MarketIdentity(exchange: .upbit, marketId: "KRW-BTC", symbol: "BTC")
@@ -515,6 +670,25 @@ final class FormAndViewStateTests: XCTestCase {
 
         XCTAssertEqual(symbolImageRenderView.debugState, .fallback("no_image_url"))
         XCTAssertEqual(symbolImageRenderView.debugPlaceholderText, "BT")
+    }
+
+    @MainActor
+    func testSymbolImageRenderViewPrepareForReuseClearsFallbackState() {
+        let symbolImageRenderView = SymbolImageRenderView(frame: .zero)
+        let marketIdentity = MarketIdentity(exchange: .upbit, marketId: "KRW-BTC", symbol: "BTC")
+
+        symbolImageRenderView.debugApply(
+            marketIdentity: marketIdentity,
+            symbol: "BTC",
+            imageURL: nil,
+            size: 24
+        )
+        XCTAssertEqual(symbolImageRenderView.debugPlaceholderText, "BT")
+
+        symbolImageRenderView.prepareForReuse()
+
+        XCTAssertEqual(symbolImageRenderView.debugState, .idle)
+        XCTAssertEqual(symbolImageRenderView.debugPlaceholderText, "")
     }
 
     @MainActor
@@ -540,7 +714,7 @@ final class FormAndViewStateTests: XCTestCase {
         symbolImageRenderView.debugApply(
             marketIdentity: marketIdentity,
             symbol: "XRP",
-            imageURL: "https://assets.example.com/xrp.png",
+            imageURL: nil,
             hasImage: false,
             size: 24
         )
@@ -580,6 +754,94 @@ final class FormAndViewStateTests: XCTestCase {
         XCTAssertEqual(outcome.state, .live)
         XCTAssertEqual(AssetImageClient.shared.renderState(for: descriptor), .live)
         XCTAssertEqual(AssetImageDebugClient.shared.snapshotEventCounts()["request_start"], 1)
+    }
+
+    @MainActor
+    func testAssetImageClientAttemptsURLEvenWhenHasImageFlagIsFalse() async throws {
+        let renderer = UIGraphicsImageRenderer(size: CGSize(width: 24, height: 24))
+        let renderedImage = renderer.image { context in
+            UIColor.systemTeal.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 24, height: 24))
+        }
+        guard let pngData = renderedImage.pngData() else {
+            return XCTFail("Expected png data")
+        }
+
+        let imageURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("png")
+        try pngData.write(to: imageURL)
+
+        let marketIdentity = MarketIdentity(exchange: .bithumb, marketId: "KRW-T", symbol: "T")
+        let descriptor = AssetImageRequestDescriptor(
+            marketIdentity: marketIdentity,
+            symbol: "T",
+            canonicalSymbol: "T",
+            imageURL: imageURL.absoluteString,
+            hasImage: false,
+            localAssetName: nil
+        )
+        let outcome = await AssetImageClient.shared.requestImage(for: descriptor, mode: .visible)
+
+        XCTAssertEqual(outcome.state, .live)
+        XCTAssertEqual(outcome.fallbackReason, nil)
+        XCTAssertEqual(AssetImageClient.shared.renderState(for: descriptor), .live)
+    }
+
+    func testAssetImageRequestDescriptorNormalizesSchemeLessURL() {
+        let descriptor = AssetImageRequestDescriptor(
+            marketIdentity: MarketIdentity(exchange: .upbit, marketId: "KRW-BTC", symbol: "BTC"),
+            symbol: "BTC",
+            canonicalSymbol: "BTC",
+            imageURL: "assets.example.com/icons/btc logo.png",
+            hasImage: true,
+            localAssetName: nil
+        )
+
+        XCTAssertEqual(
+            descriptor.normalizedImageURL?.absoluteString,
+            "https://assets.example.com/icons/btc%20logo.png"
+        )
+    }
+
+    @MainActor
+    func testSymbolImageRenderViewUsesCachedImageWhileRowStateIsStillPlaceholder() async throws {
+        let renderer = UIGraphicsImageRenderer(size: CGSize(width: 24, height: 24))
+        let renderedImage = renderer.image { context in
+            UIColor.systemPurple.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 24, height: 24))
+        }
+        guard let pngData = renderedImage.pngData() else {
+            return XCTFail("Expected png data")
+        }
+
+        let imageURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("png")
+        try pngData.write(to: imageURL)
+
+        let marketIdentity = MarketIdentity(exchange: .upbit, marketId: "KRW-BTC", symbol: "BTC")
+        let descriptor = AssetImageRequestDescriptor(
+            marketIdentity: marketIdentity,
+            symbol: "BTC",
+            canonicalSymbol: "BTC",
+            imageURL: imageURL.absoluteString,
+            hasImage: true,
+            localAssetName: nil
+        )
+        _ = await AssetImageClient.shared.requestImage(for: descriptor, mode: .prefetch)
+
+        let symbolImageRenderView = SymbolImageRenderView(frame: .zero)
+        symbolImageRenderView.debugApply(
+            marketIdentity: marketIdentity,
+            symbol: "BTC",
+            imageURL: imageURL.absoluteString,
+            hasImage: true,
+            symbolImageState: .placeholder,
+            size: 24
+        )
+
+        XCTAssertEqual(symbolImageRenderView.debugState, .success)
     }
 
     @MainActor
@@ -699,7 +961,8 @@ final class FormAndViewStateTests: XCTestCase {
     private func marketRow(
         priceText: String,
         graphState: MarketRowGraphState,
-        points: [Double]
+        points: [Double],
+        suppressesCoarseRetainedReuse: Bool = false
     ) -> MarketRowViewState {
         MarketRowViewState(
             selectedExchange: .upbit,
@@ -723,7 +986,8 @@ final class FormAndViewStateTests: XCTestCase {
             isUp: true,
             flash: nil,
             isFavorite: false,
-            dataState: .live
+            dataState: .live,
+            suppressesCoarseRetainedReuse: suppressesCoarseRetainedReuse
         )
     }
 }

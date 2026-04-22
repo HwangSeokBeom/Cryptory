@@ -297,11 +297,11 @@ struct ExchangeConnectionsUseCase {
             var statusChips = [connection.status.title]
 
             if let lastValidatedAt = connection.lastValidatedAt {
-                statusChips.append("검증 \(relativeStatusFormatter.localizedString(for: lastValidatedAt, relativeTo: Date()))")
+                statusChips.append("검증 \(userFacingRelativeStatusChipText(lastValidatedAt))")
             }
 
             if let updatedAt = connection.updatedAt {
-                statusChips.append("수정 \(relativeStatusFormatter.localizedString(for: updatedAt, relativeTo: Date()))")
+                statusChips.append("수정 \(userFacingRelativeStatusChipText(updatedAt))")
             }
 
             let secondaryMessage = connection.statusMessage
@@ -348,12 +348,11 @@ struct ExchangeConnectionFormValidator {
             }
         }
 
-        if let accessKey = credentials[.accessKey], accessKey.contains(" ") {
-            return "Access Key에는 공백을 넣을 수 없어요."
-        }
-
-        if let accessToken = credentials[.accessToken], accessToken.contains(" ") {
-            return "Access Token에는 공백을 넣을 수 없어요."
+        for field in exchange.credentialFields {
+            let value = credentials[field.fieldKey, default: ""]
+            if value.contains(where: \.isWhitespace) {
+                return "\(field.title)에는 공백을 넣을 수 없어요."
+            }
         }
 
         return nil
@@ -941,17 +940,51 @@ private let relativeStatusFormatter: RelativeDateTimeFormatter = {
 }()
 
 private func userFacingRelativeTimestampText(_ date: Date) -> String {
+    let relativeText = userFacingRelativeText(date)
+    return "업데이트 \(relativeText)"
+}
+
+private func userFacingRelativeStatusChipText(_ date: Date) -> String {
+    userFacingRelativeText(date)
+}
+
+private func userFacingRelativeText(_ date: Date) -> String {
     let now = Date()
     let clampedDate = date > now ? now : date
+    let elapsed = now.timeIntervalSince(clampedDate)
 
-    if now.timeIntervalSince(clampedDate) < 1 {
-        return "업데이트 방금 전"
+    if elapsed < 60 {
+        return "방금 전"
     }
 
-    let relative = relativeStatusFormatter.localizedString(for: clampedDate, relativeTo: now)
+    let roundedReferenceDate = roundedRelativeReferenceDate(
+        from: clampedDate,
+        now: now,
+        elapsed: elapsed
+    )
+    let relative = relativeStatusFormatter.localizedString(for: roundedReferenceDate, relativeTo: now)
     if relative == "0초 전" || relative == "0초 후" {
-        return "업데이트 방금 전"
+        return "방금 전"
     }
 
-    return "업데이트 \(relative)"
+    return relative
+}
+
+private func roundedRelativeReferenceDate(
+    from date: Date,
+    now: Date,
+    elapsed: TimeInterval
+) -> Date {
+    if elapsed < 60 {
+        return now
+    }
+    if elapsed < 3600 {
+        let roundedMinutes = max(1, Int(elapsed / 60))
+        return now.addingTimeInterval(TimeInterval(-roundedMinutes * 60))
+    }
+    if elapsed < 86_400 {
+        let roundedHours = max(1, Int(elapsed / 3600))
+        return now.addingTimeInterval(TimeInterval(-roundedHours * 3600))
+    }
+    return date
 }

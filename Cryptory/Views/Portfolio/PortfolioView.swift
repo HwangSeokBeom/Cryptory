@@ -13,38 +13,24 @@ struct PortfolioView: View {
         } else {
             ScrollView {
                 VStack(spacing: 16) {
-                    connectionSummaryCard
-                        .padding(.horizontal, 16)
-                        .padding(.top, 14)
+                    PortfolioConnectionSummaryCard(
+                        summaryText: connectionSummaryText,
+                        onManage: vm.openExchangeConnections
+                    )
+                    .equatable()
+                    .padding(.horizontal, 16)
+                    .padding(.top, 14)
 
                     ScreenStatusBannerView(viewState: vm.portfolioStatusViewState)
                         .padding(.horizontal, 16)
 
-                    switch vm.portfolioState {
-                    case .idle, .loading:
-                        ProgressView("내 자산을 불러오는 중...")
-                            .tint(.accent)
-                            .padding(.top, 40)
-
-                    case .failed(let message):
-                        stateMessage(
-                            title: "자산 데이터를 불러오지 못했어요",
-                            detail: message
-                        )
-
-                    case .empty:
-                        stateMessage(
-                            title: "보유 자산이 없어요",
-                            detail: "거래소 연결 후 자산이 있으면 여기에서 확인할 수 있어요."
-                        )
-
-                    case .loaded:
-                        TotalAssetCard(vm: vm)
+                    if let summary = vm.portfolioSummaryCardState {
+                        TotalAssetCard(summary: summary)
+                            .equatable()
                             .padding(.horizontal, 16)
-
-                        holdingsSection
-                        historySection
                     }
+
+                    portfolioBodySection
 
                     Spacer(minLength: 20)
                 }
@@ -70,47 +56,6 @@ struct PortfolioView: View {
         }
     }
 
-    private var connectionSummaryCard: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("거래소 연결")
-                        .font(.system(size: 13, weight: .bold))
-                        .foregroundColor(.themeText)
-                    Text(connectionSummaryText)
-                        .font(.system(size: 12))
-                        .foregroundColor(.textSecondary)
-                }
-
-                Spacer()
-
-                Button {
-                    vm.openExchangeConnections()
-                } label: {
-                    Text("관리")
-                        .font(.system(size: 12, weight: .bold))
-                        .foregroundColor(.accent)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 8)
-                        .background(
-                            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                .fill(Color.accent.opacity(0.12))
-                        )
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .padding(14)
-        .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(Color.bgSecondary)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .stroke(Color.themeBorder, lineWidth: 1)
-                )
-        )
-    }
-
     private var connectionSummaryText: String {
         switch vm.exchangeConnectionsState {
         case .idle, .loading:
@@ -122,6 +67,32 @@ struct PortfolioView: View {
         case .loaded:
             let tradableCount = vm.exchangeConnections.filter { $0.permission == .tradeEnabled && $0.isActive }.count
             return "총 \(vm.exchangeConnections.count)개 연결, 주문 가능 \(tradableCount)개"
+        }
+    }
+
+    @ViewBuilder
+    private var portfolioBodySection: some View {
+        switch vm.portfolioState {
+        case .idle, .loading:
+            ProgressView("내 자산을 불러오는 중...")
+                .tint(.accent)
+                .padding(.top, 40)
+
+        case .failed(let message):
+            stateMessage(
+                title: "자산 데이터를 불러오지 못했어요",
+                detail: message
+            )
+
+        case .empty:
+            stateMessage(
+                title: "보유 자산이 없어요",
+                detail: "거래소 연결 후 자산이 있으면 여기에서 확인할 수 있어요."
+            )
+
+        case .loaded:
+            holdingsSection
+            historySection
         }
     }
 
@@ -139,8 +110,11 @@ struct PortfolioView: View {
                 )
             } else {
                 ForEach(vm.portfolio) { holding in
-                    HoldingCard(vm: vm, holding: holding)
-                        .padding(.horizontal, 16)
+                    HoldingCard(holding: holding) {
+                        vm.selectCoinForTrade(CoinCatalog.coin(symbol: holding.symbol))
+                    }
+                    .equatable()
+                    .padding(.horizontal, 16)
                 }
             }
         }
@@ -232,5 +206,53 @@ struct PortfolioView: View {
                 )
         )
         .padding(.horizontal, 16)
+    }
+}
+
+private struct PortfolioConnectionSummaryCard: View, Equatable {
+    let summaryText: String
+    let onManage: () -> Void
+
+    static func == (lhs: PortfolioConnectionSummaryCard, rhs: PortfolioConnectionSummaryCard) -> Bool {
+        lhs.summaryText == rhs.summaryText
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("거래소 연결")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundColor(.themeText)
+                    Text(summaryText)
+                        .font(.system(size: 12))
+                        .foregroundColor(.textSecondary)
+                }
+
+                Spacer()
+
+                Button(action: onManage) {
+                    Text("관리")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundColor(.accent)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 8)
+                        .background(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .fill(Color.accent.opacity(0.12))
+                        )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color.bgSecondary)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .stroke(Color.themeBorder, lineWidth: 1)
+                )
+        )
     }
 }

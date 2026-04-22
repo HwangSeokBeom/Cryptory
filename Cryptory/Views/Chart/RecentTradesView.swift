@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct RecentTradesView: View {
-    let trades: [PublicTrade]
+    let trades: [ChartTradeRowViewState]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {

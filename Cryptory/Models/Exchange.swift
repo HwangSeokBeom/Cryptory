@@ -142,30 +142,32 @@ enum Exchange: String, CaseIterable, Identifiable, Codable {
         switch self {
         case .upbit:
             return ExchangeConnectionGuide(
-                apiManagementURLString: "https://www.upbit.com/mypage/open_api_management",
-                documentationURLString: "https://docs.upbit.com",
-                issueSummary: "업비트 Open API 관리 페이지에서 Access Key / Secret Key를 발급합니다.",
+                apiManagementURLString: "https://docs.upbit.com/kr",
+                documentationURLString: "https://support.upbit.com/hc/ko/articles/4403180359705-Open-API%EB%A5%BC-%EC%82%AC%EC%9A%A9%ED%95%98%EA%B3%A0-%EC%8B%B6%EC%96%B4%EC%9A%94",
+                permissionGuideURLString: "https://docs.upbit.com/kr/docs/api-key",
+                issueSummary: "API 키는 업비트 공식 웹사이트에서 직접 발급한 뒤 앱에 붙여넣어 주세요.",
                 issuanceSteps: [
-                    "PC 웹에서 Open API 관리 페이지를 열고 필요한 권한을 선택하세요.",
-                    "조회용은 자산/주문 조회, 주문용은 조회 + 주문 권한만 켜세요.",
-                    "허용 IP를 등록한 뒤 발급 직후 Secret Key를 안전한 곳에 복사하세요."
+                    "이미 키가 있다면 외부 링크를 열지 않고 위 인증 정보에 바로 붙여넣으세요.",
+                    "처음 발급하는 경우 공식 Open API 안내에서 발급 조건과 허용 IP 등록 방법을 확인하세요.",
+                    "조회 전용은 자산/주문 조회만, 주문 기능은 조회 권한에 주문 권한만 추가하세요."
                 ],
                 permissionTips: [
-                    "조회용 연결: 잔고 조회, 주문 조회",
-                    "주문 연결: 조회 권한 + 주문 권한",
-                    "출금 권한은 되도록 비활성화 권장"
+                    "조회 전용 연결: 자산 조회, 주문 조회",
+                    "주문 가능 연결: 조회 권한 + 주문 권한",
+                    "출금 권한은 부여하지 않는 것을 권장"
                 ],
                 cautionNotes: [
                     "2채널 인증 완료 후 발급할 수 있어요.",
-                    "허용 IP는 Key당 최대 5개까지 등록할 수 있어요.",
+                    "허용 IP는 Key당 최대 10개까지 등록할 수 있어요.",
                     "Secret Key는 발급 시 1회만 확인 가능하고, API Key 유효기간은 1년입니다."
                 ],
                 testDescription: "입력 형식과 필수 권한 안내를 먼저 점검하고, 저장 후 서버 연결 상태로 최종 반영합니다."
             )
         case .bithumb:
             return ExchangeConnectionGuide(
-                apiManagementURLString: "https://www.bithumb.com/react/api-support/management-api",
+                apiManagementURLString: "https://apidocs.bithumb.com",
                 documentationURLString: "https://apidocs.bithumb.com/v2.1.0/docs/%EB%B9%A0%EB%A5%B8-%EC%8B%9C%EC%9E%91-%EA%B0%80%EC%9D%B4%EB%93%9C",
+                permissionGuideURLString: nil,
                 issueSummary: "빗썸 마이페이지 API 관리에서 API Key / Secret Key를 발급합니다.",
                 issuanceSteps: [
                     "빗썸 웹 로그인 후 마이페이지 > API 관리로 이동하세요.",
@@ -186,8 +188,9 @@ enum Exchange: String, CaseIterable, Identifiable, Codable {
             )
         case .coinone:
             return ExchangeConnectionGuide(
-                apiManagementURLString: "https://coinone.co.kr/user/api/management",
+                apiManagementURLString: "https://docs.coinone.co.kr",
                 documentationURLString: "https://docs.coinone.co.kr/v1.1/docs/about-public-api",
+                permissionGuideURLString: nil,
                 issueSummary: "코인원 통합 API 관리에서 Access Token / Secret Key를 발급합니다.",
                 issuanceSteps: [
                     "코인원 웹사이트 footer > Open API > 통합 API 관리 > 개인용 API로 이동하세요.",
@@ -208,8 +211,9 @@ enum Exchange: String, CaseIterable, Identifiable, Codable {
             )
         case .korbit:
             return ExchangeConnectionGuide(
-                apiManagementURLString: "https://exchange.korbit.co.kr/my/api/",
+                apiManagementURLString: "https://docs.korbit.co.kr",
                 documentationURLString: "https://docs.korbit.co.kr/",
+                permissionGuideURLString: nil,
                 issueSummary: "코빗 계정의 API 관리 페이지에서 API Key를 생성하고 현재 앱은 HMAC 기반 Key/Secret 입력을 사용합니다.",
                 issuanceSteps: [
                     "코빗 웹의 API 관리 페이지를 열고 새 API Key를 생성하세요.",
@@ -230,8 +234,9 @@ enum Exchange: String, CaseIterable, Identifiable, Codable {
             )
         case .binance:
             return ExchangeConnectionGuide(
-                apiManagementURLString: "https://www.binance.com/en/my/settings/api-management",
+                apiManagementURLString: "https://developers.binance.com",
                 documentationURLString: nil,
+                permissionGuideURLString: nil,
                 issueSummary: "바이낸스 API Management에서 API Key / Secret Key를 생성합니다.",
                 issuanceSteps: [
                     "Binance 웹 또는 앱에서 API Management를 열고 Create API를 누르세요.",
@@ -257,6 +262,7 @@ enum Exchange: String, CaseIterable, Identifiable, Codable {
 struct ExchangeConnectionGuide: Equatable {
     let apiManagementURLString: String
     let documentationURLString: String?
+    let permissionGuideURLString: String?
     let issueSummary: String
     let issuanceSteps: [String]
     let permissionTips: [String]

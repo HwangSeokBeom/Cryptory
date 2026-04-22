@@ -57,6 +57,9 @@ enum AppLogger {
 enum MarketPerformanceMetric: String {
     case exchangeSwitchElapsed = "exchange_switch_elapsed"
     case initialVisibleFirstPaintElapsed = "initial_visible_first_paint_elapsed"
+    case skeletonShown = "skeleton_shown"
+    case skeletonHidden = "skeleton_hidden"
+    case marketRowsApply = "market_rows_apply"
     case visibleRowReconfigure = "visible_row_reconfigure"
     case offscreenBatch = "offscreen_batch"
     case graphOnlyPatch = "graph_only_patch"

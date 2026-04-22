@@ -33,7 +33,7 @@ struct OrderbookView: View {
                     )
 
                     // Asks (sell orders) - reversed for display
-                    ForEach(ob.asks) { ask in
+                    ForEach(Array(ob.asks.enumerated()), id: \.offset) { _, ask in
                         orderbookRow(
                             price: ask.price,
                             qty: ask.qty,
@@ -58,7 +58,7 @@ struct OrderbookView: View {
                     .padding(.vertical, 4)
 
                     // Bids (buy orders)
-                    ForEach(ob.bids) { bid in
+                    ForEach(Array(ob.bids.enumerated()), id: \.offset) { _, bid in
                         orderbookRow(
                             price: bid.price,
                             qty: bid.qty,

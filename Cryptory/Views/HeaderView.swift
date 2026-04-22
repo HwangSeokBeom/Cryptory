@@ -10,14 +10,22 @@ struct ExchangeButtonBoundsPreferenceKey: PreferenceKey {
 
 struct HeaderView: View {
     @ObservedObject var vm: CryptoViewModel
-    private let controlHeight: CGFloat = 44
+    @State private var safariDestination: SafariDestination?
+    private let controlHeight: CGFloat = 48
     private let controlCornerRadius: CGFloat = 18
     private let exchangeMinimumWidth: CGFloat = 136
 
     var body: some View {
         HStack(alignment: .center, spacing: 12) {
-            brandSection
-                .frame(maxWidth: .infinity, alignment: .leading)
+            Button {
+                openExternalLink(.home)
+            } label: {
+                brandSection
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .buttonStyle(.plain)
+            .accessibilityHint("홈페이지 열기")
+            .frame(maxWidth: .infinity, alignment: .leading)
 
             if vm.shouldShowExchangeSelector {
                 exchangeButton
@@ -48,6 +56,10 @@ struct HeaderView: View {
             }
         )
         .animation(.easeInOut(duration: 0.2), value: vm.activeTab)
+        .sheet(item: $safariDestination) { destination in
+            SafariSheet(destination: destination)
+                .ignoresSafeArea()
+        }
     }
 
     private var brandSection: some View {
@@ -101,7 +113,7 @@ struct HeaderView: View {
     private var exchangeButton: some View {
         Button {
             withAnimation(.easeOut(duration: 0.2)) {
-                vm.showExchangeMenu.toggle()
+                vm.toggleExchangeMenu()
             }
         } label: {
             HStack(spacing: 8) {
@@ -125,6 +137,7 @@ struct HeaderView: View {
             .frame(minWidth: exchangeMinimumWidth, idealWidth: 150, maxWidth: 170)
             .frame(height: controlHeight)
             .background(controlBackground(cornerRadius: controlCornerRadius))
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
     }
@@ -136,5 +149,9 @@ struct HeaderView: View {
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                     .stroke(Color.themeBorder, lineWidth: 1)
             )
+    }
+
+    private func openExternalLink(_ link: AppExternalLink) {
+        safariDestination = SafariDestination(link: link)
     }
 }

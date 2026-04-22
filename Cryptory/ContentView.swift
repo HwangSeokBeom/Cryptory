@@ -101,20 +101,30 @@ struct ContentView: View {
                         max(horizontalInset, buttonFrame.minX),
                         max(horizontalInset, proxy.size.width - dropdownWidth - horizontalInset)
                     )
+                    let dropdownHeight = CGFloat(Exchange.allCases.count) * ExchangeDropdown.rowHeight
+                        + CGFloat(max(Exchange.allCases.count - 1, 0)) * ExchangeDropdown.rowSpacing
+                        + ExchangeDropdown.containerInset * 2
+                    let dropdownFrame = CGRect(
+                        x: dropdownX,
+                        y: buttonFrame.maxY + 8,
+                        width: dropdownWidth,
+                        height: dropdownHeight
+                    )
 
                     ZStack(alignment: .topLeading) {
-                        Color.black.opacity(0.01)
-                            .ignoresSafeArea()
-                            .contentShape(Rectangle())
-                            .onTapGesture {
-                                withAnimation(.easeOut(duration: 0.2)) {
-                                    vm.showExchangeMenu = false
-                                }
+                        ExchangeDropdownDismissOverlay(
+                            canvasSize: proxy.size,
+                            menuFrame: dropdownFrame
+                        ) {
+                            withAnimation(.easeOut(duration: 0.16)) {
+                                vm.setExchangeMenuVisible(false)
                             }
+                        }
 
                         ExchangeDropdown(vm: vm)
                             .frame(width: dropdownWidth)
-                            .offset(x: dropdownX, y: buttonFrame.maxY + 8)
+                            .offset(x: dropdownFrame.minX, y: dropdownFrame.minY)
+                            .zIndex(1)
                     }
                     .transition(.opacity)
                     .zIndex(100)
@@ -131,12 +141,76 @@ struct ContentView: View {
         .onChange(of: scenePhase) { _, newValue in
             vm.onScenePhaseChanged(newValue)
         }
-        .fullScreenCover(isPresented: $vm.isLoginPresented) {
+        .sheet(isPresented: $vm.isLoginPresented) {
             LoginView(vm: vm)
+                .presentationDetents([.fraction(0.88)])
+                .presentationDragIndicator(.visible)
+                .presentationContentInteraction(.scrolls)
+                .presentationCornerRadius(24)
+                .presentationBackground(Color.bg)
+                .interactiveDismissDisabled(false)
+                .preferredColorScheme(.dark)
         }
         .sheet(isPresented: $vm.isExchangeConnectionsPresented) {
             ExchangeConnectionsView(vm: vm)
                 .presentationDetents([.large])
+                .presentationDragIndicator(.visible)
+                .presentationContentInteraction(.scrolls)
+                .presentationCornerRadius(28)
+                .presentationBackground(Color.bg)
+                .preferredColorScheme(.dark)
+        }
+    }
+}
+
+private struct ExchangeDropdownDismissOverlay: View {
+    let canvasSize: CGSize
+    let menuFrame: CGRect
+    let onDismiss: () -> Void
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            dismissRect(
+                x: 0,
+                y: 0,
+                width: canvasSize.width,
+                height: max(menuFrame.minY, 0)
+            )
+            dismissRect(
+                x: 0,
+                y: menuFrame.maxY,
+                width: canvasSize.width,
+                height: max(canvasSize.height - menuFrame.maxY, 0)
+            )
+            dismissRect(
+                x: 0,
+                y: max(menuFrame.minY, 0),
+                width: max(menuFrame.minX, 0),
+                height: max(menuFrame.height, 0)
+            )
+            dismissRect(
+                x: menuFrame.maxX,
+                y: max(menuFrame.minY, 0),
+                width: max(canvasSize.width - menuFrame.maxX, 0),
+                height: max(menuFrame.height, 0)
+            )
+        }
+        .ignoresSafeArea()
+    }
+
+    @ViewBuilder
+    private func dismissRect(
+        x: CGFloat,
+        y: CGFloat,
+        width: CGFloat,
+        height: CGFloat
+    ) -> some View {
+        if width > 0, height > 0 {
+            Color.black.opacity(0.01)
+                .frame(width: width, height: height)
+                .contentShape(Rectangle())
+                .offset(x: x, y: y)
+                .onTapGesture(perform: onDismiss)
         }
     }
 }

@@ -276,6 +276,23 @@ struct TransportFailureDetails {
     let message: String
     let category: RemoteErrorCategory
     let shouldRetry: Bool
+    let kind: TransportFailureKind
+}
+
+enum TransportFailureKind: String {
+    case cancelled
+    case invalidURL
+    case authentication
+    case timeout
+    case connectivity
+    case security
+    case unknown
+}
+
+private struct ServerErrorDetails {
+    let message: String
+    let category: RemoteErrorCategory
+    let mappedCode: String
 }
 
 enum TransportFailureMapper {
@@ -284,7 +301,8 @@ enum TransportFailureMapper {
             return TransportFailureDetails(
                 message: "요청이 취소되었어요.",
                 category: .unknown,
-                shouldRetry: false
+                shouldRetry: false,
+                kind: .cancelled
             )
         }
 
@@ -292,7 +310,8 @@ enum TransportFailureMapper {
             return TransportFailureDetails(
                 message: networkError.errorDescription ?? "네트워크 요청에 실패했어요.",
                 category: networkError.errorCategory,
-                shouldRetry: false
+                shouldRetry: false,
+                kind: .unknown
             )
         }
 
@@ -304,31 +323,36 @@ enum TransportFailureMapper {
                 return TransportFailureDetails(
                     message: "서버 주소를 확인할 수 없어요. 현재 앱 환경 설정을 확인해주세요.",
                     category: .connectivity,
-                    shouldRetry: false
+                    shouldRetry: false,
+                    kind: .invalidURL
                 )
             case .userAuthenticationRequired, .userCancelledAuthentication:
                 return TransportFailureDetails(
                     message: "인증에 실패했어요. 다시 로그인해주세요.",
                     category: .authenticationFailed,
-                    shouldRetry: false
+                    shouldRetry: false,
+                    kind: .authentication
                 )
             case .timedOut:
                 return TransportFailureDetails(
                     message: "서버 응답이 지연되고 있어요. 잠시 후 다시 시도해주세요.",
                     category: .connectivity,
-                    shouldRetry: true
+                    shouldRetry: true,
+                    kind: .timeout
                 )
             case .cancelled:
                 return TransportFailureDetails(
                     message: "요청이 취소되었어요.",
                     category: .unknown,
-                    shouldRetry: false
+                    shouldRetry: false,
+                    kind: .cancelled
                 )
             case .cannotConnectToHost, .notConnectedToInternet, .networkConnectionLost, .dnsLookupFailed:
                 return TransportFailureDetails(
                     message: "서버에 연결할 수 없어요. 네트워크와 서버 주소를 확인해주세요.",
                     category: .connectivity,
-                    shouldRetry: true
+                    shouldRetry: true,
+                    kind: .connectivity
                 )
             case .secureConnectionFailed,
                  .serverCertificateHasBadDate,
@@ -340,13 +364,15 @@ enum TransportFailureMapper {
                 return TransportFailureDetails(
                     message: "보안 연결을 확인할 수 없어요. 서버 인증서를 확인해주세요.",
                     category: .connectivity,
-                    shouldRetry: false
+                    shouldRetry: false,
+                    kind: .security
                 )
             default:
                 return TransportFailureDetails(
                     message: nsError.localizedDescription,
                     category: .connectivity,
-                    shouldRetry: true
+                    shouldRetry: true,
+                    kind: .connectivity
                 )
             }
         }
@@ -354,7 +380,8 @@ enum TransportFailureMapper {
         return TransportFailureDetails(
             message: nsError.localizedDescription,
             category: .unknown,
-            shouldRetry: true
+            shouldRetry: true,
+            kind: .unknown
         )
     }
 }
@@ -752,6 +779,13 @@ final class APIClient {
             accessToken: accessToken
         )
 
+        if let body {
+            AppLogger.debug(
+                .network,
+                "Request body -> route=\(path) body=\(maskedDebugJSONString(body))"
+            )
+        }
+
         let data: Data
         let response: URLResponse
 
@@ -761,7 +795,7 @@ final class APIClient {
             let failure = TransportFailureMapper.map(error)
             AppLogger.debug(
                 .network,
-                "Transport error <- \(request.url?.absoluteString ?? path) [\(failure.category)] \(failure.message)"
+                "Transport error <- route=\(path) url=\(request.url?.absoluteString ?? path) kind=\(failure.kind.rawValue) category=\(failure.category) message=\(failure.message)"
             )
             throw NetworkServiceError.transportError(failure.message, failure.category)
         }
@@ -771,7 +805,10 @@ final class APIClient {
 
         guard (200...299).contains(httpResponse.statusCode) else {
             let parsedError = parseServerError(from: data, statusCode: httpResponse.statusCode)
-            AppLogger.debug(.network, "HTTP \(httpResponse.statusCode) <- \(request.url?.absoluteString ?? path)")
+            AppLogger.debug(
+                .network,
+                "HTTP error <- route=\(path) status=\(httpResponse.statusCode) mappedCode=\(parsedError.mappedCode) category=\(parsedError.category) url=\(request.url?.absoluteString ?? path)"
+            )
             if httpResponse.statusCode == 404 {
                 AppLogger.debug(
                     .network,
@@ -788,6 +825,10 @@ final class APIClient {
         do {
             return try JSONSerialization.jsonObject(with: data)
         } catch {
+            AppLogger.debug(
+                .network,
+                "Decode failure <- route=\(path) url=\(request.url?.absoluteString ?? path) bytes=\(data.count)"
+            )
             throw NetworkServiceError.parsingFailed("서버 응답 형식을 해석하지 못했어요.")
         }
     }
@@ -798,18 +839,31 @@ final class APIClient {
         return "\(trimmedBase)\(normalizedEndpoint)"
     }
 
-    private func parseServerError(from data: Data, statusCode: Int) -> (message: String, category: RemoteErrorCategory) {
-        if
-            let json = try? JSONSerialization.jsonObject(with: data) as? JSONObject
-        {
-            let message = json.string(["message", "error", "detail", "description"]) ?? "서버 요청에 실패했어요. (\(statusCode))"
-            let code = json.string(["code", "errorCode", "type"])?.lowercased()
+    private func parseServerError(from data: Data, statusCode: Int) -> ServerErrorDetails {
+        if let json = try? JSONSerialization.jsonObject(with: data) as? JSONObject {
+            let candidates = serverErrorDictionaries(from: json)
+            let message = candidates
+                .compactMap { $0.string(["message", "error", "detail", "description"]) }
+                .first
+                ?? "서버 요청에 실패했어요. (\(statusCode))"
+            let code = candidates
+                .compactMap { $0.string(["code", "errorCode", "type", "error_type"]) }
+                .first?
+                .lowercased()
             let category = responseErrorCategory(statusCode: statusCode, code: code)
-            return (message, category)
+            return ServerErrorDetails(
+                message: message,
+                category: category,
+                mappedCode: mappedServerErrorCode(statusCode: statusCode, code: code)
+            )
         }
 
         let message = String(data: data, encoding: .utf8) ?? "서버 요청에 실패했어요. (\(statusCode))"
-        return (message, responseErrorCategory(statusCode: statusCode, code: nil))
+        return ServerErrorDetails(
+            message: message,
+            category: responseErrorCategory(statusCode: statusCode, code: nil),
+            mappedCode: mappedServerErrorCode(statusCode: statusCode, code: nil)
+        )
     }
 
     private func responseErrorCategory(statusCode: Int, code: String?) -> RemoteErrorCategory {
@@ -822,7 +876,10 @@ final class APIClient {
         if statusCode == 429 || code == "rate_limited" {
             return .rateLimited
         }
-        if statusCode == 503 || code == "maintenance" {
+        if statusCode == 503
+            || code == "maintenance"
+            || code == "market_data_unsupported"
+            || code == "unsupported_market_data" {
             return .maintenance
         }
         if code == "stale_data" {
@@ -832,6 +889,39 @@ final class APIClient {
             return .connectivity
         }
         return .unknown
+    }
+
+    private func mappedServerErrorCode(statusCode: Int, code: String?) -> String {
+        if let code = code?.trimmedNonEmpty {
+            return code
+                .lowercased()
+                .replacingOccurrences(of: " ", with: "_")
+        }
+
+        switch statusCode {
+        case 400:
+            return "bad_request"
+        case 401:
+            return "authentication_failed"
+        case 403:
+            return "permission_denied"
+        case 409:
+            return "duplicate_account"
+        case 429:
+            return "rate_limited"
+        case 500...599:
+            return "server_error"
+        default:
+            return "unknown"
+        }
+    }
+
+    private func serverErrorDictionaries(from json: JSONObject) -> [JSONObject] {
+        let directData = json["data"] as? JSONObject
+        let directError = json["error"] as? JSONObject
+        let nestedDataError = directData?["error"] as? JSONObject
+
+        return [json, directData, directError, nestedDataError].compactMap { $0 }
     }
 }
 
@@ -1945,6 +2035,14 @@ private func marketRawSymbol(from dictionary: JSONObject) -> String? {
     dictionary.string([
         "canonicalSymbol",
         "canonical_symbol",
+        "displaySymbol",
+        "display_symbol",
+        "ticker",
+        "symbol",
+        "marketId",
+        "market_id",
+        "market",
+        "code",
         "baseAsset",
         "base_asset",
         "baseCurrency",
@@ -1952,12 +2050,7 @@ private func marketRawSymbol(from dictionary: JSONObject) -> String? {
         "asset",
         "currency",
         "target_currency",
-        "targetCurrency",
-        "symbol",
-        "market",
-        "marketId",
-        "market_id",
-        "code"
+        "targetCurrency"
     ])
 }
 
@@ -2032,13 +2125,15 @@ private func marketDisplayMetadata(
     hasImage: Bool?,
     localAssetName: String?
 ) -> CoinDisplayMetadata {
-    CoinDisplayMetadata(
+    let resolvedCanonicalSymbol = marketCanonicalSymbol(from: dictionary)
+        ?? SymbolNormalization.canonicalAlias(for: assetKeyOrLocalAssetName(localAssetName))
+    return CoinDisplayMetadata(
         exchange: exchange,
         rawSymbol: rawSymbol,
         marketId: marketId(from: dictionary),
         baseAsset: marketBaseAsset(from: dictionary),
         quoteAsset: marketQuoteAsset(from: dictionary),
-        canonicalSymbol: marketCanonicalSymbol(from: dictionary),
+        canonicalSymbol: resolvedCanonicalSymbol,
         displaySymbol: marketDisplaySymbol(from: dictionary),
         koreanName: displayName,
         englishName: englishName,
@@ -2050,6 +2145,16 @@ private func marketDisplayMetadata(
         isTradesAvailable: dictionary.bool(["isTradesAvailable", "tradesAvailable", "supportsTrades"]),
         unavailableReason: dictionary.string(["unavailableReason", "unavailable_reason", "reason", "statusMessage"])
     )
+}
+
+private func assetKeyOrLocalAssetName(_ value: String?) -> String? {
+    guard let value else {
+        return nil
+    }
+    if value.hasPrefix("coin.") {
+        return String(value.dropFirst("coin.".count))
+    }
+    return value
 }
 
 private func marketHasImage(from dictionary: JSONObject) -> Bool? {
@@ -2557,6 +2662,40 @@ private func debugJSONString(_ value: Any, limit: Int = 1_200) -> String {
         string = String(string.prefix(limit)) + "…"
     }
     return string
+}
+
+private func maskedDebugJSONString(_ value: Any, limit: Int = 600) -> String {
+    debugJSONString(maskSensitiveLogValue(value), limit: limit)
+}
+
+private func maskSensitiveLogValue(_ value: Any, parentKey: String? = nil) -> Any {
+    if let dictionary = value as? JSONObject {
+        return dictionary.reduce(into: JSONObject()) { result, item in
+            result[item.key] = maskSensitiveLogValue(item.value, parentKey: item.key)
+        }
+    }
+
+    if let array = value as? [Any] {
+        return array.map { item in
+            maskSensitiveLogValue(item, parentKey: parentKey)
+        }
+    }
+
+    let normalizedKey = parentKey?.lowercased() ?? ""
+    let shouldMask =
+        normalizedKey.contains("password")
+        || normalizedKey.contains("token")
+        || normalizedKey.contains("access")
+        || normalizedKey.contains("secret")
+        || normalizedKey.contains("key")
+        || normalizedKey.contains("email")
+        || normalizedKey.contains("credential")
+
+    if shouldMask {
+        return AppLogger.masked(String(describing: value))
+    }
+
+    return value
 }
 
 private func parseOrderbookEntries(_ value: Any?, isBid: Bool) -> [OrderbookEntry] {

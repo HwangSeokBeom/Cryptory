@@ -253,11 +253,28 @@ enum MarketRowGraphState: Equatable {
             return false
         }
     }
+
+    nonisolated var preservationRank: Int {
+        switch self {
+        case .liveVisible:
+            return 5
+        case .cachedVisible:
+            return 4
+        case .staleVisible:
+            return 3
+        case .placeholder:
+            return 1
+        case .none, .unavailable:
+            return 0
+        }
+    }
 }
 
 enum MarketSparklineRenderPolicy {
     static let minimumRenderablePointCount = 2
     static let hydratedPointCount = 4
+    static let coarseUpperBoundPointCount = 8
+    static let promotedGraphPointCountThreshold = 24
 
     static func hasRenderableGraph(points: [Double], pointCount: Int) -> Bool {
         points.count >= minimumRenderablePointCount && pointCount >= minimumRenderablePointCount
@@ -265,6 +282,27 @@ enum MarketSparklineRenderPolicy {
 
     static func hasHydratedGraph(points: [Double], pointCount: Int) -> Bool {
         points.count >= hydratedPointCount && pointCount >= hydratedPointCount
+    }
+
+    static func isPromotedPointCount(_ pointCount: Int) -> Bool {
+        pointCount >= promotedGraphPointCountThreshold
+    }
+
+    static func pointCountBucket(_ pointCount: Int) -> Int {
+        switch pointCount {
+        case ..<1:
+            return 0
+        case 1:
+            return 1
+        case minimumRenderablePointCount...coarseUpperBoundPointCount:
+            return 2
+        case 9..<promotedGraphPointCountThreshold:
+            return 3
+        case promotedGraphPointCountThreshold..<60:
+            return 4
+        default:
+            return 5
+        }
     }
 }
 
@@ -557,11 +595,44 @@ struct AssetImageRequestDescriptor: Hashable, Equatable {
               rawValue.isEmpty == false else {
             return nil
         }
-        guard let url = URL(string: rawValue),
-              url.scheme?.isEmpty == false else {
+
+        if rawValue.hasPrefix("/") {
+            return URL(fileURLWithPath: rawValue)
+        }
+
+        var candidates = [rawValue]
+        if rawValue.hasPrefix("//") {
+            candidates.append("https:\(rawValue)")
+        } else if rawValue.contains("://") == false, rawValue.contains(".") {
+            candidates.append("https://\(rawValue)")
+        }
+
+        for candidate in candidates {
+            if let url = Self.normalizedURL(candidate), url.scheme?.isEmpty == false {
+                return url
+            }
+        }
+
+        return nil
+    }
+
+    nonisolated var hasResolvableImageURL: Bool {
+        normalizedImageURL != nil
+    }
+
+    nonisolated var isExplicitlyUnsupportedAsset: Bool {
+        hasImage == false && hasResolvableImageURL == false
+    }
+
+    private nonisolated static func normalizedURL(_ rawValue: String) -> URL? {
+        if let url = URL(string: rawValue) {
+            return url
+        }
+
+        guard let encodedValue = rawValue.addingPercentEncoding(withAllowedCharacters: .urlFragmentAllowed) else {
             return nil
         }
-        return url
+        return URL(string: encodedValue)
     }
 
     nonisolated var placeholderText: String {
@@ -662,6 +733,7 @@ struct MarketSparklineRenderPayload: Equatable {
     let graphState: MarketRowGraphState
     let pointCount: Int
     let hasEnoughData: Bool
+    let suppressesCoarseRetainedReuse: Bool
     let geometry: MarketSparklineGeometry?
 
     nonisolated init(
@@ -672,6 +744,7 @@ struct MarketSparklineRenderPayload: Equatable {
         points: [Double],
         pointCount: Int,
         hasEnoughData: Bool,
+        suppressesCoarseRetainedReuse: Bool = false,
         graphPathVersion: Int? = nil,
         renderVersion: Int? = nil
     ) {
@@ -702,6 +775,7 @@ struct MarketSparklineRenderPayload: Equatable {
         self.graphState = graphState
         self.pointCount = pointCount
         self.hasEnoughData = hasEnoughData
+        self.suppressesCoarseRetainedReuse = suppressesCoarseRetainedReuse
         self.geometry = MarketSparklineRenderPolicy.hasRenderableGraph(points: points, pointCount: pointCount)
             ? MarketSparklineGeometryCache.shared.geometry(
                 graphRenderIdentity: resolvedGraphRenderIdentity,
@@ -842,7 +916,8 @@ struct MarketRowViewState: Identifiable, Equatable {
         isUp: Bool,
         flash: FlashType?,
         isFavorite: Bool,
-        dataState: MarketRowDataState
+        dataState: MarketRowDataState,
+        suppressesCoarseRetainedReuse: Bool = false
     ) {
         let resolvedMarketIdentity = coin.marketIdentity(exchange: exchange)
         self.selectedExchange = selectedExchange
@@ -887,6 +962,7 @@ struct MarketRowViewState: Identifiable, Equatable {
             points: sparkline,
             pointCount: sparklinePointCount,
             hasEnoughData: hasEnoughSparklineData,
+            suppressesCoarseRetainedReuse: suppressesCoarseRetainedReuse,
             graphPathVersion: graphPathVersion,
             renderVersion: renderVersion
         )
@@ -931,7 +1007,8 @@ struct MarketRowViewState: Identifiable, Equatable {
             isUp: isUp,
             flash: flash,
             isFavorite: isFavorite,
-            dataState: dataState
+            dataState: dataState,
+            suppressesCoarseRetainedReuse: sparklinePayload.suppressesCoarseRetainedReuse
         )
     }
 
@@ -960,7 +1037,48 @@ struct MarketRowViewState: Identifiable, Equatable {
             isUp: isUp,
             flash: flash,
             isFavorite: isFavorite,
-            dataState: dataState
+            dataState: dataState,
+            suppressesCoarseRetainedReuse: sparklinePayload.suppressesCoarseRetainedReuse
+        )
+    }
+
+    func replacingTickerDisplay(
+        sourceExchange: Exchange,
+        priceText: String,
+        changeText: String,
+        volumeText: String,
+        isPricePlaceholder: Bool,
+        isChangePlaceholder: Bool,
+        isVolumePlaceholder: Bool,
+        isUp: Bool,
+        flash: FlashType?,
+        dataState: MarketRowDataState,
+        baseFreshnessState: MarketRowFreshnessState
+    ) -> MarketRowViewState {
+        MarketRowViewState(
+            selectedExchange: selectedExchange,
+            exchange: exchange,
+            sourceExchange: sourceExchange,
+            coin: coin,
+            priceText: priceText,
+            changeText: changeText,
+            volumeText: volumeText,
+            sparkline: sparkline,
+            sparklinePointCount: sparklinePointCount,
+            sparklineTimeframe: sparklineTimeframe,
+            hasEnoughSparklineData: hasEnoughSparklineData,
+            chartPresentation: graphState.chartPresentation,
+            baseFreshnessState: baseFreshnessState,
+            graphState: graphState,
+            symbolImageState: symbolImageState,
+            isPricePlaceholder: isPricePlaceholder,
+            isChangePlaceholder: isChangePlaceholder,
+            isVolumePlaceholder: isVolumePlaceholder,
+            isUp: isUp,
+            flash: flash,
+            isFavorite: isFavorite,
+            dataState: dataState,
+            suppressesCoarseRetainedReuse: sparklinePayload.suppressesCoarseRetainedReuse
         )
     }
 

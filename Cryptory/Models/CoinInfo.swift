@@ -34,6 +34,15 @@ struct MarketIdentity: Hashable, Codable {
 }
 
 enum SymbolNormalization {
+    private nonisolated static let canonicalAliases: [String: String] = [
+        "BCC": "BCH",
+        "BCHABC": "BCH",
+        "ETHERFI": "ETHFI",
+        "ETHFI": "ETHFI",
+        "SUPERVERSE": "SUPER",
+        "XBT": "BTC"
+    ]
+
     private nonisolated static var quoteCurrencies: Set<String> {
         Set(["KRW", "USD", "USDT", "BTC", "ETH"])
     }
@@ -54,20 +63,33 @@ enum SymbolNormalization {
             return canonicalSymbol
         }
 
-        if let baseAsset = normalizedToken(baseAsset), quoteCurrencies.contains(baseAsset) == false {
-            return baseAsset
-        }
+        let parsedRawSymbol = normalizedPairCode(rawSymbol)
+        let parsedMarketId = normalizedPairCode(marketId)
+        let normalizedBaseAsset = normalizedToken(baseAsset)
 
-        if let parsedRawSymbol = normalizedPairCode(rawSymbol) {
-            return parsedRawSymbol
-        }
-
-        if let parsedMarketId = normalizedPairCode(marketId) {
+        if let parsedMarketId,
+           shouldPreferMarketIdCandidate(
+            parsedMarketId,
+            rawSymbolCandidate: parsedRawSymbol,
+            baseAssetCandidate: normalizedBaseAsset
+           ) {
             return parsedMarketId
         }
 
-        if let baseAsset = normalizedToken(baseAsset) {
-            return baseAsset
+        if let parsedRawSymbol {
+            return parsedRawSymbol
+        }
+
+        if let parsedMarketId {
+            return parsedMarketId
+        }
+
+        if let normalizedBaseAsset, quoteCurrencies.contains(normalizedBaseAsset) == false {
+            return normalizedBaseAsset
+        }
+
+        if let normalizedBaseAsset {
+            return normalizedBaseAsset
         }
 
         if let quoteAsset = normalizedToken(quoteAsset), quoteCurrencies.contains(quoteAsset) == false {
@@ -75,6 +97,34 @@ enum SymbolNormalization {
         }
 
         return normalizedToken(rawSymbol) ?? rawSymbol.uppercased()
+    }
+
+    nonisolated static func canonicalAlias(for assetKey: String?) -> String? {
+        guard let assetKey else {
+            return nil
+        }
+        let normalizedKey = assetKey
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .uppercased()
+            .components(separatedBy: separators)
+            .joined()
+        guard normalizedKey.isEmpty == false else {
+            return nil
+        }
+        return canonicalAliases[normalizedKey]
+    }
+
+    private nonisolated static func shouldPreferMarketIdCandidate(
+        _ marketIdCandidate: String,
+        rawSymbolCandidate: String?,
+        baseAssetCandidate: String?
+    ) -> Bool {
+        [rawSymbolCandidate, baseAssetCandidate]
+            .compactMap { $0 }
+            .contains { candidate in
+                candidate.count <= 2
+                    && marketIdCandidate.count > candidate.count
+            }
     }
 
     nonisolated static func localAssetName(for canonicalSymbol: String) -> String {
@@ -92,20 +142,20 @@ enum SymbolNormalization {
 
         if parts.count >= 2 {
             if quoteCurrencies.contains(parts[0]) {
-                return parts[1]
+                return normalizedToken(parts[1])
             }
             if let lastPart = parts.last, quoteCurrencies.contains(lastPart) {
-                return parts[0]
+                return normalizedToken(parts[0])
             }
-            return parts[0]
+            return normalizedToken(parts[0])
         }
 
         for quoteCurrency in ["KRW", "USDT", "USD", "BTC", "ETH"] {
             if normalizedValue.hasPrefix(quoteCurrency), normalizedValue.count > quoteCurrency.count {
-                return String(normalizedValue.dropFirst(quoteCurrency.count))
+                return normalizedToken(String(normalizedValue.dropFirst(quoteCurrency.count)))
             }
             if normalizedValue.hasSuffix(quoteCurrency), normalizedValue.count > quoteCurrency.count {
-                return String(normalizedValue.dropLast(quoteCurrency.count))
+                return normalizedToken(String(normalizedValue.dropLast(quoteCurrency.count)))
             }
         }
 
@@ -119,7 +169,10 @@ enum SymbolNormalization {
         let normalizedValue = rawValue
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .uppercased()
-        return normalizedValue.isEmpty ? nil : normalizedValue
+        guard normalizedValue.isEmpty == false else {
+            return nil
+        }
+        return canonicalAliases[normalizedValue] ?? normalizedValue
     }
 }
 

@@ -8,6 +8,21 @@ enum Loadable<Value> {
     case failed(String)
 }
 
+extension Loadable: Equatable where Value: Equatable {
+    static func == (lhs: Loadable<Value>, rhs: Loadable<Value>) -> Bool {
+        switch (lhs, rhs) {
+        case (.idle, .idle), (.loading, .loading), (.empty, .empty):
+            return true
+        case (.loaded(let leftValue), .loaded(let rightValue)):
+            return leftValue == rightValue
+        case (.failed(let leftMessage), .failed(let rightMessage)):
+            return leftMessage == rightMessage
+        default:
+            return false
+        }
+    }
+}
+
 extension Loadable {
     var value: Value? {
         guard case .loaded(let value) = self else { return nil }

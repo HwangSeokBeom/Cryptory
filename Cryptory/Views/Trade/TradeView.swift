@@ -2,16 +2,23 @@ import SwiftUI
 
 struct TradeView: View {
     @ObservedObject var vm: CryptoViewModel
+    @State private var safariDestination: SafariDestination?
 
     var body: some View {
-        if vm.activeTab == .trade, let feature = vm.activeAuthGate {
-            AuthGateView(feature: feature) {
-                vm.presentLogin(for: feature)
+        Group {
+            if vm.activeTab == .trade, let feature = vm.activeAuthGate {
+                AuthGateView(feature: feature) {
+                    vm.presentLogin(for: feature)
+                }
+            } else if vm.isSelectedExchangeTradingUnsupported {
+                unsupportedState
+            } else {
+                content
             }
-        } else if vm.isSelectedExchangeTradingUnsupported {
-            unsupportedState
-        } else {
-            content
+        }
+        .sheet(item: $safariDestination) { destination in
+            SafariSheet(destination: destination)
+                .ignoresSafeArea()
         }
     }
 
@@ -51,6 +58,7 @@ struct TradeView: View {
                 VStack(spacing: 12) {
                     connectionStatusCard
                     ScreenStatusBannerView(viewState: vm.tradingStatusViewState)
+                    investmentDisclaimerLink
 
                     if let coin = vm.selectedCoin {
                         selectedCoinCard(coin)
@@ -110,7 +118,7 @@ struct TradeView: View {
                 .padding(.vertical, 12)
             }
             .scrollDismissesKeyboard(.interactively)
-            .dismissKeyboardOnBackgroundTap()
+            .dismissKeyboardOnBackgroundTap(enabled: !vm.showExchangeMenu)
         }
     }
 
@@ -172,10 +180,55 @@ struct TradeView: View {
         )
     }
 
+    private var investmentDisclaimerLink: some View {
+        Button {
+            openExternalLink(.investmentDisclaimer)
+        } label: {
+            HStack(alignment: .center, spacing: 10) {
+                Image(systemName: "exclamationmark.triangle")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(.accent)
+                    .frame(width: 18)
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(AppExternalLink.investmentDisclaimer.title)
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundColor(.accent)
+
+                    Text("주문 전 거래 위험과 서비스 책임 범위를 확인하세요.")
+                        .font(.system(size: 11))
+                        .foregroundColor(.textSecondary)
+                        .lineSpacing(2)
+                        .multilineTextAlignment(.leading)
+                }
+
+                Spacer(minLength: 0)
+
+                Image(systemName: "safari")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(.accent)
+            }
+            .padding(12)
+            .background(
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(Color.bgSecondary)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12)
+                            .stroke(Color.themeBorder, lineWidth: 1)
+                    )
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
     private var statusDescription: String {
         let total = vm.exchangeConnections.count
         let tradable = vm.exchangeConnections.filter { $0.permission == .tradeEnabled && $0.isActive }.count
         return "총 \(total)개 연결, 주문 가능 \(tradable)개"
+    }
+
+    private func openExternalLink(_ link: AppExternalLink) {
+        safariDestination = SafariDestination(link: link)
     }
 
     private func selectedCoinCard(_ coin: CoinInfo) -> some View {

@@ -157,35 +157,7 @@ struct CoinRowView: View, Equatable {
         .buttonStyle(.plain)
         .onAppear {
             onVisible()
-            logRender()
         }
-        .onChange(of: renderSignature) { _, _ in
-            logRender()
-        }
-    }
-
-    private var renderSignature: String {
-        [
-            row.id,
-            configuration.mode.rawValue,
-            row.priceText,
-            row.changeText,
-            row.volumeText,
-            row.symbolImageState.rawValue,
-            row.sparklineRenderToken,
-            row.isFavorite ? "1" : "0"
-        ].joined(separator: "|")
-    }
-
-    private func logRender() {
-        AppLogger.debug(
-            .lifecycle,
-            "[MarketRow] render selectedExchange=\(selectedExchange.rawValue) sourceExchange=\(row.sourceExchange.rawValue) \(row.marketLogFields) mode=\(configuration.mode.rawValue) state=\(String(describing: row.dataState)) baseFreshness=\(row.baseFreshnessState) graphState=\(row.graphState) hasPrice=\(row.hasPrice) hasVolume=\(row.hasVolume) sparklinePointCount=\(row.sparklinePoints) hasEnoughSparklineData=\(row.hasEnoughSparklineData)"
-        )
-        AppLogger.debug(
-            .lifecycle,
-            "[CellLayout] \(row.marketLogFields) mode=\(configuration.mode.rawValue) graphWidth=\(Int(configuration.sparklineWidth)) graphVisible=\(configuration.showsSparkline) image=\(configuration.showsSymbolImage) imageState=\(row.symbolImageState.rawValue)"
-        )
     }
 }
 
@@ -207,6 +179,7 @@ struct MarketRowContent: View {
                 showsFavoriteControl: showsFavoriteControl,
                 onToggleFavorite: onToggleFavorite
             )
+            .equatable()
             .frame(
                 minWidth: configuration.symbolColumnMinimumWidth,
                 maxWidth: .infinity,
@@ -218,6 +191,7 @@ struct MarketRowContent: View {
                 model: model,
                 configuration: configuration
             )
+            .equatable()
             .frame(width: configuration.priceWidth, alignment: .trailing)
             .layoutPriority(3)
 
@@ -225,6 +199,7 @@ struct MarketRowContent: View {
                 model: model,
                 configuration: configuration
             )
+            .equatable()
             .frame(width: configuration.changeWidth, alignment: .trailing)
             .padding(.leading, configuration.changeColumnLeadingPadding)
             .layoutPriority(4)
@@ -234,6 +209,7 @@ struct MarketRowContent: View {
                     model: model,
                     configuration: configuration
                 )
+                .equatable()
                 .frame(width: configuration.volumeWidth, alignment: .trailing)
                 .padding(.leading, 6)
                 .layoutPriority(1)
@@ -259,11 +235,27 @@ struct MarketRowContent: View {
     }
 }
 
-private struct MarketRowIdentitySection: View {
+private struct MarketRowIdentitySection: View, Equatable {
     let model: MarketRowRenderModel
     let configuration: MarketListDisplayConfiguration
     let showsFavoriteControl: Bool
     let onToggleFavorite: (() -> Void)?
+
+    static func == (lhs: MarketRowIdentitySection, rhs: MarketRowIdentitySection) -> Bool {
+        lhs.model.marketIdentity == rhs.model.marketIdentity
+            && lhs.model.exchange == rhs.model.exchange
+            && lhs.model.symbol == rhs.model.symbol
+            && lhs.model.canonicalSymbol == rhs.model.canonicalSymbol
+            && lhs.model.displaySymbol == rhs.model.displaySymbol
+            && lhs.model.displayName == rhs.model.displayName
+            && lhs.model.imageURL == rhs.model.imageURL
+            && lhs.model.hasImage == rhs.model.hasImage
+            && lhs.model.localAssetName == rhs.model.localAssetName
+            && lhs.model.symbolImageState == rhs.model.symbolImageState
+            && lhs.model.isFavorite == rhs.model.isFavorite
+            && lhs.configuration == rhs.configuration
+            && lhs.showsFavoriteControl == rhs.showsFavoriteControl
+    }
 
     var body: some View {
         HStack(spacing: 8) {
@@ -317,9 +309,17 @@ private struct MarketRowIdentitySection: View {
     }
 }
 
-private struct MarketRowPriceSection: View {
+private struct MarketRowPriceSection: View, Equatable {
     let model: MarketRowRenderModel
     let configuration: MarketListDisplayConfiguration
+
+    static func == (lhs: MarketRowPriceSection, rhs: MarketRowPriceSection) -> Bool {
+        lhs.model.priceText == rhs.model.priceText
+            && lhs.model.isPricePlaceholder == rhs.model.isPricePlaceholder
+            && lhs.model.isUp == rhs.model.isUp
+            && lhs.model.flash == rhs.model.flash
+            && lhs.configuration == rhs.configuration
+    }
 
     var body: some View {
         Text(model.priceText)
@@ -350,9 +350,16 @@ private struct MarketRowPriceSection: View {
     }
 }
 
-private struct MarketRowChangeSection: View {
+private struct MarketRowChangeSection: View, Equatable {
     let model: MarketRowRenderModel
     let configuration: MarketListDisplayConfiguration
+
+    static func == (lhs: MarketRowChangeSection, rhs: MarketRowChangeSection) -> Bool {
+        lhs.model.changeText == rhs.model.changeText
+            && lhs.model.isChangePlaceholder == rhs.model.isChangePlaceholder
+            && lhs.model.isUp == rhs.model.isUp
+            && lhs.configuration == rhs.configuration
+    }
 
     var body: some View {
         if configuration.emphasizesChangeRate {
@@ -403,9 +410,15 @@ private struct MarketRowChangeSection: View {
     }
 }
 
-private struct MarketRowVolumeSection: View {
+private struct MarketRowVolumeSection: View, Equatable {
     let model: MarketRowRenderModel
     let configuration: MarketListDisplayConfiguration
+
+    static func == (lhs: MarketRowVolumeSection, rhs: MarketRowVolumeSection) -> Bool {
+        lhs.model.volumeText == rhs.model.volumeText
+            && lhs.model.isVolumePlaceholder == rhs.model.isVolumePlaceholder
+            && lhs.configuration == rhs.configuration
+    }
 
     var body: some View {
         Text(model.volumeText)

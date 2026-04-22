@@ -1,8 +1,12 @@
 import SwiftUI
 
-struct HoldingCard: View {
-    @ObservedObject var vm: CryptoViewModel
+struct HoldingCard: View, Equatable {
     let holding: Holding
+    let onSelect: () -> Void
+
+    static func == (lhs: HoldingCard, rhs: HoldingCard) -> Bool {
+        lhs.holding == rhs.holding
+    }
 
     private var coin: CoinInfo {
         CoinCatalog.coin(symbol: holding.symbol)
@@ -11,9 +15,7 @@ struct HoldingCard: View {
     private var isUp: Bool { holding.profitLoss >= 0 }
 
     var body: some View {
-        Button {
-            vm.selectCoinForTrade(coin)
-        } label: {
+        Button(action: onSelect) {
             VStack(spacing: 10) {
                 HStack {
                     HStack(spacing: 6) {

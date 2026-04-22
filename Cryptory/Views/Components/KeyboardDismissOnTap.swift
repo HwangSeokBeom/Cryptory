@@ -2,19 +2,25 @@ import SwiftUI
 import UIKit
 
 struct KeyboardDismissOnTapModifier: ViewModifier {
+    let enabled: Bool
+
     func body(content: Content) -> some View {
         content
-            .background(KeyboardDismissGestureInstaller())
+            .background(KeyboardDismissGestureInstaller(enabled: enabled))
     }
 }
 
 extension View {
-    func dismissKeyboardOnBackgroundTap() -> some View {
-        modifier(KeyboardDismissOnTapModifier())
+    func dismissKeyboardOnBackgroundTap(enabled: Bool = true) -> some View {
+        modifier(KeyboardDismissOnTapModifier(enabled: enabled))
     }
 }
 
+private final class KeyboardDismissTapGestureRecognizer: UITapGestureRecognizer {}
+
 private struct KeyboardDismissGestureInstaller: UIViewRepresentable {
+    let enabled: Bool
+
     func makeCoordinator() -> Coordinator {
         Coordinator()
     }
@@ -28,15 +34,15 @@ private struct KeyboardDismissGestureInstaller: UIViewRepresentable {
 
     func updateUIView(_ uiView: UIView, context: Context) {
         DispatchQueue.main.async {
-            context.coordinator.installIfNeeded(from: uiView)
+            context.coordinator.installIfNeeded(from: uiView, enabled: enabled)
         }
     }
 
     final class Coordinator: NSObject, UIGestureRecognizerDelegate {
         private let instanceID = AppLogger.nextInstanceID(scope: "KeyboardDismissCoordinator")
         private weak var installedView: UIView?
-        private lazy var recognizer: UITapGestureRecognizer = {
-            let recognizer = UITapGestureRecognizer(target: self, action: #selector(handleTap))
+        private lazy var recognizer: KeyboardDismissTapGestureRecognizer = {
+            let recognizer = KeyboardDismissTapGestureRecognizer(target: self, action: #selector(handleTap))
             recognizer.cancelsTouchesInView = false
             recognizer.delegate = self
             return recognizer
@@ -48,14 +54,22 @@ private struct KeyboardDismissGestureInstaller: UIViewRepresentable {
         }
 
         deinit {
+            installedView?.removeGestureRecognizer(recognizer)
             AppLogger.debug(.lifecycle, "KeyboardDismissCoordinator deinit #\(instanceID)")
         }
 
-        func installIfNeeded(from anchorView: UIView) {
-            guard let targetView = anchorView.superview, installedView !== targetView else { return }
-            installedView?.removeGestureRecognizer(recognizer)
-            targetView.addGestureRecognizer(recognizer)
-            installedView = targetView
+        func installIfNeeded(from anchorView: UIView, enabled: Bool) {
+            guard let targetView = anchorView.superview else { return }
+            if installedView !== targetView {
+                installedView?.removeGestureRecognizer(recognizer)
+                targetView.gestureRecognizers?
+                    .compactMap { $0 as? KeyboardDismissTapGestureRecognizer }
+                    .filter { $0 !== recognizer }
+                    .forEach { targetView.removeGestureRecognizer($0) }
+                targetView.addGestureRecognizer(recognizer)
+                installedView = targetView
+            }
+            recognizer.isEnabled = enabled
             AppLogger.debug(.lifecycle, "KeyboardDismissCoordinator install #\(instanceID)")
         }
 

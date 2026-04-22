@@ -63,10 +63,16 @@ struct MarketView: View {
                     listSection
                 }
                 .padding(.bottom, 20)
+                .transaction { transaction in
+                    if suppressesMarketSwapAnimations {
+                        transaction.disablesAnimations = true
+                        transaction.animation = nil
+                    }
+                }
             }
             .scrollDismissesKeyboard(.interactively)
         }
-        .dismissKeyboardOnBackgroundTap()
+        .dismissKeyboardOnBackgroundTap(enabled: !vm.showExchangeMenu)
         .onAppear {
             AppLogger.debug(.lifecycle, "MarketView onAppear #\(instanceID) exchange=\(vm.selectedExchange.rawValue)")
             logDisplayedRows(reason: "on_appear")
@@ -216,12 +222,16 @@ struct MarketView: View {
                         representativeSkeletonCard
                     }
                 }
+                .id("representative-skeleton-\(marketRenderScopeKey)")
+                .transition(.identity)
             } else if !representativeRows.isEmpty {
                 LazyVGrid(columns: representativeColumns, spacing: 10) {
                     ForEach(representativeRows) { row in
                         representativeCard(row)
                     }
                 }
+                .id("representative-content-\(vm.selectedExchange.rawValue)")
+                .transition(.identity)
             }
         }
         .padding(.horizontal, 16)
@@ -253,6 +263,8 @@ struct MarketView: View {
                     RoundedRectangle(cornerRadius: 16, style: .continuous)
                         .fill(Color.bgSecondary)
                 )
+                .id("list-skeleton-\(marketRenderScopeKey)")
+                .transition(.identity)
             } else if case .failed(let message) = vm.marketState, vm.displayedMarketRows.isEmpty {
                 stateView(
                     title: "시세를 불러오지 못했어요",
@@ -275,7 +287,7 @@ struct MarketView: View {
                 )
             } else {
                 LazyVStack(spacing: 0) {
-                    ForEach(vm.displayedMarketRows) { row in
+                    ForEach(Array(vm.displayedMarketRows.enumerated()), id: \.element.id) { index, row in
                         CoinRowView(
                             row: row,
                             configuration: displayConfiguration,
@@ -287,7 +299,10 @@ struct MarketView: View {
                                 vm.toggleFavorite(row.symbol)
                             },
                             onVisible: {
-                                vm.markMarketRowVisible(marketIdentity: row.marketIdentity)
+                                vm.markMarketRowVisible(
+                                    marketIdentity: row.marketIdentity,
+                                    surrounding: marketExposureBand(around: index)
+                                )
                             }
                         )
                         .equatable()
@@ -300,6 +315,8 @@ struct MarketView: View {
                     RoundedRectangle(cornerRadius: 16, style: .continuous)
                         .fill(Color.bgSecondary)
                 )
+                .id("list-content-\(vm.selectedExchange.rawValue)")
+                .transition(.identity)
             }
         }
         .padding(.horizontal, 16)
@@ -346,6 +363,15 @@ struct MarketView: View {
         vm.marketPresentationState.listRowsState.isLoading && vm.displayedMarketRows.isEmpty
     }
 
+    private var suppressesMarketSwapAnimations: Bool {
+        vm.marketPresentationState.transitionState.isLoading
+            || vm.marketPresentationState.transitionState.previousExchange != nil
+    }
+
+    private var marketRenderScopeKey: String {
+        "\(vm.selectedExchange.rawValue)-\(vm.marketPresentationState.transitionState.phase)-\(vm.displayedMarketRows.isEmpty ? "empty" : "content")"
+    }
+
     private var listSectionDetail: String {
         switch vm.marketPresentationState.transitionState.phase {
         case .exchangeChanged, .loading:
@@ -355,6 +381,15 @@ struct MarketView: View {
         case .hydrated:
             return "전체 리스트 반영 완료"
         }
+    }
+
+    private func marketExposureBand(around index: Int) -> [MarketIdentity] {
+        let lowerBound = max(index - 6, 0)
+        let upperBound = min(index + 6, vm.displayedMarketRows.count - 1)
+        guard lowerBound <= upperBound else {
+            return []
+        }
+        return Array(vm.displayedMarketRows[lowerBound...upperBound].map(\.marketIdentity))
     }
 
     private var displayModeButton: some View {

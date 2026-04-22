@@ -2,15 +2,22 @@ import SwiftUI
 
 struct ExchangeDropdown: View {
     @ObservedObject var vm: CryptoViewModel
+    static let rowHeight: CGFloat = 48
+    static let rowSpacing: CGFloat = 2
+    static let containerInset: CGFloat = 2
 
     var body: some View {
-        VStack(spacing: 2) {
+        VStack(spacing: Self.rowSpacing) {
             ForEach(Exchange.allCases) { ex in
                 Button {
-                    withAnimation(.easeOut(duration: 0.2)) {
-                        vm.updateExchange(ex, source: "exchange_dropdown")
-                        vm.showExchangeMenu = false
+                    let selectedExchange = vm.selectedExchange
+                    withAnimation(.easeOut(duration: 0.16)) {
+                        vm.setExchangeMenuVisible(false)
                     }
+                    guard selectedExchange != ex else {
+                        return
+                    }
+                    vm.updateExchange(ex, source: "exchange_dropdown")
                 } label: {
                     HStack(spacing: 8) {
                         ExchangeIcon(exchange: ex, size: 18)
@@ -26,12 +33,14 @@ struct ExchangeDropdown: View {
                         }
                     }
                     .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
+                    .frame(maxWidth: .infinity, minHeight: Self.rowHeight, alignment: .leading)
                     .background(vm.selectedExchange == ex ? Color.bgTertiary : Color.clear)
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
             }
         }
+        .padding(Self.containerInset)
         .frame(minWidth: 168)
         .background(
             RoundedRectangle(cornerRadius: 16, style: .continuous)

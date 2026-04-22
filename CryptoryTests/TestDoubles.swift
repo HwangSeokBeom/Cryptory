@@ -367,6 +367,10 @@ final class SpyTradingRepository: TradingRepositoryProtocol {
 final class SpyPortfolioRepository: PortfolioRepositoryProtocol {
     private(set) var fetchSummaryCount = 0
     private(set) var fetchHistoryCount = 0
+    var summaryDelayNanoseconds: UInt64 = 0
+    var historyDelayNanoseconds: UInt64 = 0
+    var summaryError: Error?
+    var historyError: Error?
 
     var summary = PortfolioSnapshot(
         exchange: .upbit,
@@ -394,11 +398,23 @@ final class SpyPortfolioRepository: PortfolioRepositoryProtocol {
 
     func fetchSummary(session: AuthSession, exchange: Exchange) async throws -> PortfolioSnapshot {
         fetchSummaryCount += 1
+        if summaryDelayNanoseconds > 0 {
+            try? await Task.sleep(nanoseconds: summaryDelayNanoseconds)
+        }
+        if let summaryError {
+            throw summaryError
+        }
         return summary
     }
 
     func fetchHistory(session: AuthSession, exchange: Exchange) async throws -> PortfolioHistorySnapshot {
         fetchHistoryCount += 1
+        if historyDelayNanoseconds > 0 {
+            try? await Task.sleep(nanoseconds: historyDelayNanoseconds)
+        }
+        if let historyError {
+            throw historyError
+        }
         return historySnapshot
     }
 }
@@ -409,6 +425,8 @@ final class SpyExchangeConnectionsRepository: ExchangeConnectionsRepositoryProto
     private(set) var createConnectionCount = 0
     private(set) var updateConnectionCount = 0
     private(set) var deleteConnectionCount = 0
+    var fetchConnectionsDelayNanoseconds: UInt64 = 0
+    var fetchConnectionsError: Error?
 
     var snapshot = ExchangeConnectionsSnapshot(
         connections: [
@@ -430,6 +448,12 @@ final class SpyExchangeConnectionsRepository: ExchangeConnectionsRepositoryProto
 
     func fetchConnections(session: AuthSession) async throws -> ExchangeConnectionsSnapshot {
         fetchConnectionsCount += 1
+        if fetchConnectionsDelayNanoseconds > 0 {
+            try? await Task.sleep(nanoseconds: fetchConnectionsDelayNanoseconds)
+        }
+        if let fetchConnectionsError {
+            throw fetchConnectionsError
+        }
         return snapshot
     }
 
@@ -570,6 +594,50 @@ struct StubAuthenticationService: AuthenticationServiceProtocol {
     }
 }
 
+final class SpyAuthenticationService: AuthenticationServiceProtocol {
+    var signInResult: Result<AuthSession, Error>
+    var signUpResult: Result<AuthSession, Error>
+    private(set) var signInCallCount = 0
+    private(set) var signUpCallCount = 0
+    var shouldBlockSignUp = false
+    private var signUpContinuation: CheckedContinuation<Void, Never>?
+
+    init(
+        signInResult: Result<AuthSession, Error> = .success(
+            AuthSession(accessToken: "token", refreshToken: nil, userID: "user-1", email: "user@example.com")
+        ),
+        signUpResult: Result<AuthSession, Error> = .success(
+            AuthSession(accessToken: "token", refreshToken: nil, userID: "user-1", email: "user@example.com")
+        )
+    ) {
+        self.signInResult = signInResult
+        self.signUpResult = signUpResult
+    }
+
+    func signIn(email: String, password: String) async throws -> AuthSession {
+        signInCallCount += 1
+        return try signInResult.get()
+    }
+
+    func signUp(request: SignUpRequest) async throws -> AuthSession {
+        signUpCallCount += 1
+
+        if shouldBlockSignUp {
+            await withCheckedContinuation { continuation in
+                signUpContinuation = continuation
+            }
+        }
+
+        return try signUpResult.get()
+    }
+
+    func resumeSignUp() {
+        shouldBlockSignUp = false
+        signUpContinuation?.resume()
+        signUpContinuation = nil
+    }
+}
+
 final class NoOpPublicWebSocketService: PublicWebSocketServicing {
     var onConnectionStateChange: ((PublicWebSocketConnectionState) -> Void)?
     var onTickerReceived: ((TickerStreamPayload) -> Void)?
@@ -597,6 +665,7 @@ final class RecordingPublicWebSocketService: PublicWebSocketServicing {
     private(set) var connectCallCount = 0
     private(set) var disconnectCallCount = 0
     private(set) var lastSubscriptions = Set<PublicMarketSubscription>()
+    private(set) var subscriptionHistory: [Set<PublicMarketSubscription>] = []
 
     func connect() {
         connectCallCount += 1
@@ -611,6 +680,7 @@ final class RecordingPublicWebSocketService: PublicWebSocketServicing {
 
     func updateSubscriptions(_ subscriptions: Set<PublicMarketSubscription>) {
         lastSubscriptions = subscriptions
+        subscriptionHistory.append(subscriptions)
         if subscriptions.isEmpty == false {
             connect()
         }

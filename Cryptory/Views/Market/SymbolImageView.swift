@@ -1,4 +1,5 @@
 import CryptoKit
+import ImageIO
 import SwiftUI
 import UIKit
 
@@ -182,7 +183,7 @@ final class AssetImageClient: @unchecked Sendable {
 
     nonisolated init(
         namespace: String = UUID().uuidString,
-        failureCooldown: TimeInterval = 90
+        failureCooldown: TimeInterval = 20
     ) {
         let cachesDirectory = FileManager.default.urls(
             for: .cachesDirectory,
@@ -204,7 +205,7 @@ final class AssetImageClient: @unchecked Sendable {
     }
 
     nonisolated func assetState(for descriptor: AssetImageRequestDescriptor) -> AssetImageState {
-        if descriptor.hasImage == false {
+        if descriptor.isExplicitlyUnsupportedAsset {
             recordPlaceholderFinal(for: descriptor, reason: .unsupportedAsset)
             return .placeholderFinal
         }
@@ -214,11 +215,11 @@ final class AssetImageClient: @unchecked Sendable {
             if lock.withLock({ memoryCache.object(forKey: url as NSURL) }) != nil {
                 return cachedAssetState(for: requestKey)
             }
-            if diskCachedImage(for: url, descriptor: descriptor, shouldLog: false) != nil {
+            if cachedSymbolImage(for: descriptor) != nil {
                 recordAssetState(.liveCached, for: descriptor)
                 return .liveCached
             }
-            if cachedSymbolImage(for: descriptor) != nil {
+            if diskCachedImage(for: url, descriptor: descriptor, shouldLog: false) != nil {
                 recordAssetState(.liveCached, for: descriptor)
                 return .liveCached
             }
@@ -248,15 +249,19 @@ final class AssetImageClient: @unchecked Sendable {
                 cacheSymbolImage(image, descriptor: descriptor, source: sourceByURLValue(for: url) ?? .memory)
                 return image
             }
+            if let image = cachedSymbolImage(for: descriptor) {
+                return image
+            }
             if let image = diskCachedImage(for: url, descriptor: descriptor, shouldLog: false) {
                 return image
             }
         }
 
-        guard descriptor.hasImage != false else {
-            return nil
+        if let image = cachedSymbolImage(for: descriptor) {
+            return image
         }
-        return cachedSymbolImage(for: descriptor)
+
+        return nil
     }
 
     nonisolated func source(for descriptor: AssetImageRequestDescriptor) -> AssetImageLoadSource? {
@@ -279,7 +284,7 @@ final class AssetImageClient: @unchecked Sendable {
             return reason
         }
 
-        if descriptor.hasImage == false {
+        if descriptor.isExplicitlyUnsupportedAsset {
             return .unsupportedAsset
         }
         guard let url = descriptor.normalizedImageURL else {
@@ -292,6 +297,35 @@ final class AssetImageClient: @unchecked Sendable {
             return .cooldownBlocked
         }
         return .requestInflight
+    }
+
+    nonisolated func cooldownRemaining(for descriptor: AssetImageRequestDescriptor) -> TimeInterval? {
+        guard let url = descriptor.normalizedImageURL else {
+            return nil
+        }
+        return lock.withLock {
+            pruneFailures(now: Date())
+            guard let cooldownUntil = failureCooldownUntilByURL[url], cooldownUntil > Date() else {
+                return nil
+            }
+            return cooldownUntil.timeIntervalSinceNow
+        }
+    }
+
+    nonisolated func hasTerminalFallback(for descriptor: AssetImageRequestDescriptor) -> Bool {
+        switch fallbackReason(for: descriptor) {
+        case .noImageURL,
+             .aliasMiss,
+             .symbolNormalizationFailed,
+             .marketIdentityMappingFailed,
+             .unsupportedAsset:
+            return true
+        case .requestInflight,
+             .fetchFailed,
+             .cooldownBlocked,
+             .missingCachedImage:
+            return false
+        }
     }
 
     nonisolated func prepareImageRequest(
@@ -310,7 +344,7 @@ final class AssetImageClient: @unchecked Sendable {
             )
         }
 
-        if descriptor.hasImage == false {
+        if descriptor.isExplicitlyUnsupportedAsset {
             recordPlaceholderFinal(for: descriptor, reason: .unsupportedAsset)
             return AssetImageRequestHandle(
                 immediateOutcome: outcome(
@@ -368,18 +402,6 @@ final class AssetImageClient: @unchecked Sendable {
             )
         }
 
-        if diskCachedImage(for: url, descriptor: descriptor, shouldLog: true) != nil {
-            recordAssetState(.liveCached, for: descriptor)
-            return AssetImageRequestHandle(
-                immediateOutcome: outcome(
-                    assetState: .liveCached,
-                    source: .disk,
-                    fallbackReason: nil
-                ),
-                task: nil
-            )
-        }
-
         if cachedSymbolImage(for: descriptor) != nil {
             AssetImageDebugClient.shared.log(
                 .cacheHitMemory,
@@ -395,6 +417,18 @@ final class AssetImageClient: @unchecked Sendable {
                 immediateOutcome: outcome(
                     assetState: .liveCached,
                     source: source(for: descriptor) ?? .memory,
+                    fallbackReason: nil
+                ),
+                task: nil
+            )
+        }
+
+        if diskCachedImage(for: url, descriptor: descriptor, shouldLog: true) != nil {
+            recordAssetState(.liveCached, for: descriptor)
+            return AssetImageRequestHandle(
+                immediateOutcome: outcome(
+                    assetState: .liveCached,
+                    source: .disk,
                     fallbackReason: nil
                 ),
                 task: nil
@@ -455,7 +489,14 @@ final class AssetImageClient: @unchecked Sendable {
 
             do {
                 let data = try await self.loadImageData(from: url)
-                guard let image = UIImage(data: data) else {
+                if Task.isCancelled {
+                    return self.outcome(
+                        assetState: .placeholderPending,
+                        source: nil,
+                        fallbackReason: .requestInflight
+                    )
+                }
+                guard let image = self.decodedImage(from: data) else {
                     throw AssetImageClientError.decodeFailed
                 }
                 self.store(image: image, data: data, for: url, descriptor: descriptor, source: .network)
@@ -466,6 +507,13 @@ final class AssetImageClient: @unchecked Sendable {
                     fallbackReason: nil
                 )
             } catch {
+                if Task.isCancelled {
+                    return self.outcome(
+                        assetState: .placeholderPending,
+                        source: nil,
+                        fallbackReason: .requestInflight
+                    )
+                }
                 self.recordFailure(for: url)
                 self.recordPlaceholderFinal(for: descriptor, reason: .fetchFailed)
                 AssetImageDebugClient.shared.log(
@@ -533,11 +581,11 @@ final class AssetImageClient: @unchecked Sendable {
 
     private nonisolated func loadImageData(from url: URL) async throws -> Data {
         if url.isFileURL {
-            return try Data(contentsOf: url)
+            return try Data(contentsOf: url, options: .mappedIfSafe)
         }
 
         var request = URLRequest(url: url)
-        request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.cachePolicy = .returnCacheDataElseLoad
         let (data, response) = try await URLSession.shared.data(for: request)
         if let httpResponse = response as? HTTPURLResponse,
            (200..<300).contains(httpResponse.statusCode) == false {
@@ -546,14 +594,30 @@ final class AssetImageClient: @unchecked Sendable {
         return data
     }
 
+    private nonisolated func decodedImage(from data: Data, maxPixelSize: CGFloat = 160) -> UIImage? {
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: Int(maxPixelSize)
+        ]
+
+        if let source = CGImageSourceCreateWithData(data as CFData, nil),
+           let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) {
+            return UIImage(cgImage: image)
+        }
+
+        return UIImage(data: data)
+    }
+
     private nonisolated func diskCachedImage(
         for url: URL,
         descriptor: AssetImageRequestDescriptor?,
         shouldLog: Bool
     ) -> UIImage? {
         let cacheURL = diskCacheFileURL(for: url)
-        guard let data = try? Data(contentsOf: cacheURL),
-              let image = UIImage(data: data) else {
+        guard let data = try? Data(contentsOf: cacheURL, options: .mappedIfSafe),
+              let image = decodedImage(from: data) else {
             return nil
         }
 
@@ -679,6 +743,7 @@ final class AssetImageClient: @unchecked Sendable {
             marketIdentity: descriptor.marketIdentity,
             category: .network,
             details: [
+                "resolution": diagnosticFallbackReason(for: descriptor, reason: reason),
                 "reason": reason.rawValue,
                 "state": AssetImageState.placeholderFinal.rawValue,
                 "symbol": descriptor.canonicalSymbol
@@ -734,7 +799,7 @@ final class AssetImageClient: @unchecked Sendable {
 
     private nonisolated func missingURLReason(for descriptor: AssetImageRequestDescriptor) -> AssetImageFallbackReason {
         let rawValue = descriptor.imageURL?.trimmingCharacters(in: .whitespacesAndNewlines)
-        if descriptor.hasImage == false {
+        if descriptor.isExplicitlyUnsupportedAsset {
             return .unsupportedAsset
         }
         if descriptor.canonicalSymbol.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -753,6 +818,32 @@ final class AssetImageClient: @unchecked Sendable {
             return .noImageURL
         }
         return .aliasMiss
+    }
+
+    private nonisolated func diagnosticFallbackReason(
+        for descriptor: AssetImageRequestDescriptor,
+        reason: AssetImageFallbackReason
+    ) -> String {
+        switch reason {
+        case .aliasMiss:
+            return "alias_missing"
+        case .noImageURL:
+            return "image_url_missing"
+        case .unsupportedAsset:
+            return descriptor.hasResolvableImageURL ? "unsupported_flag_ignored" : "unsupported_by_registry"
+        case .cooldownBlocked:
+            return "negative_cache_hit"
+        case .fetchFailed:
+            return "image_fetch_failed"
+        case .missingCachedImage:
+            return "cached_image_missing"
+        case .symbolNormalizationFailed:
+            return "symbol_normalization_failed"
+        case .marketIdentityMappingFailed:
+            return "market_identity_mapping_failed"
+        case .requestInflight:
+            return "request_inflight"
+        }
     }
 
     private nonisolated static func looksLikePairSymbol(_ rawValue: String) -> Bool {
@@ -865,7 +956,10 @@ final class SymbolImageRenderView: UIView {
             if configuration.state.showsRenderedImage, imageView.image != nil {
                 return
             }
-            if configuration.state.showsRenderedImage == false, imageView.image == nil {
+            if configuration.state.showsRenderedImage == false,
+               imageView.image == nil,
+               fallbackView.isHidden == false,
+               currentDebugState != .idle {
                 return
             }
         }
@@ -881,6 +975,15 @@ final class SymbolImageRenderView: UIView {
 
         currentConfiguration = configuration
         applyFallbackBranding(for: configuration)
+
+        if let cachedImage = AssetImageClient.shared.cachedImage(for: configuration.descriptor) {
+            renderImage(
+                cachedImage,
+                source: AssetImageClient.shared.source(for: configuration.descriptor),
+                state: AssetImageClient.shared.renderState(for: configuration.descriptor)
+            )
+            return
+        }
 
         switch configuration.state {
         case .cached, .live:
@@ -912,11 +1015,7 @@ final class SymbolImageRenderView: UIView {
             details: ["symbol": configuration.descriptor.canonicalSymbol]
         )
         currentConfiguration = nil
-        imageView.layer.removeAllAnimations()
-        fallbackView.layer.removeAllAnimations()
-        if imageView.image == nil {
-            resetVisuals()
-        }
+        resetVisuals()
     }
 
     func debugApply(
@@ -955,22 +1054,9 @@ final class SymbolImageRenderView: UIView {
         source: AssetImageLoadSource?,
         state: MarketRowSymbolImageState
     ) {
-        let applyImage = {
-            self.imageView.image = image
-            self.imageView.isHidden = false
-            self.fallbackView.isHidden = true
-        }
-
-        if state == .live, source == .network, fallbackView.isHidden == false {
-            UIView.transition(
-                with: self,
-                duration: 0.08,
-                options: [.transitionCrossDissolve, .allowAnimatedContent],
-                animations: applyImage
-            )
-        } else {
-            applyImage()
-        }
+        imageView.image = image
+        imageView.isHidden = false
+        fallbackView.isHidden = true
 
         layer.borderColor = UIColor(Color.themeBorder.opacity(0.4)).cgColor
         currentDebugState = .success
@@ -1001,10 +1087,16 @@ final class SymbolImageRenderView: UIView {
         fallbackView.isHidden = false
         layer.borderColor = UIColor(Color.themeBorder.opacity(0.65)).cgColor
         currentDebugState = .fallback(reason.rawValue)
+        let fallbackStage = currentConfiguration.map {
+            AssetImageClient.shared.hasTerminalFallback(for: $0.descriptor)
+                ? "final_fallback_applied"
+                : "temporary_fallback_applied"
+        } ?? "temporary_fallback_applied"
         AssetImageDebugClient.shared.log(
             .placeholderApplied,
             marketIdentity: currentConfiguration?.descriptor.marketIdentity,
             details: [
+                "fallback": fallbackStage,
                 "reason": reason.rawValue,
                 "symbol": currentConfiguration?.descriptor.canonicalSymbol ?? "-",
                 "symbolText": fallbackLabel.text ?? "-"
@@ -1040,15 +1132,21 @@ final class SymbolImageRenderView: UIView {
         }
 
         return previousConfiguration.descriptor != nextConfiguration.descriptor
-            || previousConfiguration.state != nextConfiguration.state
+            || previousConfiguration.size != nextConfiguration.size
     }
 
     private func resetVisuals() {
+        layer.removeAllAnimations()
+        layer.mask = nil
         imageView.layer.removeAllAnimations()
         fallbackView.layer.removeAllAnimations()
+        fallbackGradientLayer.removeAllAnimations()
+        imageView.layer.mask = nil
+        fallbackView.layer.mask = nil
         imageView.image = nil
         imageView.isHidden = true
         fallbackView.isHidden = false
+        fallbackLabel.text = nil
         layer.borderColor = UIColor(Color.themeBorder.opacity(0.65)).cgColor
         currentDebugState = .idle
     }

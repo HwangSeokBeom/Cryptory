@@ -2,9 +2,8 @@ import SwiftUI
 
 struct LoginView: View {
     @ObservedObject var vm: CryptoViewModel
-    @Environment(\.dismiss) private var dismiss
     @FocusState private var focusedField: Field?
-    @State private var activeLegalSheet: LegalSheet?
+    @State private var safariDestination: SafariDestination?
     @State private var didAttemptSignUpSubmit = false
 
     private enum Field: Hashable {
@@ -14,46 +13,6 @@ struct LoginView: View {
         case signupEmail
         case signupPassword
         case signupPasswordConfirm
-    }
-
-    private enum LegalSheet: Identifiable {
-        case terms
-        case privacy
-
-        var id: String {
-            switch self {
-            case .terms:
-                return "terms"
-            case .privacy:
-                return "privacy"
-            }
-        }
-
-        var title: String {
-            switch self {
-            case .terms:
-                return "서비스 이용약관"
-            case .privacy:
-                return "개인정보 처리방침"
-            }
-        }
-
-        var summaryLines: [String] {
-            switch self {
-            case .terms:
-                return [
-                    "회원가입 시 이메일 기반 계정을 생성하고 거래소 연결, 주문, 자산 조회 기능을 이용할 수 있습니다.",
-                    "거래소 API 키는 사용자가 명시적으로 연결한 경우에만 서버 연결 API로 전달됩니다.",
-                    "출금 권한은 기본적으로 권장하지 않으며, 앱에서도 조회/거래 권한 중심으로 안내합니다."
-                ]
-            case .privacy:
-                return [
-                    "로그인 세션은 기기 보안 저장소를 우선 사용해 보관합니다.",
-                    "입력 중인 민감한 키 값은 화면에서 마스킹하고, 전체 값을 다시 노출하지 않습니다.",
-                    "문제가 발생하면 사용성 개선과 보안 점검을 위해 최소한의 오류 로그만 남깁니다."
-                ]
-            }
-        }
     }
 
     private var validation: SignUpFormValidationResult {
@@ -66,7 +25,6 @@ struct LoginView: View {
 
             ScrollView(showsIndicators: false) {
                 VStack(spacing: 20) {
-                    header
                     modeSelector
                     heroCopy
 
@@ -80,40 +38,24 @@ struct LoginView: View {
                     Spacer(minLength: 24)
                 }
                 .padding(.horizontal, 20)
-                .padding(.top, 12)
+                .padding(.top, 22)
                 .padding(.bottom, 28)
             }
             .scrollDismissesKeyboard(.interactively)
         }
         .dismissKeyboardOnBackgroundTap()
-        .sheet(item: $activeLegalSheet) { sheet in
-            legalSheet(sheet)
-                .presentationDetents([.medium, .large])
+        .sheet(item: $safariDestination) { destination in
+            SafariSheet(destination: destination)
+                .ignoresSafeArea()
         }
         .onChange(of: vm.authFlowMode) { _, _ in
             focusedField = nil
             didAttemptSignUpSubmit = false
         }
-    }
-
-    private var header: some View {
-        HStack {
-            Spacer()
-
-            Button {
-                dismiss()
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 14, weight: .bold))
-                    .foregroundColor(.textSecondary)
-                    .padding(10)
-                    .background(
-                        Circle()
-                            .fill(Color.bgSecondary)
-                    )
-            }
-            .buttonStyle(.plain)
-        }
+        .onChange(of: vm.signupNickname) { _, _ in clearSignUpServerErrorIfNeeded() }
+        .onChange(of: vm.signupEmail) { _, _ in clearSignUpServerErrorIfNeeded() }
+        .onChange(of: vm.signupPassword) { _, _ in clearSignUpServerErrorIfNeeded() }
+        .onChange(of: vm.signupPasswordConfirm) { _, _ in clearSignUpServerErrorIfNeeded() }
     }
 
     private var modeSelector: some View {
@@ -290,16 +232,15 @@ struct LoginView: View {
             agreementCard
 
             if let error = vm.signupErrorMessage, !error.isEmpty {
-                inlineMessage(error, tone: .error)
+                serverErrorMessage(error)
             }
 
             submitButton(
                 title: vm.isSigningUp ? "가입 중..." : "회원가입하고 시작하기",
                 isLoading: vm.isSigningUp,
-                isEnabled: !vm.isSigningUp,
+                isEnabled: vm.canSubmitSignUp,
                 action: {
                     didAttemptSignUpSubmit = true
-                    focusedField = nil
                     Task {
                         await vm.submitSignUp()
                     }
@@ -334,8 +275,8 @@ struct LoginView: View {
             .buttonStyle(.plain)
 
             HStack(spacing: 12) {
-                legalLinkButton(title: "이용약관 보기", sheet: .terms)
-                legalLinkButton(title: "개인정보 처리방침", sheet: .privacy)
+                legalLinkButton(title: "이용약관 보기", link: .termsOfService)
+                legalLinkButton(title: "개인정보처리방침 보기", link: .privacyPolicy)
             }
 
             validationRow(
@@ -354,9 +295,9 @@ struct LoginView: View {
         )
     }
 
-    private func legalLinkButton(title: String, sheet: LegalSheet) -> some View {
+    private func legalLinkButton(title: String, link: AppExternalLink) -> some View {
         Button {
-            activeLegalSheet = sheet
+            openExternalLink(link)
         } label: {
             Text(title)
                 .font(.system(size: 11, weight: .semibold))
@@ -372,19 +313,55 @@ struct LoginView: View {
     }
 
     private var footerPrompt: some View {
-        HStack(spacing: 6) {
-            Text(vm.authFlowMode == .login ? "아직 계정이 없나요?" : "이미 계정이 있나요?")
-                .font(.system(size: 12))
-                .foregroundColor(.textSecondary)
+        VStack(spacing: 10) {
+            HStack(spacing: 6) {
+                Text(vm.authFlowMode == .login ? "아직 계정이 없나요?" : "이미 계정이 있나요?")
+                    .font(.system(size: 12))
+                    .foregroundColor(.textSecondary)
 
-            Button(vm.authFlowMode == .login ? "회원가입" : "로그인") {
-                selectAuthFlowMode(vm.authFlowMode == .login ? .signUp : .login)
+                Button(vm.authFlowMode == .login ? "회원가입" : "로그인") {
+                    selectAuthFlowMode(vm.authFlowMode == .login ? .signUp : .login)
+                }
+                .font(.system(size: 12, weight: .bold))
+                .foregroundColor(.accent)
+                .buttonStyle(.plain)
             }
-            .font(.system(size: 12, weight: .bold))
-            .foregroundColor(.accent)
-            .buttonStyle(.plain)
+
+            footerExternalLinks
         }
         .padding(.top, 4)
+    }
+
+    private var footerExternalLinks: some View {
+        VStack(spacing: 7) {
+            HStack(spacing: 12) {
+                footerLinkButton(.termsOfService)
+                footerLinkButton(.privacyPolicy)
+            }
+
+            HStack(spacing: 12) {
+                footerLinkButton(.support)
+                footerLinkButton(.deleteAccount)
+            }
+
+            HStack(spacing: 12) {
+                footerLinkButton(.investmentDisclaimer)
+                footerLinkButton(.home)
+            }
+        }
+    }
+
+    private func footerLinkButton(_ link: AppExternalLink) -> some View {
+        Button {
+            openExternalLink(link)
+        } label: {
+            Text(link.title)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(.textMuted)
+                .lineLimit(1)
+                .minimumScaleFactor(0.85)
+        }
+        .buttonStyle(.plain)
     }
 
     @ViewBuilder
@@ -399,6 +376,30 @@ struct LoginView: View {
             .font(.system(size: 12, weight: .medium))
             .foregroundColor(tone == .error ? .danger : .textSecondary)
             .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func serverErrorMessage(_ message: String) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "exclamationmark.circle.fill")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundColor(.danger)
+                .padding(.top, 1)
+
+            Text(message)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(.danger)
+                .lineSpacing(2)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color.danger.opacity(0.08))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .stroke(Color.danger.opacity(0.45), lineWidth: 1)
+                )
+        )
     }
 
     private func submitButton(
@@ -488,31 +489,14 @@ struct LoginView: View {
         vm.switchAuthFlowMode(mode)
     }
 
-    private func legalSheet(_ sheet: LegalSheet) -> some View {
-        NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 12) {
-                    ForEach(sheet.summaryLines, id: \.self) { line in
-                        Text("• \(line)")
-                            .font(.system(size: 13))
-                            .foregroundColor(.themeText)
-                            .lineSpacing(3)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                }
-                .padding(20)
-            }
-            .background(Color.bg.ignoresSafeArea())
-            .navigationTitle(sheet.title)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("닫기") {
-                        activeLegalSheet = nil
-                    }
-                }
-            }
+    private func clearSignUpServerErrorIfNeeded() {
+        if vm.signupErrorMessage != nil {
+            vm.clearSignUpServerError()
         }
-        .preferredColorScheme(.dark)
+    }
+
+    private func openExternalLink(_ link: AppExternalLink) {
+        safariDestination = SafariDestination(link: link)
     }
 }
 
