@@ -2,6 +2,7 @@ import SwiftUI
 
 struct PortfolioView: View {
     @ObservedObject var vm: CryptoViewModel
+    @State private var collapsedExchangeIDs: Set<String> = []
 
     var body: some View {
         Group {
@@ -9,8 +10,6 @@ struct PortfolioView: View {
                 AuthGateView(feature: feature) {
                     vm.presentLogin(for: feature)
                 }
-            } else if vm.isSelectedExchangePortfolioUnsupported {
-                unsupportedState
             } else {
                 ScrollView {
                     VStack(spacing: 16) {
@@ -25,14 +24,7 @@ struct PortfolioView: View {
                         ScreenStatusBannerView(viewState: vm.portfolioStatusViewState)
                             .padding(.horizontal, 16)
 
-                        if let summary = vm.portfolioSummaryCardState {
-                            TotalAssetCard(summary: summary)
-                                .equatable()
-                                .padding(.horizontal, 16)
-                        } else if shouldShowSummaryPlaceholder {
-                            PortfolioSummaryPlaceholderCard()
-                                .padding(.horizontal, 16)
-                        }
+                        portfolioSummarySection
 
                         portfolioBodySection
 
@@ -46,24 +38,6 @@ struct PortfolioView: View {
                 .lifecycle,
                 "[AssetScreenRenderDebug] render_reason=portfolio_view_appear state_transition=current:\(portfolioStateDescription)"
             )
-        }
-    }
-
-    private var unsupportedState: some View {
-        VStack(spacing: 12) {
-            Spacer()
-            Image(systemName: "wallet.pass")
-                .font(.system(size: 42, weight: .semibold))
-                .foregroundColor(.textSecondary)
-            Text("이 거래소는 자산 조회를 지원하지 않아요")
-                .font(.system(size: 18, weight: .bold))
-                .foregroundColor(.themeText)
-            Text("Exchange metadata 의 supportsAsset 기준으로 빈 상태를 노출했습니다.")
-                .font(.system(size: 13))
-                .foregroundColor(.textSecondary)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 28)
-            Spacer()
         }
     }
 
@@ -82,8 +56,25 @@ struct PortfolioView: View {
     }
 
     private var shouldShowSummaryPlaceholder: Bool {
-        vm.portfolioSummaryCardState == nil
+        vm.portfolioOverviewViewState == nil
+            && vm.portfolioSummaryCardState == nil
             && (vm.portfolioState.isLoading || vm.portfolioState == .idle)
+    }
+
+    @ViewBuilder
+    private var portfolioSummarySection: some View {
+        if let overview = vm.portfolioOverviewViewState {
+            TotalAssetCard(overview: overview.summary)
+                .equatable()
+                .padding(.horizontal, 16)
+        } else if let summary = vm.portfolioSummaryCardState {
+            TotalAssetCard(summary: summary)
+                .equatable()
+                .padding(.horizontal, 16)
+        } else if shouldShowSummaryPlaceholder {
+            PortfolioSummaryPlaceholderCard()
+                .padding(.horizontal, 16)
+        }
     }
 
     private var portfolioStateDescription: String {
@@ -105,58 +96,107 @@ struct PortfolioView: View {
     private var portfolioBodySection: some View {
         switch vm.portfolioState {
         case .idle, .loading:
-            ProgressView("내 자산을 불러오는 중...")
-                .tint(.accent)
-                .padding(.top, 40)
+            if vm.portfolioOverviewViewState == nil {
+                PortfolioBodyPlaceholderSection()
+                    .padding(.horizontal, 16)
+            } else {
+                portfolioLoadedSections
+            }
 
         case .failed(let message):
-            stateMessage(
-                title: "자산 데이터를 불러오지 못했어요",
-                detail: message
-            )
+            if vm.portfolioOverviewViewState == nil {
+                stateMessage(
+                    title: "자산 데이터를 불러오지 못했어요",
+                    detail: message
+                )
+            } else {
+                portfolioLoadedSections
+            }
 
         case .empty:
-            stateMessage(
-                title: "보유 자산이 없어요",
-                detail: "거래소 연결 후 자산이 있으면 여기에서 확인할 수 있어요."
-            )
+            portfolioLoadedSections
 
         case .loaded:
-            holdingsSection
+            portfolioLoadedSections
+        }
+    }
+
+    private var portfolioLoadedSections: some View {
+        VStack(spacing: 16) {
+            portfolioCompositionSection
+            exchangeAssetsSection
+            topAssetsSection
             historySection
         }
     }
 
-    private var holdingsSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("보유 코인")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundColor(.themeText)
+    @ViewBuilder
+    private var portfolioCompositionSection: some View {
+        if let overview = vm.portfolioOverviewViewState {
+            PortfolioCompositionCard(overview: overview)
                 .padding(.horizontal, 16)
+        }
+    }
 
-            if vm.portfolio.isEmpty {
+    private var exchangeAssetsSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            sectionHeader("거래소별 보유 자산", subtitle: "거래소 subtotal과 코인 비중")
+
+            if vm.portfolioOverviewViewState?.exchangeSections.isEmpty ?? true {
                 stateMessage(
-                    title: "보유 코인이 없어요",
-                    detail: "거래소에 보유한 자산이 생기면 여기에 표시돼요."
+                    title: "거래소별 보유 자산이 없어요",
+                    detail: "연결된 거래소에 보유 자산이 생기면 거래소별로 나누어 표시돼요."
                 )
             } else {
-                ForEach(vm.portfolio) { holding in
-                    HoldingCard(holding: holding) {
-                        vm.selectCoinForTrade(CoinCatalog.coin(symbol: holding.symbol))
-                    }
-                    .equatable()
+                ForEach(vm.portfolioOverviewViewState?.exchangeSections ?? []) { section in
+                    ExchangeAssetSectionCard(
+                        section: section,
+                        isCollapsed: collapsedExchangeIDs.contains(section.id),
+                        onToggle: { toggleExchangeSection(section.id) },
+                        onSelect: { row in
+                            vm.selectCoinForTrade(CoinCatalog.coin(symbol: row.symbol))
+                        }
+                    )
                     .padding(.horizontal, 16)
                 }
             }
         }
     }
 
+    private var topAssetsSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            sectionHeader("주요 보유 자산", subtitle: "평가금액 기준 TOP")
+
+            if let topAssets = vm.portfolioOverviewViewState?.topAssets, !topAssets.isEmpty {
+                VStack(spacing: 8) {
+                    ForEach(topAssets) { asset in
+                        TopPortfolioAssetRow(asset: asset) {
+                            vm.selectCoinForTrade(CoinCatalog.coin(symbol: asset.symbol))
+                        }
+                    }
+                }
+                .padding(12)
+                .background(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(Color.bgSecondary)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                .stroke(Color.themeBorder, lineWidth: 1)
+                        )
+                )
+                .padding(.horizontal, 16)
+            } else {
+                stateMessage(
+                    title: "주요 보유 자산이 없어요",
+                    detail: "코인 보유 평가금액이 확인되면 비중 순으로 표시돼요."
+                )
+            }
+        }
+    }
+
     private var historySection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("최근 자산 히스토리")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundColor(.themeText)
-                .padding(.horizontal, 16)
+            sectionHeader("최근 자산 변동", subtitle: "실제 거래·입출금 내역만 표시")
 
             switch vm.portfolioHistoryState {
             case .idle, .loading:
@@ -172,8 +212,8 @@ struct PortfolioView: View {
 
             case .empty:
                 stateMessage(
-                    title: "최근 히스토리가 없어요",
-                    detail: "입출금이나 체결 이력이 생기면 여기에 표시돼요."
+                    title: "최근 자산 변동 내역이 없어요.",
+                    detail: "거래나 입출금이 발생하면 여기에 표시돼요."
                 )
 
             case .loaded(let items):
@@ -237,6 +277,27 @@ struct PortfolioView: View {
                 )
         )
         .padding(.horizontal, 16)
+    }
+
+    private func sectionHeader(_ title: String, subtitle: String) -> some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text(title)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundColor(.themeText)
+            Spacer()
+            Text(subtitle)
+                .font(.system(size: 10))
+                .foregroundColor(.textMuted)
+        }
+        .padding(.horizontal, 16)
+    }
+
+    private func toggleExchangeSection(_ id: String) {
+        if collapsedExchangeIDs.contains(id) {
+            collapsedExchangeIDs.remove(id)
+        } else {
+            collapsedExchangeIDs.insert(id)
+        }
     }
 }
 
@@ -329,5 +390,387 @@ private struct PortfolioConnectionSummaryCard: View, Equatable {
                         .stroke(Color.themeBorder, lineWidth: 1)
                 )
         )
+    }
+}
+
+private struct PortfolioBodyPlaceholderSection: View {
+    var body: some View {
+        VStack(spacing: 14) {
+            placeholderCard(height: 118)
+            placeholderCard(height: 160)
+            placeholderCard(height: 132)
+        }
+        .redacted(reason: .placeholder)
+    }
+
+    private func placeholderCard(height: CGFloat) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                .fill(Color.bgTertiary)
+                .frame(width: 110, height: 10)
+
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color.bgTertiary)
+                .frame(maxWidth: .infinity)
+                .frame(height: 14)
+
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color.bgTertiary)
+                .frame(maxWidth: .infinity)
+                .frame(height: 14)
+        }
+        .frame(maxWidth: .infinity, minHeight: height, alignment: .topLeading)
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color.bgSecondary)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .stroke(Color.themeBorder, lineWidth: 1)
+                )
+        )
+    }
+}
+
+private struct PortfolioCompositionCard: View, Equatable {
+    let overview: PortfolioOverviewViewState
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("포트폴리오 분포")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundColor(.themeText)
+                    Text(compositionSummaryText)
+                        .font(.system(size: 11))
+                        .foregroundColor(.textSecondary)
+                }
+
+                Spacer()
+            }
+
+            SegmentedWeightBar(rows: cashAndCoinRows)
+
+            if !overview.exchangeDistribution.isEmpty {
+                allocationGroup(title: "거래소별 비중", rows: overview.exchangeDistribution)
+            }
+
+            if !overview.assetDistribution.isEmpty {
+                allocationGroup(title: "자산별 TOP 비중", rows: overview.assetDistribution)
+            }
+
+            if let warningMessage = overview.warningMessage, !warningMessage.isEmpty {
+                Text(warningMessage)
+                    .font(.system(size: 11))
+                    .foregroundColor(.accent)
+                    .lineLimit(2)
+            }
+        }
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color.bgSecondary)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .stroke(Color.themeBorder, lineWidth: 1)
+                )
+        )
+    }
+
+    private var compositionSummaryText: String {
+        String(
+            format: "코인 %.1f%% · 현금성 %.1f%%",
+            overview.coinWeightPercent,
+            overview.cashWeightPercent
+        )
+    }
+
+    private var cashAndCoinRows: [PortfolioAllocationRowState] {
+        [
+            PortfolioAllocationRowState(
+                id: "coin-weight",
+                title: "코인",
+                subtitle: "평가 자산",
+                amount: overview.summary.totalAsset - overview.summary.cash,
+                percent: overview.coinWeightPercent,
+                tintHex: "#F59E0B"
+            ),
+            PortfolioAllocationRowState(
+                id: "cash-weight",
+                title: "현금성",
+                subtitle: "대기 자산",
+                amount: overview.summary.cash,
+                percent: overview.cashWeightPercent,
+                tintHex: "#10B981"
+            )
+        ]
+    }
+
+    private func allocationGroup(title: String, rows: [PortfolioAllocationRowState]) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.system(size: 11, weight: .bold))
+                .foregroundColor(.textSecondary)
+
+            VStack(spacing: 8) {
+                ForEach(rows.prefix(5)) { row in
+                    AllocationProgressRow(row: row)
+                }
+            }
+        }
+    }
+}
+
+private struct SegmentedWeightBar: View, Equatable {
+    let rows: [PortfolioAllocationRowState]
+
+    var body: some View {
+        GeometryReader { proxy in
+            HStack(spacing: 3) {
+                ForEach(rows.filter { $0.percent > 0 }) { row in
+                    RoundedRectangle(cornerRadius: 4, style: .continuous)
+                        .fill(Color(hex: row.tintHex))
+                        .frame(width: max(3, proxy.size.width * CGFloat(row.percent / 100)))
+                }
+                if rows.allSatisfy({ $0.percent <= 0 }) {
+                    RoundedRectangle(cornerRadius: 4, style: .continuous)
+                        .fill(Color.bgTertiary)
+                }
+            }
+        }
+        .frame(height: 10)
+        .background(
+            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                .fill(Color.bgTertiary)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+    }
+}
+
+private struct AllocationProgressRow: View, Equatable {
+    let row: PortfolioAllocationRowState
+
+    var body: some View {
+        VStack(spacing: 5) {
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(Color(hex: row.tintHex))
+                    .frame(width: 7, height: 7)
+                Text(row.title)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(.themeText)
+                Text(row.subtitle)
+                    .font(.system(size: 10))
+                    .foregroundColor(.textMuted)
+                    .lineLimit(1)
+                Spacer()
+                Text(String(format: "%.1f%%", row.percent))
+                    .font(.mono(11, weight: .bold))
+                    .foregroundColor(.themeText)
+            }
+
+            GeometryReader { proxy in
+                ZStack(alignment: .leading) {
+                    RoundedRectangle(cornerRadius: 3, style: .continuous)
+                        .fill(Color.bgTertiary)
+                    RoundedRectangle(cornerRadius: 3, style: .continuous)
+                        .fill(Color(hex: row.tintHex))
+                        .frame(width: max(3, proxy.size.width * CGFloat(min(row.percent, 100) / 100)))
+                }
+            }
+            .frame(height: 6)
+        }
+    }
+}
+
+private struct ExchangeAssetSectionCard: View, Equatable {
+    let section: ExchangePortfolioSectionViewState
+    let isCollapsed: Bool
+    let onToggle: () -> Void
+    let onSelect: (PortfolioHoldingRowState) -> Void
+
+    static func == (lhs: ExchangeAssetSectionCard, rhs: ExchangeAssetSectionCard) -> Bool {
+        lhs.section == rhs.section && lhs.isCollapsed == rhs.isCollapsed
+    }
+
+    var body: some View {
+        VStack(spacing: 12) {
+            Button(action: onToggle) {
+                HStack(alignment: .center, spacing: 10) {
+                    PortfolioExchangeIcon(exchange: section.exchange)
+
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(section.exchange.displayName)
+                            .font(.system(size: 14, weight: .heavy))
+                            .foregroundColor(.themeText)
+                        Text("\(section.assetCount)개 자산 · \(String(format: "%.1f%%", section.weightPercent))")
+                            .font(.system(size: 11))
+                            .foregroundColor(.textSecondary)
+                    }
+
+                    Spacer()
+
+                    VStack(alignment: .trailing, spacing: 3) {
+                        Text("₩" + PriceFormatter.formatInteger(section.totalAsset))
+                            .font(.mono(14, weight: .bold))
+                            .foregroundColor(.themeText)
+                        Text("가용 ₩" + PriceFormatter.formatInteger(section.availableAsset))
+                            .font(.system(size: 10))
+                            .foregroundColor(.textMuted)
+                    }
+
+                    Image(systemName: isCollapsed ? "chevron.down" : "chevron.up")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundColor(.textMuted)
+                }
+            }
+            .buttonStyle(.plain)
+
+            if !isCollapsed {
+                VStack(spacing: 8) {
+                    ForEach(section.holdings.prefix(8)) { row in
+                        ExchangeHoldingRow(row: row) {
+                            onSelect(row)
+                        }
+                    }
+                }
+            }
+
+            if let partialFailureMessage = section.partialFailureMessage, !partialFailureMessage.isEmpty {
+                Text(partialFailureMessage)
+                    .font(.system(size: 11))
+                    .foregroundColor(.accent)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color.bgSecondary)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .stroke(Color.themeBorder, lineWidth: 1)
+                )
+        )
+    }
+}
+
+private struct PortfolioExchangeIcon: View, Equatable {
+    let exchange: Exchange
+
+    var body: some View {
+        Text(exchange.iconText)
+            .font(.system(size: 11, weight: .heavy))
+            .foregroundColor(.white)
+            .frame(width: 28, height: 28)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(exchange.color)
+            )
+    }
+}
+
+private struct ExchangeHoldingRow: View, Equatable {
+    let row: PortfolioHoldingRowState
+    let onSelect: () -> Void
+
+    static func == (lhs: ExchangeHoldingRow, rhs: ExchangeHoldingRow) -> Bool {
+        lhs.row == rhs.row
+    }
+
+    var body: some View {
+        Button(action: onSelect) {
+            VStack(spacing: 8) {
+                HStack(alignment: .top, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack(spacing: 6) {
+                            Text(row.symbol)
+                                .font(.system(size: 13, weight: .heavy))
+                                .foregroundColor(.themeText)
+                            Text(row.name)
+                                .font(.system(size: 10))
+                                .foregroundColor(.textMuted)
+                        }
+                        Text("수량 \(PriceFormatter.formatQty6(row.totalQuantity))")
+                            .font(.mono(10, weight: .semibold))
+                            .foregroundColor(.textSecondary)
+                    }
+
+                    Spacer()
+
+                    VStack(alignment: .trailing, spacing: 3) {
+                        Text("₩" + PriceFormatter.formatInteger(row.evaluationAmount))
+                            .font(.mono(13, weight: .bold))
+                            .foregroundColor(.themeText)
+                        Text(String(format: "%.1f%%", row.weightPercent))
+                            .font(.mono(10, weight: .semibold))
+                            .foregroundColor(.accent)
+                    }
+                }
+
+                HStack {
+                    Text("평균 \(PriceFormatter.formatPrice(row.averageBuyPrice))")
+                        .font(.system(size: 10))
+                        .foregroundColor(.textMuted)
+                    Spacer()
+                    Text("\(row.profitLoss >= 0 ? "+" : "")₩" + PriceFormatter.formatInteger(row.profitLoss))
+                        .font(.mono(10, weight: .bold))
+                        .foregroundColor(row.profitLoss >= 0 ? .up : .down)
+                }
+            }
+            .padding(10)
+            .background(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(Color.bgTertiary.opacity(0.72))
+            )
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct TopPortfolioAssetRow: View, Equatable {
+    let asset: PortfolioTopAssetViewState
+    let onSelect: () -> Void
+
+    static func == (lhs: TopPortfolioAssetRow, rhs: TopPortfolioAssetRow) -> Bool {
+        lhs.asset == rhs.asset
+    }
+
+    var body: some View {
+        Button(action: onSelect) {
+            HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 6) {
+                        Text(asset.symbol)
+                            .font(.system(size: 13, weight: .heavy))
+                            .foregroundColor(.themeText)
+                        Text(asset.name)
+                            .font(.system(size: 10))
+                            .foregroundColor(.textMuted)
+                    }
+                    Text("\(asset.exchangeCount)개 거래소 · 수량 \(PriceFormatter.formatQty6(asset.totalQuantity))")
+                        .font(.system(size: 10))
+                        .foregroundColor(.textSecondary)
+                }
+
+                Spacer()
+
+                VStack(alignment: .trailing, spacing: 3) {
+                    Text("₩" + PriceFormatter.formatInteger(asset.evaluationAmount))
+                        .font(.mono(13, weight: .bold))
+                        .foregroundColor(.themeText)
+                    Text(String(format: "%.1f%%", asset.weightPercent))
+                        .font(.mono(10, weight: .semibold))
+                        .foregroundColor(.accent)
+                }
+            }
+            .padding(10)
+            .background(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(Color.bgTertiary.opacity(0.72))
+            )
+        }
+        .buttonStyle(.plain)
     }
 }

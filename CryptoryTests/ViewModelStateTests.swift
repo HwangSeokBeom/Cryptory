@@ -279,6 +279,137 @@ final class ViewModelStateTests: XCTestCase {
     }
 
     @MainActor
+    func testOrderRefreshKeepsStableSectionsWhenRefreshFails() async {
+        let tradingRepository = SpyTradingRepository()
+        tradingRepository.openOrdersSnapshot = OrderRecordsSnapshot(
+            exchange: .upbit,
+            orders: [tradingRepository.orderDetail],
+            meta: .empty
+        )
+        tradingRepository.fillsSnapshot = TradeFillsSnapshot(
+            exchange: .upbit,
+            fills: [
+                TradeFill(
+                    id: "fill-1",
+                    orderID: "order-1",
+                    symbol: "BTC",
+                    side: "buy",
+                    price: 125_000_000,
+                    quantity: 0.01,
+                    fee: 500,
+                    executedAtText: "12:01:00",
+                    executedAt: Date(),
+                    exchange: .upbit
+                )
+            ],
+            meta: .empty
+        )
+
+        let vm = CryptoViewModel(
+            marketRepository: StubMarketRepository(),
+            tradingRepository: tradingRepository,
+            portfolioRepository: SpyPortfolioRepository(),
+            kimchiPremiumRepository: StubKimchiPremiumRepository(),
+            exchangeConnectionsRepository: SpyExchangeConnectionsRepository(),
+            authService: StubAuthenticationService(),
+            publicWebSocketService: NoOpPublicWebSocketService(),
+            privateWebSocketService: NoOpPrivateWebSocketService()
+        )
+        await Task.yield()
+
+        await signIn(vm)
+        vm.selectedCoin = CoinCatalog.coin(symbol: "BTC")
+        await vm.loadOrders(reason: "trade_initial_load")
+
+        let initialChance = vm.tradingChanceState.value
+        let initialOrders = vm.orderHistoryState.value
+        let initialFills = vm.fillsState.value
+        XCTAssertNotNil(initialChance)
+        XCTAssertEqual(initialOrders?.count, 1)
+        XCTAssertEqual(initialFills?.count, 1)
+
+        tradingRepository.chanceError = NetworkServiceError.transportError("cancelled", .connectivity)
+        tradingRepository.openOrdersError = NetworkServiceError.transportError("서버 응답이 지연되고 있어요.", .connectivity)
+        tradingRepository.fillsError = NetworkServiceError.transportError("서버 응답이 지연되고 있어요.", .connectivity)
+
+        await vm.loadOrders(reason: "polling_fallback_trade")
+
+        XCTAssertEqual(vm.tradingChanceState.value, initialChance)
+        XCTAssertEqual(vm.orderHistoryState.value, initialOrders)
+        XCTAssertEqual(vm.fillsState.value, initialFills)
+    }
+
+    @MainActor
+    func testOrderRatioUsesChanceBalancesAndClearsOnManualQuantity() async {
+        let tradingRepository = SpyTradingRepository()
+        let vm = CryptoViewModel(
+            marketRepository: StubMarketRepository(),
+            tradingRepository: tradingRepository,
+            portfolioRepository: SpyPortfolioRepository(),
+            kimchiPremiumRepository: StubKimchiPremiumRepository(),
+            exchangeConnectionsRepository: SpyExchangeConnectionsRepository(),
+            authService: StubAuthenticationService(),
+            publicWebSocketService: NoOpPublicWebSocketService(),
+            privateWebSocketService: NoOpPrivateWebSocketService()
+        )
+        await Task.yield()
+
+        await signIn(vm)
+        vm.selectedCoin = CoinCatalog.coin(symbol: "BTC")
+        await vm.loadOrders(reason: "trade_initial_load")
+        vm.updateOrderPriceManually("100000000")
+
+        vm.applyPercent(50)
+
+        XCTAssertEqual(vm.orderQty, "0.005000")
+        XCTAssertEqual(vm.selectedOrderRatioPercent, 50)
+
+        vm.setOrderSide(.sell)
+        vm.updateOrderPriceManually("")
+        XCTAssertTrue(vm.isOrderRatioButtonEnabled(25))
+        vm.applyPercent(25)
+
+        XCTAssertEqual(vm.orderQty, "0.062500")
+        XCTAssertEqual(vm.selectedOrderRatioPercent, 25)
+
+        vm.updateOrderQuantityManually("0.010000")
+
+        XCTAssertEqual(vm.selectedOrderRatioPercent, nil)
+    }
+
+    @MainActor
+    func testChanceTerminalFailureIsSuppressedForImmediatePollingRefresh() async {
+        let tradingRepository = SpyTradingRepository()
+        tradingRepository.chanceError = NetworkServiceError.httpError(
+            403,
+            "permission_denied",
+            .permissionDenied
+        )
+        let vm = CryptoViewModel(
+            marketRepository: StubMarketRepository(),
+            tradingRepository: tradingRepository,
+            portfolioRepository: SpyPortfolioRepository(),
+            kimchiPremiumRepository: StubKimchiPremiumRepository(),
+            exchangeConnectionsRepository: SpyExchangeConnectionsRepository(),
+            authService: StubAuthenticationService(),
+            publicWebSocketService: NoOpPublicWebSocketService(),
+            privateWebSocketService: NoOpPrivateWebSocketService()
+        )
+        await Task.yield()
+
+        await signIn(vm)
+        vm.selectedCoin = CoinCatalog.coin(symbol: "BTC")
+        await vm.loadOrders(reason: "trade_initial_load")
+
+        XCTAssertEqual(tradingRepository.fetchChanceCount, 1)
+        XCTAssertNotNil(vm.tradingChanceState.errorMessage)
+
+        await vm.loadOrders(reason: "polling_fallback_trade")
+
+        XCTAssertEqual(tradingRepository.fetchChanceCount, 1)
+    }
+
+    @MainActor
     func testOpenExchangeConnectionsRequestsPresentationHandlerAndTracksState() async {
         let connectionsRepository = SpyExchangeConnectionsRepository()
         let vm = CryptoViewModel(
@@ -448,6 +579,117 @@ final class ViewModelStateTests: XCTestCase {
 
         XCTAssertEqual(portfolioRepository.fetchSummaryCount - summaryBaseline, 1)
         XCTAssertEqual(portfolioRepository.fetchHistoryCount - historyBaseline, 1)
+    }
+
+    @MainActor
+    func testPortfolioHistoryFiltersOutUnverifiedRecentItems() async {
+        let portfolioRepository = SpyPortfolioRepository()
+        portfolioRepository.historySnapshot = PortfolioHistorySnapshot(
+            exchange: .upbit,
+            items: [
+                PortfolioHistoryItem(
+                    id: "mock-trade",
+                    exchange: .upbit,
+                    symbol: "ETC",
+                    type: "trade",
+                    amount: 5,
+                    detail: "seeded trade",
+                    occurredAt: Date(),
+                    status: "filled",
+                    eventSource: .tradeFill,
+                    rawSourceLabel: "seed",
+                    isVerifiedUserEvent: false,
+                    isMockLike: true,
+                    hasUserScope: false,
+                    relatedEventIdentifier: nil
+                ),
+                PortfolioHistoryItem(
+                    id: "synthetic-balance",
+                    exchange: .upbit,
+                    symbol: "ETC",
+                    type: "balance_change",
+                    amount: 0,
+                    detail: "generated snapshot delta",
+                    occurredAt: Date(),
+                    status: "completed",
+                    eventSource: .realizedBalanceChange,
+                    rawSourceLabel: "generated",
+                    isVerifiedUserEvent: false,
+                    isMockLike: false,
+                    hasUserScope: false,
+                    relatedEventIdentifier: nil
+                )
+            ],
+            meta: .empty
+        )
+
+        let vm = CryptoViewModel(
+            marketRepository: StubMarketRepository(),
+            tradingRepository: SpyTradingRepository(),
+            portfolioRepository: portfolioRepository,
+            kimchiPremiumRepository: StubKimchiPremiumRepository(),
+            exchangeConnectionsRepository: SpyExchangeConnectionsRepository(),
+            authService: StubAuthenticationService(),
+            publicWebSocketService: NoOpPublicWebSocketService(),
+            privateWebSocketService: NoOpPrivateWebSocketService()
+        )
+        await Task.yield()
+
+        await signIn(vm)
+        await vm.loadPortfolio(reason: "history_filter_unverified")
+
+        guard case .empty = vm.portfolioHistoryState else {
+            return XCTFail("Expected empty history state, got \(vm.portfolioHistoryState)")
+        }
+    }
+
+    @MainActor
+    func testPortfolioHistoryKeepsVerifiedUserEvents() async {
+        let portfolioRepository = SpyPortfolioRepository()
+        portfolioRepository.historySnapshot = PortfolioHistorySnapshot(
+            exchange: .upbit,
+            items: [
+                PortfolioHistoryItem(
+                    id: "verified-deposit",
+                    exchange: .upbit,
+                    symbol: "BTC",
+                    type: "deposit",
+                    amount: 0.25,
+                    detail: "wallet deposit",
+                    occurredAt: Date(),
+                    status: "completed",
+                    eventSource: .deposit,
+                    rawSourceLabel: "wallet",
+                    isVerifiedUserEvent: true,
+                    isMockLike: false,
+                    hasUserScope: true,
+                    relatedEventIdentifier: "tx-1"
+                )
+            ],
+            meta: .empty
+        )
+
+        let vm = CryptoViewModel(
+            marketRepository: StubMarketRepository(),
+            tradingRepository: SpyTradingRepository(),
+            portfolioRepository: portfolioRepository,
+            kimchiPremiumRepository: StubKimchiPremiumRepository(),
+            exchangeConnectionsRepository: SpyExchangeConnectionsRepository(),
+            authService: StubAuthenticationService(),
+            publicWebSocketService: NoOpPublicWebSocketService(),
+            privateWebSocketService: NoOpPrivateWebSocketService()
+        )
+        await Task.yield()
+
+        await signIn(vm)
+        await vm.loadPortfolio(reason: "history_filter_verified")
+
+        guard case .loaded(let items) = vm.portfolioHistoryState else {
+            return XCTFail("Expected loaded history state, got \(vm.portfolioHistoryState)")
+        }
+
+        XCTAssertEqual(items.count, 1)
+        XCTAssertEqual(items.first?.id, "verified-deposit")
     }
 
     @MainActor
@@ -4547,6 +4789,161 @@ final class ViewModelStateTests: XCTestCase {
     }
 
     @MainActor
+    func testChartCandleRetriesNormalizedSymbolWhenMarketIDFails() async {
+        let currentBucket = Int(Date().timeIntervalSince1970) / 3600 * 3600
+        let marketCoin = CoinCatalog.coin(
+            symbol: "USDT",
+            exchange: .korbit,
+            marketId: "USDT_KRW",
+            canonicalSymbol: "USDT"
+        )
+        let normalizedSnapshot = CandleSnapshot(
+            exchange: .korbit,
+            symbol: "USDT",
+            interval: "1h",
+            candles: [
+                CandleData(time: currentBucket - 7200, open: 1_390, high: 1_391, low: 1_389, close: 1_390, volume: 1),
+                CandleData(time: currentBucket - 3600, open: 1_400, high: 1_401, low: 1_399, close: 1_400, volume: 1),
+                CandleData(time: currentBucket, open: 1_410, high: 1_411, low: 1_409, close: 1_410, volume: 1)
+            ],
+            meta: .empty
+        )
+        let repository = SequencedCandleMarketRepository(
+            marketCatalogSnapshot: MarketCatalogSnapshot(
+                exchange: .korbit,
+                markets: [marketCoin],
+                supportedIntervalsBySymbol: [marketCoin.symbol: ["1h"]],
+                meta: .empty
+            ),
+            tickerSnapshot: MarketTickerSnapshot(
+                exchange: .korbit,
+                tickers: [
+                    marketCoin.symbol: TickerData(
+                        price: 1_410,
+                        change: 0.5,
+                        volume: 10_000,
+                        high24: 1_430,
+                        low24: 1_360
+                    )
+                ],
+                meta: .empty
+            ),
+            candleResultsBySymbol: [
+                "USDT_KRW": [
+                    .failure(NetworkServiceError.httpError(404, "market not found", .unknown))
+                ],
+                "USDT": [
+                    .success(normalizedSnapshot)
+                ]
+            ]
+        )
+
+        let vm = CryptoViewModel(
+            marketRepository: repository,
+            tradingRepository: SpyTradingRepository(),
+            portfolioRepository: SpyPortfolioRepository(),
+            kimchiPremiumRepository: StubKimchiPremiumRepository(),
+            exchangeConnectionsRepository: SpyExchangeConnectionsRepository(),
+            authService: StubAuthenticationService(),
+            publicWebSocketService: NoOpPublicWebSocketService(),
+            privateWebSocketService: NoOpPrivateWebSocketService()
+        )
+
+        vm.updateExchange(.korbit, source: "test")
+        vm.selectedCoin = marketCoin
+        vm.chartPeriod = "1h"
+
+        await vm.loadChartData(forceRefresh: true, reason: "normalized_symbol_retry")
+
+        let fetchedSymbols = repository.fetchedCandles.map(\.symbol)
+        XCTAssertTrue(fetchedSymbols.contains("USDT_KRW"), "Fetched candles: \(repository.fetchedCandles)")
+        XCTAssertTrue(fetchedSymbols.contains("USDT"), "Fetched candles: \(repository.fetchedCandles)")
+        XCTAssertEqual(vm.candles.map(\.close), [1_390, 1_400, 1_410])
+        guard case .loaded = vm.candlesState else {
+            return XCTFail("Expected normalized fallback candle load to succeed")
+        }
+    }
+
+    @MainActor
+    func testChartCandleFailureKeepsLastSuccessfulCandlesAfterNormalizedFallbackSuccess() async {
+        let currentBucket = Int(Date().timeIntervalSince1970) / 3600 * 3600
+        let marketCoin = CoinCatalog.coin(
+            symbol: "USDT",
+            exchange: .korbit,
+            marketId: "USDT_KRW",
+            canonicalSymbol: "USDT"
+        )
+        let normalizedSnapshot = CandleSnapshot(
+            exchange: .korbit,
+            symbol: "USDT",
+            interval: "1h",
+            candles: [
+                CandleData(time: currentBucket - 7200, open: 1_390, high: 1_391, low: 1_389, close: 1_390, volume: 1),
+                CandleData(time: currentBucket - 3600, open: 1_400, high: 1_401, low: 1_399, close: 1_400, volume: 1),
+                CandleData(time: currentBucket, open: 1_410, high: 1_411, low: 1_409, close: 1_410, volume: 1)
+            ],
+            meta: .empty
+        )
+        let repository = SequencedCandleMarketRepository(
+            marketCatalogSnapshot: MarketCatalogSnapshot(
+                exchange: .korbit,
+                markets: [marketCoin],
+                supportedIntervalsBySymbol: [marketCoin.symbol: ["1h"]],
+                meta: .empty
+            ),
+            tickerSnapshot: MarketTickerSnapshot(
+                exchange: .korbit,
+                tickers: [
+                    marketCoin.symbol: TickerData(
+                        price: 1_410,
+                        change: 0.5,
+                        volume: 10_000,
+                        high24: 1_430,
+                        low24: 1_360
+                    )
+                ],
+                meta: .empty
+            ),
+            candleResultsBySymbol: [
+                "USDT_KRW": [
+                    .failure(NetworkServiceError.httpError(404, "market not found", .unknown)),
+                    .failure(NetworkServiceError.httpError(503, "temporarily unavailable", .maintenance))
+                ],
+                "USDT": [
+                    .success(normalizedSnapshot),
+                    .failure(NetworkServiceError.httpError(503, "temporarily unavailable", .maintenance))
+                ]
+            ]
+        )
+
+        let vm = CryptoViewModel(
+            marketRepository: repository,
+            tradingRepository: SpyTradingRepository(),
+            portfolioRepository: SpyPortfolioRepository(),
+            kimchiPremiumRepository: StubKimchiPremiumRepository(),
+            exchangeConnectionsRepository: SpyExchangeConnectionsRepository(),
+            authService: StubAuthenticationService(),
+            publicWebSocketService: NoOpPublicWebSocketService(),
+            privateWebSocketService: NoOpPrivateWebSocketService()
+        )
+
+        vm.updateExchange(.korbit, source: "test")
+        vm.selectedCoin = marketCoin
+        vm.chartPeriod = "1h"
+
+        await vm.loadChartData(forceRefresh: true, reason: "normalized_fallback_success")
+        XCTAssertEqual(vm.candles.map(\.close), [1_390, 1_400, 1_410])
+
+        await vm.loadChartData(forceRefresh: true, reason: "normalized_fallback_failure")
+
+        XCTAssertEqual(vm.candles.map(\.close), [1_390, 1_400, 1_410])
+        XCTAssertEqual(vm.candlesState.warningMessage, "최신 차트 데이터를 불러오지 못했어요. 마지막 데이터를 표시 중입니다.")
+        guard case .staleCache = vm.candlesState else {
+            return XCTFail("Expected stale candle cache after normalized fallback history exists")
+        }
+    }
+
+    @MainActor
     func testChartOrderbookFailureKeepsLastSuccessfulOrderbook() async {
         let firstBucket = Int(Date().timeIntervalSince1970) / 3600 * 3600 - 3600
         let candleSnapshot = CandleSnapshot(
@@ -4685,13 +5082,34 @@ final class ViewModelStateTests: XCTestCase {
     @MainActor
     func testVisibleSparklineFetchUsesMarketIdWhenAvailable() async {
         let repository = SpyMarketRepository()
-        repository.marketCatalogSnapshots[.upbit] = makeCatalogSnapshot(
+        let etherFiCoin = makeMarketCoin(
             exchange: .upbit,
-            entries: [(marketId: "KRW-ETHFI", symbol: "FI", imageURL: nil)]
+            marketId: "KRW-ETHFI",
+            symbol: "FI",
+            imageURL: nil
         )
-        repository.tickerSnapshots[.upbit] = makeTickerSnapshot(
+        repository.marketCatalogSnapshots[.upbit] = MarketCatalogSnapshot(
             exchange: .upbit,
-            entries: [(marketId: "KRW-ETHFI", symbol: "FI", price: 1_234, imageURL: nil, sparkline: [1_200])]
+            markets: [etherFiCoin],
+            supportedIntervalsBySymbol: [etherFiCoin.symbol: ["1m", "1h"]],
+            meta: .empty
+        )
+        repository.tickerSnapshots[.upbit] = MarketTickerSnapshot(
+            exchange: .upbit,
+            coins: [etherFiCoin],
+            tickers: [
+                etherFiCoin.symbol: TickerData(
+                    price: 1_234,
+                    change: 0.5,
+                    volume: 10_000,
+                    high24: 1_250,
+                    low24: 1_180,
+                    sparkline: [1_200],
+                    sparklinePointCount: 1,
+                    hasServerSparkline: true
+                )
+            ],
+            meta: .empty
         )
         repository.candleSnapshot = CandleSnapshot(
             exchange: .upbit,
@@ -4731,8 +5149,11 @@ final class ViewModelStateTests: XCTestCase {
 
         XCTAssertTrue(repository.fetchedCandles.contains(where: {
             $0.symbol == "KRW-ETHFI" && $0.exchange == .upbit
-        }))
-        XCTAssertFalse(repository.fetchedCandles.contains(where: { $0.symbol == "ETHFI" }))
+        }), "Fetched candles: \(repository.fetchedCandles)")
+        XCTAssertFalse(
+            repository.fetchedCandles.contains(where: { $0.symbol == "ETHFI" }),
+            "Fetched candles: \(repository.fetchedCandles)"
+        )
     }
 
     @MainActor
@@ -4888,5 +5309,122 @@ final class ViewModelStateTests: XCTestCase {
         try? await Task.sleep(for: .milliseconds(250))
 
         XCTAssertEqual(repository.fetchedCandles.count, 1)
+    }
+
+    @MainActor
+    func testOrderHeaderPriceUsesCanonicalMarketIdentityWhenSelectedCoinLacksMarketId() async {
+        let repository = SpyMarketRepository()
+        repository.marketCatalogSnapshots[.coinone] = makeCatalogSnapshot(
+            exchange: .coinone,
+            entries: [(marketId: "KRW-HIGH", symbol: "HIGH", imageURL: nil)]
+        )
+        repository.tickerSnapshots[.coinone] = makeTickerSnapshot(
+            exchange: .coinone,
+            entries: [(marketId: "KRW-HIGH", symbol: "HIGH", price: 321, imageURL: nil, sparkline: [300, 321])]
+        )
+
+        let vm = CryptoViewModel(
+            marketRepository: repository,
+            tradingRepository: SpyTradingRepository(),
+            portfolioRepository: SpyPortfolioRepository(),
+            kimchiPremiumRepository: StubKimchiPremiumRepository(),
+            exchangeConnectionsRepository: SpyExchangeConnectionsRepository(),
+            authService: StubAuthenticationService(),
+            publicWebSocketService: NoOpPublicWebSocketService(),
+            privateWebSocketService: NoOpPrivateWebSocketService()
+        )
+
+        vm.onAppear()
+        vm.updateExchange(.coinone, source: "order_header_test")
+        await waitUntil {
+            vm.displayedMarketRows.first?.marketIdentity == MarketIdentity(
+                exchange: .coinone,
+                marketId: "KRW-HIGH",
+                symbol: "HIGH"
+            )
+        }
+
+        vm.selectedCoin = CoinCatalog.coin(
+            symbol: "HIGH",
+            exchange: .coinone,
+            displayName: "HIGH",
+            englishName: "HIGH"
+        )
+
+        await waitUntil {
+            vm.orderHeaderPricePresentation.price == 321
+        }
+
+        XCTAssertEqual(
+            vm.orderHeaderPricePresentation.marketIdentity,
+            MarketIdentity(exchange: .coinone, marketId: "KRW-HIGH", symbol: "HIGH")
+        )
+        XCTAssertEqual(vm.orderHeaderPricePresentation.price, 321)
+        XCTAssertEqual(vm.orderHeaderPricePresentation.source, .marketSnapshot)
+        XCTAssertEqual(vm.currentTicker?.price, 321)
+    }
+
+    @MainActor
+    func testOrderHeaderPriceFallsBackToGraphWhenTickerIsMissing() async {
+        let repository = SpyMarketRepository()
+        let marketIdentity = MarketIdentity(exchange: .coinone, marketId: "KRW-HIGH", symbol: "HIGH")
+        let coin = CoinCatalog.coin(
+            symbol: "HIGH",
+            exchange: .coinone,
+            marketId: "KRW-HIGH",
+            displayName: "HIGH",
+            englishName: "HIGH"
+        )
+        repository.marketCatalogSnapshots[.coinone] = MarketCatalogSnapshot(
+            exchange: .coinone,
+            markets: [coin],
+            supportedIntervalsBySymbol: ["HIGH": ["1m", "1h"]],
+            meta: .empty
+        )
+        repository.tickerSnapshots[.coinone] = MarketTickerSnapshot(
+            exchange: .coinone,
+            coins: [coin],
+            tickers: [:],
+            meta: .empty
+        )
+
+        let vm = CryptoViewModel(
+            marketRepository: repository,
+            tradingRepository: SpyTradingRepository(),
+            portfolioRepository: SpyPortfolioRepository(),
+            kimchiPremiumRepository: StubKimchiPremiumRepository(),
+            exchangeConnectionsRepository: SpyExchangeConnectionsRepository(),
+            authService: StubAuthenticationService(),
+            publicWebSocketService: NoOpPublicWebSocketService(),
+            privateWebSocketService: NoOpPrivateWebSocketService()
+        )
+
+        vm.onAppear()
+        vm.updateExchange(.coinone, source: "order_header_graph_fallback")
+        await waitUntil {
+            vm.displayedMarketRows.first?.marketIdentity == marketIdentity
+        }
+
+        vm.seedSparklineSnapshotForTesting(
+            marketIdentity: marketIdentity,
+            interval: "1h",
+            points: [290, 305, 333],
+            fetchedAt: Date()
+        )
+        vm.selectedCoin = CoinCatalog.coin(
+            symbol: "HIGH",
+            exchange: .coinone,
+            displayName: "HIGH",
+            englishName: "HIGH"
+        )
+
+        await waitUntil {
+            vm.orderHeaderPricePresentation.price == 333
+        }
+
+        XCTAssertNil(vm.currentTicker)
+        XCTAssertEqual(vm.orderHeaderPricePresentation.price, 333)
+        XCTAssertEqual(vm.orderHeaderPricePresentation.source, .graphLatestPoint)
+        XCTAssertTrue(vm.orderHeaderPricePresentation.isFallbackApplied)
     }
 }

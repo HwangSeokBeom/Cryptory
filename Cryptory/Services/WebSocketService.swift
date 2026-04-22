@@ -559,6 +559,7 @@ final class PrivateWebSocketService: PrivateWebSocketServicing {
     }
     private var intentionalDisconnect = false
     private var reconnectWorkItem: DispatchWorkItem?
+    private var consecutiveFailureCount = 0
 
     init(
         session: URLSession = .shared,
@@ -596,6 +597,7 @@ final class PrivateWebSocketService: PrivateWebSocketServicing {
         reconnectWorkItem?.cancel()
         webSocketTask?.cancel(with: .goingAway, reason: nil)
         webSocketTask = nil
+        consecutiveFailureCount = 0
         connectionState = .disconnected
     }
 
@@ -654,6 +656,7 @@ final class PrivateWebSocketService: PrivateWebSocketServicing {
 
             switch result {
             case .success(let message):
+                self.consecutiveFailureCount = 0
                 self.connectionState = .connected
 
                 switch message {
@@ -676,7 +679,11 @@ final class PrivateWebSocketService: PrivateWebSocketServicing {
         }
     }
 
-    private func scheduleReconnect() {
+    private func privateReconnectDelay() -> TimeInterval {
+        min(pow(2.0, Double(max(consecutiveFailureCount - 1, 0))) * 2.0, 30.0)
+    }
+
+    private func scheduleReconnect(after delay: TimeInterval) {
         reconnectWorkItem?.cancel()
         webSocketTask = nil
 
@@ -685,7 +692,11 @@ final class PrivateWebSocketService: PrivateWebSocketServicing {
             self?.connect(accessToken: accessToken)
         }
         reconnectWorkItem = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: workItem)
+        AppLogger.debug(
+            .websocket,
+            "Private reconnect scheduled #\(instanceID) delayMs=\(Int(delay * 1000)) failureCount=\(consecutiveFailureCount)"
+        )
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
     }
 
     private func send(_ message: String) {
@@ -699,6 +710,7 @@ final class PrivateWebSocketService: PrivateWebSocketServicing {
             }
 
             if self?.connectionState != .connected {
+                self?.consecutiveFailureCount = 0
                 self?.connectionState = .connected
             }
         }
@@ -706,6 +718,7 @@ final class PrivateWebSocketService: PrivateWebSocketServicing {
 
     private func handleFailure(_ error: Error) {
         let failure = TransportFailureMapper.map(error)
+        consecutiveFailureCount += 1
         connectionState = .failed(failure.message)
         webSocketTask = nil
 
@@ -714,7 +727,7 @@ final class PrivateWebSocketService: PrivateWebSocketServicing {
             return
         }
 
-        scheduleReconnect()
+        scheduleReconnect(after: privateReconnectDelay())
     }
 
     private func subscriptionMessage(for subscription: PrivateTradingSubscription, action: String) -> String {

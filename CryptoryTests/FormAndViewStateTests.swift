@@ -1243,6 +1243,78 @@ final class FormAndViewStateTests: XCTestCase {
         XCTAssertTrue(MarketListDisplayMode.emphasis.configuration.showsSymbolImage)
     }
 
+    func testPortfolioOverviewGroupsSnapshotsByExchangeAndSymbol() {
+        let upbit = PortfolioSnapshot(
+            exchange: .upbit,
+            totalAsset: 10_000_000,
+            availableAsset: 8_000_000,
+            lockedAsset: 2_000_000,
+            cash: 1_000_000,
+            holdings: [
+                Holding(
+                    symbol: "BTC",
+                    totalQuantity: 0.1,
+                    availableQuantity: 0.08,
+                    lockedQuantity: 0.02,
+                    averageBuyPrice: 90_000_000,
+                    evaluationAmount: 9_000_000,
+                    profitLoss: 500_000,
+                    profitLossRate: 5.8
+                )
+            ],
+            fetchedAt: Date(),
+            isStale: false,
+            partialFailureMessage: nil
+        )
+        let bithumb = PortfolioSnapshot(
+            exchange: .bithumb,
+            totalAsset: 5_000_000,
+            availableAsset: 4_500_000,
+            lockedAsset: 500_000,
+            cash: 500_000,
+            holdings: [
+                Holding(
+                    symbol: "BTC",
+                    totalQuantity: 0.02,
+                    availableQuantity: 0.02,
+                    lockedQuantity: 0,
+                    averageBuyPrice: 92_000_000,
+                    evaluationAmount: 2_000_000,
+                    profitLoss: 100_000,
+                    profitLossRate: 5.2
+                ),
+                Holding(
+                    symbol: "ETH",
+                    totalQuantity: 1.0,
+                    availableQuantity: 1.0,
+                    lockedQuantity: 0,
+                    averageBuyPrice: 3_000_000,
+                    evaluationAmount: 2_500_000,
+                    profitLoss: 250_000,
+                    profitLossRate: 11.1
+                )
+            ],
+            fetchedAt: Date(),
+            isStale: false,
+            partialFailureMessage: nil
+        )
+
+        let overview = PortfolioOverviewViewState(
+            snapshots: [bithumb, upbit],
+            connectedAssetExchanges: [.upbit, .bithumb]
+        )
+
+        XCTAssertEqual(overview.summary.totalAsset, 15_000_000)
+        XCTAssertEqual(overview.summary.availableAsset, 12_500_000)
+        XCTAssertEqual(overview.summary.lockedAsset, 2_500_000)
+        XCTAssertEqual(overview.summary.cash, 1_500_000)
+        XCTAssertEqual(overview.summary.exchangeCount, 2)
+        XCTAssertEqual(overview.exchangeSections.map(\.exchange), [.upbit, .bithumb])
+        XCTAssertEqual(overview.exchangeSections.first?.holdings.first?.symbol, "BTC")
+        XCTAssertEqual(overview.topAssets.first?.symbol, "BTC")
+        XCTAssertEqual(overview.topAssets.first?.evaluationAmount, 11_000_000)
+    }
+
     private func kimchiRow(
         sourceExchange: Exchange = .upbit,
         isStale: Bool = false,

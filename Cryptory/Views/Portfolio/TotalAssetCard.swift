@@ -1,9 +1,38 @@
 import SwiftUI
 
 struct TotalAssetCard: View, Equatable {
-    let summary: PortfolioSummaryCardState
+    let title: String
+    let totalAsset: Double
+    let availableAsset: Double
+    let lockedAsset: Double
+    let cash: Double?
+    let totalPnl: Double
+    let totalPnlPercent: Double
+    let exchangeCount: Int?
 
-    private var isUp: Bool { summary.totalPnl >= 0 }
+    init(summary: PortfolioSummaryCardState) {
+        self.title = "총 보유자산"
+        self.totalAsset = summary.totalAsset
+        self.availableAsset = summary.availableAsset
+        self.lockedAsset = summary.lockedAsset
+        self.cash = nil
+        self.totalPnl = summary.totalPnl
+        self.totalPnlPercent = summary.totalPnlPercent
+        self.exchangeCount = nil
+    }
+
+    init(overview: PortfolioOverviewCardState) {
+        self.title = "총 보유자산"
+        self.totalAsset = overview.totalAsset
+        self.availableAsset = overview.availableAsset
+        self.lockedAsset = overview.lockedAsset
+        self.cash = overview.cash
+        self.totalPnl = overview.totalPnl
+        self.totalPnlPercent = overview.totalPnlPercent
+        self.exchangeCount = overview.exchangeCount
+    }
+
+    private var isUp: Bool { totalPnl >= 0 }
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
@@ -20,35 +49,67 @@ struct TotalAssetCard: View, Equatable {
                 .offset(x: 20, y: -20)
 
             VStack(alignment: .leading, spacing: 12) {
-                Text("총 보유자산")
-                    .font(.system(size: 12))
-                    .foregroundColor(.textMuted)
+                HStack(alignment: .center) {
+                    Text(title)
+                        .font(.system(size: 12))
+                        .foregroundColor(.textMuted)
 
-                Text("₩" + PriceFormatter.formatInteger(summary.totalAsset))
+                    Spacer()
+
+                    if let exchangeCount {
+                        Text("\(exchangeCount)개 거래소")
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundColor(.accent)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(
+                                Capsule(style: .continuous)
+                                    .fill(Color.accent.opacity(0.12))
+                            )
+                    }
+                }
+
+                Text("₩" + PriceFormatter.formatInteger(totalAsset))
                     .font(.mono(28, weight: .heavy))
                     .foregroundColor(.themeText)
+                    .minimumScaleFactor(0.72)
+                    .lineLimit(1)
 
-                HStack(spacing: 16) {
+                LazyVGrid(
+                    columns: [
+                        GridItem(.flexible(), alignment: .leading),
+                        GridItem(.flexible(), alignment: .leading)
+                    ],
+                    spacing: 12
+                ) {
                     statColumn(
                         label: "평가손익",
-                        value: "\(summary.totalPnl >= 0 ? "+" : "")₩" + PriceFormatter.formatInteger(summary.totalPnl),
+                        value: "\(totalPnl >= 0 ? "+" : "")₩" + PriceFormatter.formatInteger(totalPnl),
                         color: isUp ? .up : .down
                     )
                     statColumn(
                         label: "수익률",
-                        value: String(format: "%@%.2f%%", summary.totalPnlPercent >= 0 ? "+" : "", summary.totalPnlPercent),
+                        value: String(format: "%@%.2f%%", totalPnlPercent >= 0 ? "+" : "", totalPnlPercent),
                         color: isUp ? .up : .down
                     )
                     statColumn(
                         label: "가용자산",
-                        value: "₩" + PriceFormatter.formatInteger(summary.availableAsset),
+                        value: "₩" + PriceFormatter.formatInteger(availableAsset),
                         color: .accent
                     )
                     statColumn(
                         label: "잠금자산",
-                        value: "₩" + PriceFormatter.formatInteger(summary.lockedAsset),
+                        value: "₩" + PriceFormatter.formatInteger(lockedAsset),
                         color: .themeText
                     )
+
+                    if let cash {
+                        statColumn(
+                            label: "현금성",
+                            value: "₩" + PriceFormatter.formatInteger(cash),
+                            color: .themeText
+                        )
+                    }
                 }
             }
         }
@@ -76,8 +137,10 @@ struct TotalAssetCard: View, Equatable {
                 .font(.system(size: 10))
                 .foregroundColor(.textMuted)
             Text(value)
-                .font(.mono(14, weight: .bold))
+                .font(.mono(13, weight: .bold))
                 .foregroundColor(color)
+                .lineLimit(1)
+                .minimumScaleFactor(0.72)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }

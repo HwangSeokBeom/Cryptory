@@ -79,7 +79,12 @@ private struct KeyboardDismissGestureInstaller: UIViewRepresentable {
 
         func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
             guard let view = touch.view else { return true }
-            return !view.isInteractiveInputDescendant
+            let shouldReceive = !view.isInteractiveInputDescendant
+            AppLogger.debug(
+                .lifecycle,
+                "[OrderModeDebug] gesture_recognizer action=\(shouldReceive ? "background_tap_received" : "interactive_tap_ignored") viewClass=\(NSStringFromClass(type(of: view)))"
+            )
+            return shouldReceive
         }
     }
 }
@@ -87,7 +92,19 @@ private struct KeyboardDismissGestureInstaller: UIViewRepresentable {
 private extension UIView {
     var isInteractiveInputDescendant: Bool {
         sequence(first: self, next: \.superview).contains { view in
-            view is UIControl || view is UITextField || view is UITextView
+            if view is UIControl || view is UITextField || view is UITextView {
+                return true
+            }
+
+            let className = NSStringFromClass(type(of: view))
+            if className.contains("Button")
+                || className.contains("Segmented")
+                || className.contains("Control") {
+                return true
+            }
+
+            let traits = view.accessibilityTraits
+            return traits.contains(.button) || traits.contains(.link)
         }
     }
 }

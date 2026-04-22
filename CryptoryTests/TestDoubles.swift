@@ -301,6 +301,9 @@ final class SpyTradingRepository: TradingRepositoryProtocol {
     private(set) var createOrderCount = 0
     private(set) var cancelOrderCount = 0
 
+    var chanceError: Error?
+    var openOrdersError: Error?
+    var fillsError: Error?
     var chance = TradingChance(
         exchange: .upbit,
         symbol: "BTC",
@@ -336,6 +339,9 @@ final class SpyTradingRepository: TradingRepositoryProtocol {
 
     func fetchChance(session: AuthSession, exchange: Exchange, symbol: String) async throws -> TradingChance {
         fetchChanceCount += 1
+        if let chanceError {
+            throw chanceError
+        }
         return chance
     }
 
@@ -355,11 +361,17 @@ final class SpyTradingRepository: TradingRepositoryProtocol {
 
     func fetchOpenOrders(session: AuthSession, exchange: Exchange, symbol: String?) async throws -> OrderRecordsSnapshot {
         fetchOpenOrdersCount += 1
+        if let openOrdersError {
+            throw openOrdersError
+        }
         return openOrdersSnapshot
     }
 
     func fetchFills(session: AuthSession, exchange: Exchange, symbol: String?) async throws -> TradeFillsSnapshot {
         fetchFillsCount += 1
+        if let fillsError {
+            throw fillsError
+        }
         return fillsSnapshot
     }
 }

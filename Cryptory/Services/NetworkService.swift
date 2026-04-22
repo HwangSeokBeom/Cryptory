@@ -2440,16 +2440,199 @@ private struct PortfolioHistoryItemDTO {
 
     init?(dictionary: JSONObject, exchange: Exchange) {
         let occurredAt = parseDateValue(dictionary["occurredAt"] ?? dictionary["timestamp"] ?? dictionary["time"])
+        let type = dictionary.string(["type", "eventType", "kind"]) ?? "-"
+        let detail = dictionary.string(["detail", "description", "message"]) ?? ""
+        let status = dictionary.string(["status", "state"]) ?? "-"
+        let rawSourceLabel = dictionary.string([
+            "source",
+            "sourceType",
+            "source_type",
+            "eventSource",
+            "event_source",
+            "origin",
+            "scope"
+        ])
+        let symbol = dictionary.string(["symbol", "asset", "currency"])?.uppercased() ?? "-"
+        let eventSource = Self.resolveEventSource(
+            type: type,
+            detail: detail,
+            status: status,
+            rawSourceLabel: rawSourceLabel
+        )
+        let relatedEventIdentifier = dictionary.string([
+            "tradeId",
+            "trade_id",
+            "fillId",
+            "fill_id",
+            "orderId",
+            "order_id",
+            "transactionId",
+            "transaction_id",
+            "txId",
+            "tx_id",
+            "transferId",
+            "transfer_id",
+            "depositId",
+            "deposit_id",
+            "withdrawalId",
+            "withdrawal_id",
+            "executionId",
+            "execution_id"
+        ])
+        let hasUserScope = Self.hasUserScope(dictionary)
+        let hasExplicitVerification = dictionary.bool([
+            "isUserEvent",
+            "userEvent",
+            "verifiedUserEvent",
+            "verified",
+            "isVerified",
+            "isReal",
+            "real",
+            "actual"
+        ]) == true
+        let isMockLike = Self.isMockLike(
+            dictionary: dictionary,
+            type: type,
+            detail: detail,
+            status: status,
+            rawSourceLabel: rawSourceLabel
+        )
         self.entity = PortfolioHistoryItem(
             id: dictionary.string(["id", "historyId"]) ?? UUID().uuidString,
             exchange: exchange,
-            symbol: dictionary.string(["symbol", "asset", "currency"])?.uppercased() ?? "-",
-            type: dictionary.string(["type", "eventType", "kind"]) ?? "-",
+            symbol: symbol,
+            type: type,
             amount: dictionary.double(["amount", "quantity", "qty", "balance"]) ?? 0,
-            detail: dictionary.string(["detail", "description", "message"]) ?? "",
+            detail: detail,
             occurredAt: occurredAt,
-            status: dictionary.string(["status", "state"]) ?? "-"
+            status: status,
+            eventSource: eventSource,
+            rawSourceLabel: rawSourceLabel,
+            isVerifiedUserEvent: Self.isVerifiedUserEvent(
+                eventSource: eventSource,
+                symbol: symbol,
+                occurredAt: occurredAt,
+                hasUserScope: hasUserScope,
+                hasExplicitVerification: hasExplicitVerification,
+                relatedEventIdentifier: relatedEventIdentifier,
+                isMockLike: isMockLike
+            ),
+            isMockLike: isMockLike,
+            hasUserScope: hasUserScope,
+            relatedEventIdentifier: relatedEventIdentifier
         )
+    }
+
+    private static func resolveEventSource(
+        type: String,
+        detail: String,
+        status: String,
+        rawSourceLabel: String?
+    ) -> PortfolioHistoryEventSource {
+        let normalizedValue = [type, detail, status, rawSourceLabel]
+            .compactMap { $0?.lowercased() }
+            .joined(separator: " ")
+
+        if containsAny(["deposit", "입금"], within: normalizedValue) {
+            return .deposit
+        }
+        if containsAny(["withdraw", "withdrawal", "출금"], within: normalizedValue) {
+            return .withdrawal
+        }
+        if containsAny(["transfer", "movement", "이체"], within: normalizedValue) {
+            return .transfer
+        }
+        if containsAny(["trade", "fill", "filled", "execution", "executed", "buy", "sell", "체결", "매수", "매도"], within: normalizedValue) {
+            return .tradeFill
+        }
+        if containsAny(["realized", "balance change", "asset change", "pnl", "settlement", "정산", "잔고"], within: normalizedValue) {
+            return .realizedBalanceChange
+        }
+        return .unknown
+    }
+
+    private static func hasUserScope(_ dictionary: JSONObject) -> Bool {
+        dictionary.string([
+            "userId",
+            "user_id",
+            "accountId",
+            "account_id",
+            "walletId",
+            "wallet_id",
+            "portfolioId",
+            "portfolio_id",
+            "memberId",
+            "member_id",
+            "ownerId",
+            "owner_id"
+        ])?.isEmpty == false
+    }
+
+    private static func isVerifiedUserEvent(
+        eventSource: PortfolioHistoryEventSource,
+        symbol: String,
+        occurredAt: Date?,
+        hasUserScope: Bool,
+        hasExplicitVerification: Bool,
+        relatedEventIdentifier: String?,
+        isMockLike: Bool
+    ) -> Bool {
+        guard symbol != "-", occurredAt != nil, isMockLike == false else {
+            return false
+        }
+        if hasExplicitVerification || hasUserScope {
+            return true
+        }
+
+        switch eventSource {
+        case .tradeFill, .deposit, .withdrawal, .transfer:
+            return relatedEventIdentifier?.isEmpty == false
+        case .realizedBalanceChange, .unknown:
+            return false
+        }
+    }
+
+    private static func isMockLike(
+        dictionary: JSONObject,
+        type: String,
+        detail: String,
+        status: String,
+        rawSourceLabel: String?
+    ) -> Bool {
+        if dictionary.bool([
+            "isMock",
+            "mock",
+            "isSample",
+            "sample",
+            "isSeed",
+            "seed",
+            "isPlaceholder",
+            "placeholder",
+            "isSynthetic",
+            "synthetic",
+            "isGenerated",
+            "generated",
+            "isFallback",
+            "fallback",
+            "isDebug",
+            "debug",
+            "isTest",
+            "test"
+        ]) == true {
+            return true
+        }
+
+        let normalizedValue = [type, detail, status, rawSourceLabel]
+            .compactMap { $0?.lowercased() }
+            .joined(separator: " ")
+        return containsAny(
+            ["mock", "sample", "seed", "placeholder", "synthetic", "generated", "fallback", "debug", "test", "demo"],
+            within: normalizedValue
+        )
+    }
+
+    private static func containsAny(_ candidates: [String], within value: String) -> Bool {
+        candidates.contains { value.contains($0) }
     }
 }
 
