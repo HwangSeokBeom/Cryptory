@@ -205,6 +205,22 @@ private struct UITestAuthenticationService: AuthenticationServiceProtocol {
     func signUp(request: SignUpRequest) async throws -> AuthSession {
         AuthSession(accessToken: "ui-test-token", refreshToken: nil, userID: "ui-test", email: request.email)
     }
+
+    func signInWithGoogle(request: GoogleSocialLoginRequest) async throws -> AuthSession {
+        AuthSession(accessToken: "ui-test-token", refreshToken: nil, userID: "ui-test", email: request.email)
+    }
+
+    func signInWithApple(request: AppleSocialLoginRequest) async throws -> AuthSession {
+        AuthSession(accessToken: "ui-test-token", refreshToken: nil, userID: "ui-test", email: request.email)
+    }
+
+    func refreshSession(refreshToken: String) async throws -> AuthSession {
+        AuthSession(accessToken: "ui-test-token-refreshed", refreshToken: refreshToken, userID: "ui-test", email: nil)
+    }
+
+    func signOut(session: AuthSession) async throws {}
+
+    func deleteAccount(session: AuthSession) async throws {}
 }
 
 private final class UITestPublicWebSocketService: PublicWebSocketServicing {

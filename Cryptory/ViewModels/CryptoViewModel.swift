@@ -1,5 +1,7 @@
 import SwiftUI
 import Combine
+import AuthenticationServices
+import UIKit
 
 enum ScreenAccessRequirement: String, Equatable {
     case publicAccess = "public access"
@@ -97,6 +99,20 @@ enum OrderType: String, CaseIterable, Equatable, Hashable {
 enum NotifType {
     case success
     case error
+}
+
+enum SocialSignInMethod: String, Equatable {
+    case google
+    case apple
+
+    var title: String {
+        switch self {
+        case .google:
+            return "Google"
+        case .apple:
+            return "Apple"
+        }
+    }
 }
 
 private struct ChartRequestContext: Equatable {
@@ -774,6 +790,8 @@ final class CryptoViewModel: ObservableObject {
     @Published var signupAcceptedTerms = false
     @Published private(set) var signupServerError: SignUpServerErrorState?
     @Published private(set) var isSigningUp = false
+    @Published private(set) var activeSocialSignInMethod: SocialSignInMethod?
+    @Published private(set) var isDeletingAccount = false
 
     private(set) var isExchangeConnectionsPresented = false
 
@@ -784,6 +802,7 @@ final class CryptoViewModel: ObservableObject {
     private let exchangeConnectionsRepository: ExchangeConnectionsRepositoryProtocol
     private let authService: AuthenticationServiceProtocol
     private let authSessionStore: AuthSessionStoring?
+    private let googleSignInProvider: GoogleSignInProviding
     private let publicWebSocketService: PublicWebSocketServicing
     private let privateWebSocketService: PrivateWebSocketServicing
     private let marketSnapshotCacheStore: MarketSnapshotCacheStoring?
@@ -850,6 +869,8 @@ final class CryptoViewModel: ObservableObject {
     private var lastOrderModeTapAt: Date?
     private var lastOrderModeTappedSide: OrderSide?
     private var pendingPostLoginFeature: ProtectedFeature?
+    private var sessionRefreshTask: Task<AuthSession, Error>?
+    private var acceptedStaleAccessTokens: Set<String> = []
     private var marketsByExchange: [Exchange: [CoinInfo]] = [:]
     private var tickerSnapshotCoinsByExchange: [Exchange: [CoinInfo]] = [:]
     private var supportedIntervalsByExchangeAndMarketIdentity: [Exchange: [MarketIdentity: [String]]] = [:]
@@ -1017,6 +1038,7 @@ final class CryptoViewModel: ObservableObject {
         exchangeConnectionsRepository: ExchangeConnectionsRepositoryProtocol? = nil,
         authService: AuthenticationServiceProtocol? = nil,
         authSessionStore: AuthSessionStoring? = nil,
+        googleSignInProvider: GoogleSignInProviding? = nil,
         publicWebSocketService: PublicWebSocketServicing? = nil,
         privateWebSocketService: PrivateWebSocketServicing? = nil,
         marketSnapshotCacheStore: MarketSnapshotCacheStoring? = nil,
@@ -1031,6 +1053,7 @@ final class CryptoViewModel: ObservableObject {
         self.exchangeConnectionsRepository = exchangeConnectionsRepository ?? LiveExchangeConnectionsRepository()
         self.authService = authService ?? LiveAuthenticationService()
         self.authSessionStore = authSessionStore ?? Self.defaultAuthSessionStore()
+        self.googleSignInProvider = googleSignInProvider ?? LiveGoogleSignInProvider.shared
         self.publicWebSocketService = publicWebSocketService ?? WebSocketService()
         self.privateWebSocketService = privateWebSocketService ?? PrivateWebSocketService()
         self.marketSnapshotCacheStore = marketSnapshotCacheStore ?? Self.defaultMarketSnapshotCacheStore()
@@ -1038,8 +1061,12 @@ final class CryptoViewModel: ObservableObject {
         self.defaults = userDefaults
         self.marketDisplayMode = resolvedDisplayMode
         self.favCoins = Set(userDefaults.stringArray(forKey: favoritesKey) ?? [])
-        if let restoredSession = authSessionStore?.loadSession() {
+        AppLogger.debug(.auth, "[AuthFlowDebug] action=session_restore_started")
+        if let restoredSession = self.authSessionStore?.loadSession() {
             self.authState = .authenticated(restoredSession)
+            AppLogger.debug(.auth, "[AuthFlowDebug] action=session_restore_success hasRefreshToken=\(restoredSession.hasRefreshToken)")
+        } else {
+            AppLogger.debug(.auth, "[AuthFlowDebug] action=session_restore_failed reason=no_saved_session")
         }
 
         hydratePersistedMarketSnapshots()
@@ -1053,6 +1080,12 @@ final class CryptoViewModel: ObservableObject {
         refreshPublicStatusViewStates()
         refreshKimchiHeaderState(reason: "init")
         updateAuthGate()
+
+        if let restoredSession = self.authState.session {
+            Task {
+                await refreshRestoredSessionIfPossible(restoredSession)
+            }
+        }
     }
 
     deinit {
@@ -1183,6 +1216,14 @@ final class CryptoViewModel: ObservableObject {
             return true
         }
         return false
+    }
+
+    var isAuthenticationBusy: Bool {
+        isSigningIn || isSigningUp || activeSocialSignInMethod != nil
+    }
+
+    func isSigningIn(with method: SocialSignInMethod) -> Bool {
+        activeSocialSignInMethod == method
     }
 
     var shouldShowExchangeSelector: Bool {
@@ -4333,14 +4374,100 @@ final class CryptoViewModel: ObservableObject {
 
         authState = .signingIn
         loginErrorMessage = nil
+        AppLogger.debug(.auth, "[AuthFlowDebug] action=login_started method=email")
 
         do {
             let session = try await authService.signIn(email: loginEmail, password: loginPassword)
-            await completeAuthentication(with: session, source: "login_success")
+            AppLogger.debug(.auth, "[AuthFlowDebug] action=login_success method=email")
+            await completeAuthentication(with: session, source: "login_success", method: "email")
         } catch {
             authState = .guest
             loginErrorMessage = friendlyAuthErrorMessage(error, mode: .login)
         }
+    }
+
+    func submitGoogleSignIn(presenting viewController: UIViewController?) async {
+        guard !isAuthenticationBusy else { return }
+        guard let viewController else {
+            loginErrorMessage = "로그인 화면을 준비하지 못했어요. 잠시 후 다시 시도해주세요."
+            return
+        }
+
+        authState = .signingIn
+        activeSocialSignInMethod = .google
+        loginErrorMessage = nil
+        AppLogger.debug(.auth, "[AuthFlowDebug] action=login_started method=google")
+
+        do {
+            let credential = try await googleSignInProvider.signIn(presenting: viewController)
+            let session = try await authService.signInWithGoogle(
+                request: GoogleSocialLoginRequest(
+                    idToken: credential.idToken,
+                    email: credential.email,
+                    displayName: credential.displayName,
+                    deviceID: currentDeviceID
+                )
+            )
+            AppLogger.debug(.auth, "[AuthFlowDebug] action=login_success method=google")
+            await completeAuthentication(with: session, source: "google_login_success", method: "google")
+        } catch {
+            authState = .guest
+            if !isUserCancelledAuthentication(error) {
+                loginErrorMessage = friendlySocialAuthErrorMessage(error, method: .google)
+            }
+        }
+
+        activeSocialSignInMethod = nil
+    }
+
+    func submitAppleSignIn(result: Result<ASAuthorization, Error>) async {
+        guard !isAuthenticationBusy else { return }
+
+        authState = .signingIn
+        activeSocialSignInMethod = .apple
+        loginErrorMessage = nil
+        AppLogger.debug(.auth, "[AuthFlowDebug] action=login_started method=apple")
+
+        do {
+            let authorization = try result.get()
+            guard let credential = authorization.credential as? ASAuthorizationAppleIDCredential else {
+                throw NetworkServiceError.parsingFailed("애플 인증 정보를 확인할 수 없어요.")
+            }
+            guard let identityTokenData = credential.identityToken,
+                  let identityToken = String(data: identityTokenData, encoding: .utf8),
+                  identityToken.isEmpty == false else {
+                throw NetworkServiceError.parsingFailed("애플 identity token을 확인할 수 없어요.")
+            }
+
+            let authorizationCode = credential.authorizationCode.flatMap {
+                String(data: $0, encoding: .utf8)
+            }
+            let fullName = credential.fullName.map {
+                PersonNameComponentsFormatter.localizedString(from: $0, style: .medium, options: [])
+            }?.trimmedNonEmpty
+
+            let session = try await authService.signInWithApple(
+                request: AppleSocialLoginRequest(
+                    identityToken: identityToken,
+                    authorizationCode: authorizationCode,
+                    userIdentifier: credential.user,
+                    email: credential.email,
+                    fullName: fullName,
+                    givenName: credential.fullName?.givenName,
+                    familyName: credential.fullName?.familyName,
+                    deviceID: currentDeviceID
+                )
+            )
+            AppLogger.debug(.auth, "[AuthFlowDebug] action=login_success method=apple")
+            await completeAuthentication(with: session, source: "apple_login_success", method: "apple")
+        } catch {
+            authState = .guest
+            if !isUserCancelledAuthentication(error) {
+                loginErrorMessage = friendlySocialAuthErrorMessage(error, method: .apple)
+            }
+        }
+
+        activeSocialSignInMethod = nil
     }
 
     func submitSignUp() async {
@@ -4363,7 +4490,8 @@ final class CryptoViewModel: ObservableObject {
                     )
                 )
                 showNotification("회원가입이 완료되었어요", type: .success)
-                await completeAuthentication(with: session, source: "signup_success")
+                AppLogger.debug(.auth, "[AuthFlowDebug] action=login_success method=email_signup")
+                await completeAuthentication(with: session, source: "signup_success", method: "email_signup")
                 clearSignUpFields()
             } catch {
                 presentSignUpServerError(error)
@@ -4376,12 +4504,54 @@ final class CryptoViewModel: ObservableObject {
     }
 
     func logout() {
+        let sessionToRevoke = authState.session
+        if let sessionToRevoke {
+            let service = authService
+            Task { @MainActor in
+                try? await service.signOut(session: sessionToRevoke)
+            }
+        }
+        googleSignInProvider.signOut()
+        completeLocalSessionReset(reason: "logout")
+        AppLogger.debug(.auth, "[AuthFlowDebug] action=logout_completed")
+    }
+
+    @discardableResult
+    func deleteAccount() async -> Bool {
+        guard let session = authState.session else {
+            presentLogin(for: .portfolio)
+            return false
+        }
+        guard !isDeletingAccount else { return false }
+
+        isDeletingAccount = true
+        defer { isDeletingAccount = false }
+
+        do {
+            try await runAuthenticatedRequest(session: session) { [authService] refreshedSession in
+                try await authService.deleteAccount(session: refreshedSession)
+            }
+            googleSignInProvider.signOut()
+            completeLocalSessionReset(reason: "delete_account")
+            showNotification("계정이 삭제되었어요.", type: .success)
+            return true
+        } catch {
+            showNotification(friendlyAccountDeletionErrorMessage(error), type: .error)
+            return false
+        }
+    }
+
+    private func completeLocalSessionReset(reason: String) {
         authState = .guest
+        activeSocialSignInMethod = nil
         pendingPostLoginFeature = nil
         loginPassword = ""
         clearSignUpFields()
+        sessionRefreshTask?.cancel()
+        sessionRefreshTask = nil
+        acceptedStaleAccessTokens.removeAll()
         authSessionStore?.clearSession()
-        dismissExchangeConnectionsPresentation(reason: "logout")
+        dismissExchangeConnectionsPresentation(reason: reason)
         portfolioSummaryFetchTask?.cancel()
         portfolioSummaryFetchTask = nil
         portfolioSummaryFetchTaskContext = nil
@@ -4424,8 +4594,8 @@ final class CryptoViewModel: ObservableObject {
         lastAutomaticPrivateRequestAtByKey.removeAll()
         privateWebSocketService.disconnect()
         updateAuthGate()
-        updatePrivateSubscriptions(reason: "logout")
-        AppLogger.debug(.auth, "User session cleared")
+        updatePrivateSubscriptions(reason: reason)
+        AppLogger.debug(.auth, "User session cleared reason=\(reason)")
     }
 
     func openStatusAction() {
@@ -4450,13 +4620,18 @@ final class CryptoViewModel: ObservableObject {
         }
     }
 
-    private func completeAuthentication(with session: AuthSession, source: String) async {
+    private func completeAuthentication(with session: AuthSession, source: String, method: String) async {
         authState = .authenticated(session)
         authSessionStore?.saveSession(session)
+        AppLogger.debug(
+            .auth,
+            "[AuthFlowDebug] action=token_saved method=\(method) hasAccessToken=\(!session.accessToken.isEmpty) hasRefreshToken=\(session.hasRefreshToken)"
+        )
         AppLogger.debug(.auth, "Authentication success -> \(session.email ?? session.userID ?? "user")")
 
         loginPassword = ""
         loginErrorMessage = nil
+        activeSocialSignInMethod = nil
         clearSignUpServerError()
         isLoginPresented = false
         updateAuthGate()
@@ -4476,6 +4651,134 @@ final class CryptoViewModel: ObservableObject {
             requestExchangeConnectionsPresentation(reason: "post_login_route")
         }
         pendingPostLoginFeature = nil
+    }
+
+    private func runAuthenticatedRequest<Value>(
+        session: AuthSession,
+        operation: @escaping (AuthSession) async throws -> Value
+    ) async throws -> Value {
+        do {
+            return try await operation(session)
+        } catch {
+            guard shouldAttemptRefresh(after: error) else {
+                throw error
+            }
+
+            let refreshedSession = try await refreshAuthenticatedSession(
+                matching: session,
+                reason: "authenticated_request_401"
+            )
+            return try await operation(refreshedSession)
+        }
+    }
+
+    private func refreshRestoredSessionIfPossible(_ session: AuthSession) async {
+        guard session.hasRefreshToken else { return }
+
+        do {
+            _ = try await refreshAuthenticatedSession(matching: session, reason: "session_restore")
+        } catch {
+            if shouldClearSessionAfterRefreshFailure(error) {
+                expireSessionAfterRefreshFailure(reason: "session_restore_failed")
+            } else {
+                AppLogger.debug(
+                    .auth,
+                    "[AuthFlowDebug] action=session_restore_failed reason=\(error.localizedDescription)"
+                )
+            }
+        }
+    }
+
+    private func refreshAuthenticatedSession(matching session: AuthSession, reason: String) async throws -> AuthSession {
+        guard let currentSession = authState.session else {
+            AppLogger.debug(.auth, "[AuthFlowDebug] action=refresh_failed reason=no_current_session")
+            throw NetworkServiceError.authenticationRequired
+        }
+
+        guard currentSession.accessToken == session.accessToken else {
+            return currentSession
+        }
+
+        guard let refreshToken = currentSession.refreshToken?.trimmedNonEmpty else {
+            AppLogger.debug(.auth, "[AuthFlowDebug] action=refresh_failed reason=missing_refresh_token")
+            expireSessionAfterRefreshFailure(reason: "missing_refresh_token")
+            throw NetworkServiceError.authenticationRequired
+        }
+
+        if let sessionRefreshTask {
+            return try await sessionRefreshTask.value
+        }
+
+        AppLogger.debug(.auth, "[AuthFlowDebug] action=refresh_started reason=\(reason)")
+        let service = authService
+        let task = Task<AuthSession, Error> { @MainActor in
+            try await service.refreshSession(refreshToken: refreshToken)
+        }
+        sessionRefreshTask = task
+
+        do {
+            let refreshedSession = try await task.value
+                .replacingRefreshTokenIfMissing(with: currentSession.refreshToken)
+            sessionRefreshTask = nil
+            acceptedStaleAccessTokens.insert(currentSession.accessToken)
+            authState = .authenticated(refreshedSession)
+            authSessionStore?.saveSession(refreshedSession)
+            updateAuthGate()
+            connectPrivateTradingFeedIfNeeded(reason: "refresh_success")
+            AppLogger.debug(.auth, "[AuthFlowDebug] action=refresh_success")
+            AppLogger.debug(
+                .auth,
+                "[AuthFlowDebug] action=token_saved method=refresh hasAccessToken=\(!refreshedSession.accessToken.isEmpty) hasRefreshToken=\(refreshedSession.hasRefreshToken)"
+            )
+            return refreshedSession
+        } catch {
+            sessionRefreshTask = nil
+            AppLogger.debug(.auth, "[AuthFlowDebug] action=refresh_failed reason=\(error.localizedDescription)")
+            if shouldClearSessionAfterRefreshFailure(error) {
+                expireSessionAfterRefreshFailure(reason: error.localizedDescription)
+            }
+            throw error
+        }
+    }
+
+    private func shouldAttemptRefresh(after error: Error) -> Bool {
+        guard let networkError = error as? NetworkServiceError else {
+            return false
+        }
+
+        switch networkError {
+        case .authenticationRequired:
+            return true
+        case .httpError(let statusCode, _, let category):
+            return statusCode == 401 || category == .authenticationFailed
+        case .transportError(_, let category):
+            return category == .authenticationFailed
+        case .invalidURL, .invalidResponse, .parsingFailed:
+            return false
+        }
+    }
+
+    private func shouldClearSessionAfterRefreshFailure(_ error: Error) -> Bool {
+        guard let networkError = error as? NetworkServiceError else {
+            return false
+        }
+
+        switch networkError {
+        case .authenticationRequired:
+            return true
+        case .httpError(let statusCode, _, let category):
+            return statusCode == 400 || statusCode == 401 || statusCode == 403 || category == .authenticationFailed
+        case .transportError, .invalidURL, .invalidResponse, .parsingFailed:
+            return false
+        }
+    }
+
+    private func expireSessionAfterRefreshFailure(reason: String) {
+        completeLocalSessionReset(reason: "refresh_failed")
+        AppLogger.debug(.auth, "[AuthFlowDebug] action=session_restore_failed reason=\(reason)")
+        if let feature = activeTab.protectedFeature {
+            presentLogin(for: feature)
+        }
     }
 
     private func requestExchangeConnectionsPresentation(reason: String) {
@@ -4645,6 +4948,62 @@ final class CryptoViewModel: ObservableObject {
             : rawMessage
     }
 
+    private func friendlySocialAuthErrorMessage(_ error: Error, method: SocialSignInMethod) -> String {
+        if let networkError = error as? NetworkServiceError,
+           case .httpError(let statusCode, _, _) = networkError {
+            switch statusCode {
+            case 400, 401, 403:
+                return "\(method.title) 인증 정보를 확인하지 못했어요. 다시 시도해주세요."
+            case 404:
+                return "\(method.title) 로그인 API 경로를 찾지 못했어요. 앱과 서버 설정을 확인해주세요."
+            case 500...599:
+                return "일시적인 오류예요. 잠시 후 다시 시도해주세요."
+            default:
+                break
+            }
+        }
+
+        let message = friendlyAuthErrorMessage(error, mode: .login)
+        if message.isEmpty {
+            return "\(method.title) 로그인에 실패했어요."
+        }
+        return message
+    }
+
+    private func friendlyAccountDeletionErrorMessage(_ error: Error) -> String {
+        if let networkError = error as? NetworkServiceError,
+           case .httpError(let statusCode, _, _) = networkError {
+            switch statusCode {
+            case 401, 403:
+                return "로그인 상태를 다시 확인한 뒤 탈퇴를 진행해주세요."
+            case 404, 501:
+                return "앱 내 탈퇴 API가 아직 준비되지 않았어요. 계정삭제 안내 페이지를 확인해주세요."
+            case 500...599:
+                return "일시적인 오류예요. 잠시 후 다시 시도해주세요."
+            default:
+                break
+            }
+        }
+
+        let rawMessage = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+        return rawMessage.isEmpty ? "회원탈퇴를 완료하지 못했어요. 잠시 후 다시 시도해주세요." : rawMessage
+    }
+
+    private func isUserCancelledAuthentication(_ error: Error) -> Bool {
+        let nsError = error as NSError
+        if nsError.domain == ASAuthorizationError.errorDomain,
+           nsError.code == ASAuthorizationError.canceled.rawValue {
+            return true
+        }
+
+        let message = nsError.localizedDescription.lowercased()
+        return message.contains("cancel") || message.contains("취소")
+    }
+
+    private var currentDeviceID: String? {
+        UIDevice.current.identifierForVendor?.uuidString
+    }
+
     private func friendlyHTTPAuthErrorMessage(
         statusCode: Int,
         serverMessage: String,
@@ -4740,15 +5099,17 @@ final class CryptoViewModel: ObservableObject {
         }
 
         do {
-            _ = try await exchangeConnectionsRepository.createConnection(
-                session: session,
-                request: ExchangeConnectionUpsertRequest(
-                    exchange: exchange,
-                    permission: permission,
-                    nickname: nickname.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty,
-                    credentials: credentials.filter { !$0.value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            _ = try await runAuthenticatedRequest(session: session) { [exchangeConnectionsRepository] refreshedSession in
+                try await exchangeConnectionsRepository.createConnection(
+                    session: refreshedSession,
+                    request: ExchangeConnectionUpsertRequest(
+                        exchange: exchange,
+                        permission: permission,
+                        nickname: nickname.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty,
+                        credentials: credentials.filter { !$0.value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+                    )
                 )
-            )
+            }
             showNotification("거래소 연결을 추가했어요", type: .success)
             await loadExchangeConnections()
             return true
@@ -4787,15 +5148,17 @@ final class CryptoViewModel: ObservableObject {
         }
 
         do {
-            _ = try await exchangeConnectionsRepository.updateConnection(
-                session: session,
-                request: ExchangeConnectionUpdateRequest(
-                    id: connection.id,
-                    permission: permission,
-                    nickname: nickname.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty,
-                    credentials: filteredCredentials
+            _ = try await runAuthenticatedRequest(session: session) { [exchangeConnectionsRepository] refreshedSession in
+                try await exchangeConnectionsRepository.updateConnection(
+                    session: refreshedSession,
+                    request: ExchangeConnectionUpdateRequest(
+                        id: connection.id,
+                        permission: permission,
+                        nickname: nickname.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty,
+                        credentials: filteredCredentials
+                    )
                 )
-            )
+            }
             showNotification("거래소 연결을 수정했어요", type: .success)
             await loadExchangeConnections()
             return true
@@ -4813,7 +5176,9 @@ final class CryptoViewModel: ObservableObject {
         }
 
         do {
-            try await exchangeConnectionsRepository.deleteConnection(session: session, connectionID: id)
+            try await runAuthenticatedRequest(session: session) { [exchangeConnectionsRepository] refreshedSession in
+                try await exchangeConnectionsRepository.deleteConnection(session: refreshedSession, connectionID: id)
+            }
             showNotification("거래소 연결을 삭제했어요", type: .success)
             await loadExchangeConnections()
             return true
@@ -5288,7 +5653,9 @@ final class CryptoViewModel: ObservableObject {
         selectedOrderDetailState = .loading
 
         do {
-            let detail = try await tradingRepository.fetchOrderDetail(session: session, exchange: selectedExchange, orderID: orderID)
+            let detail = try await runAuthenticatedRequest(session: session) { [tradingRepository, selectedExchange] refreshedSession in
+                try await tradingRepository.fetchOrderDetail(session: refreshedSession, exchange: selectedExchange, orderID: orderID)
+            }
             selectedOrderDetailState = .loaded(detail)
         } catch {
             selectedOrderDetailState = .failed(error.localizedDescription)
@@ -5302,7 +5669,9 @@ final class CryptoViewModel: ObservableObject {
         }
 
         do {
-            try await tradingRepository.cancelOrder(session: session, exchange: selectedExchange, orderID: order.id)
+            try await runAuthenticatedRequest(session: session) { [tradingRepository, selectedExchange] refreshedSession in
+                try await tradingRepository.cancelOrder(session: refreshedSession, exchange: selectedExchange, orderID: order.id)
+            }
             showNotification("주문을 취소했어요", type: .success)
             await loadOrders(reason: "order_cancel_refresh")
             await loadPortfolio()
@@ -6209,17 +6578,19 @@ final class CryptoViewModel: ObservableObject {
         isSubmittingOrder = true
 
         do {
-            _ = try await tradingRepository.createOrder(
-                session: session,
-                request: TradingOrderCreateRequest(
-                    symbol: coin.symbol,
-                    exchange: selectedExchange,
-                    side: orderSide,
-                    type: orderType,
-                    price: price,
-                    quantity: quantity
+            _ = try await runAuthenticatedRequest(session: session) { [tradingRepository, selectedExchange, orderSide, orderType] refreshedSession in
+                try await tradingRepository.createOrder(
+                    session: refreshedSession,
+                    request: TradingOrderCreateRequest(
+                        symbol: coin.symbol,
+                        exchange: selectedExchange,
+                        side: orderSide,
+                        type: orderType,
+                        price: price,
+                        quantity: quantity
+                    )
                 )
-            )
+            }
 
             let generator = UIImpactFeedbackGenerator(style: .medium)
             generator.impactOccurred()
@@ -14139,8 +14510,10 @@ final class CryptoViewModel: ObservableObject {
 
         var warnings: [String] = []
         for exchange in exchanges {
+            let isSameSession = authState.session?.accessToken == session.accessToken
+                || acceptedStaleAccessTokens.contains(session.accessToken)
             guard activeTab == .portfolio,
-                  authState.session?.accessToken == session.accessToken else {
+                  isSameSession else {
                 AppLogger.debug(
                     .lifecycle,
                     "[PortfolioSectionDebug] render_reason=stale_connected_summary_ignored exchange=\(exchange.rawValue)"
@@ -14149,7 +14522,9 @@ final class CryptoViewModel: ObservableObject {
             }
 
             do {
-                let snapshot = try await portfolioRepository.fetchSummary(session: session, exchange: exchange)
+                let snapshot = try await runAuthenticatedRequest(session: session) { [portfolioRepository] refreshedSession in
+                    try await portfolioRepository.fetchSummary(session: refreshedSession, exchange: exchange)
+                }
                 portfolioSnapshotsByExchange[exchange] = snapshot
                 if let partialFailureMessage = snapshot.partialFailureMessage {
                     warnings.append(partialFailureMessage)
@@ -14212,8 +14587,10 @@ final class CryptoViewModel: ObservableObject {
 
         portfolioSummaryFetchTask?.cancel()
         let repository = portfolioRepository
-        let task = Task {
-            try await repository.fetchSummary(session: session, exchange: context.exchange)
+        let task = Task { @MainActor in
+            try await self.runAuthenticatedRequest(session: session) { refreshedSession in
+                try await repository.fetchSummary(session: refreshedSession, exchange: context.exchange)
+            }
         }
         portfolioSummaryFetchTask = task
         portfolioSummaryFetchTaskContext = context
@@ -14235,8 +14612,10 @@ final class CryptoViewModel: ObservableObject {
 
         portfolioHistoryFetchTask?.cancel()
         let repository = portfolioRepository
-        let task = Task {
-            try await repository.fetchHistory(session: session, exchange: context.exchange)
+        let task = Task { @MainActor in
+            try await self.runAuthenticatedRequest(session: session) { refreshedSession in
+                try await repository.fetchHistory(session: refreshedSession, exchange: context.exchange)
+            }
         }
         portfolioHistoryFetchTask = task
         portfolioHistoryFetchTaskContext = context
@@ -14314,12 +14693,14 @@ final class CryptoViewModel: ObservableObject {
 
         tradingChanceFetchTask?.cancel()
         let repository = tradingRepository
-        let task = Task {
-            try await repository.fetchChance(
-                session: session,
-                exchange: context.exchange,
-                symbol: context.symbol
-            )
+        let task = Task { @MainActor in
+            try await self.runAuthenticatedRequest(session: session) { refreshedSession in
+                try await repository.fetchChance(
+                    session: refreshedSession,
+                    exchange: context.exchange,
+                    symbol: context.symbol
+                )
+            }
         }
         tradingChanceFetchTask = task
         tradingChanceFetchTaskContext = context
@@ -14341,12 +14722,14 @@ final class CryptoViewModel: ObservableObject {
 
         tradingOpenOrdersFetchTask?.cancel()
         let repository = tradingRepository
-        let task = Task {
-            try await repository.fetchOpenOrders(
-                session: session,
-                exchange: context.exchange,
-                symbol: context.symbol
-            )
+        let task = Task { @MainActor in
+            try await self.runAuthenticatedRequest(session: session) { refreshedSession in
+                try await repository.fetchOpenOrders(
+                    session: refreshedSession,
+                    exchange: context.exchange,
+                    symbol: context.symbol
+                )
+            }
         }
         tradingOpenOrdersFetchTask = task
         tradingOpenOrdersFetchTaskContext = context
@@ -14368,12 +14751,14 @@ final class CryptoViewModel: ObservableObject {
 
         tradingFillsFetchTask?.cancel()
         let repository = tradingRepository
-        let task = Task {
-            try await repository.fetchFills(
-                session: session,
-                exchange: context.exchange,
-                symbol: context.symbol
-            )
+        let task = Task { @MainActor in
+            try await self.runAuthenticatedRequest(session: session) { refreshedSession in
+                try await repository.fetchFills(
+                    session: refreshedSession,
+                    exchange: context.exchange,
+                    symbol: context.symbol
+                )
+            }
         }
         tradingFillsFetchTask = task
         tradingFillsFetchTaskContext = context
@@ -14392,8 +14777,10 @@ final class CryptoViewModel: ObservableObject {
 
         exchangeConnectionsFetchTask?.cancel()
         let repository = exchangeConnectionsRepository
-        let task = Task {
-            try await repository.fetchConnections(session: session)
+        let task = Task { @MainActor in
+            try await self.runAuthenticatedRequest(session: session) { refreshedSession in
+                try await repository.fetchConnections(session: refreshedSession)
+            }
         }
         exchangeConnectionsFetchTask = task
         exchangeConnectionsFetchTaskContext = context
@@ -14405,7 +14792,7 @@ final class CryptoViewModel: ObservableObject {
             return false
         }
 
-        guard session.accessToken == context.accessToken else {
+        guard session.accessToken == context.accessToken || acceptedStaleAccessTokens.contains(context.accessToken) else {
             return false
         }
 
@@ -14423,7 +14810,7 @@ final class CryptoViewModel: ObservableObject {
 
         return selectedExchange == context.exchange
             && selectedCoin?.symbol == context.symbol
-            && session.accessToken == context.accessToken
+            && (session.accessToken == context.accessToken || acceptedStaleAccessTokens.contains(context.accessToken))
     }
 
     private func shouldApplyExchangeConnectionsLoad(for context: ExchangeConnectionsLoadContext) -> Bool {
@@ -14431,7 +14818,7 @@ final class CryptoViewModel: ObservableObject {
             return false
         }
 
-        return session.accessToken == context.accessToken
+        return session.accessToken == context.accessToken || acceptedStaleAccessTokens.contains(context.accessToken)
     }
 
     private func canRetainPortfolioSummary(for exchange: Exchange) -> Bool {

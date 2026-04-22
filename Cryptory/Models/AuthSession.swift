@@ -6,6 +6,19 @@ struct AuthSession: Codable, Equatable {
     let refreshToken: String?
     let userID: String?
     let email: String?
+
+    var hasRefreshToken: Bool {
+        refreshToken?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+    }
+
+    func replacingRefreshTokenIfMissing(with fallbackRefreshToken: String?) -> AuthSession {
+        AuthSession(
+            accessToken: accessToken,
+            refreshToken: refreshToken?.authTrimmedNonEmpty ?? fallbackRefreshToken?.authTrimmedNonEmpty,
+            userID: userID,
+            email: email
+        )
+    }
 }
 
 enum AuthFlowMode: String, CaseIterable, Equatable {
@@ -30,49 +43,127 @@ protocol AuthSessionStoring {
 
 struct KeychainAuthSessionStore: AuthSessionStoring {
     private let service = "com.cryptory.auth.session"
-    private let account = "default"
+    private let legacyAccount = "default"
+    private let accessTokenAccount = "accessToken"
+    private let refreshTokenAccount = "refreshToken"
+    private let metadataAccount = "metadata"
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
 
     func loadSession() -> AuthSession? {
-        var query = baseQuery
+        if let accessToken = loadString(account: accessTokenAccount) {
+            let metadata = loadMetadata()
+            return AuthSession(
+                accessToken: accessToken,
+                refreshToken: loadString(account: refreshTokenAccount),
+                userID: metadata?.userID,
+                email: metadata?.email
+            )
+        }
+
+        if let legacySession = loadLegacySession() {
+            saveSession(legacySession)
+            delete(account: legacyAccount)
+            return legacySession
+        }
+
+        return nil
+    }
+
+    func saveSession(_ session: AuthSession) {
+        saveString(session.accessToken, account: accessTokenAccount)
+
+        if let refreshToken = session.refreshToken?.authTrimmedNonEmpty {
+            saveString(refreshToken, account: refreshTokenAccount)
+        } else {
+            delete(account: refreshTokenAccount)
+        }
+
+        saveMetadata(AuthSessionMetadata(userID: session.userID, email: session.email))
+        delete(account: legacyAccount)
+    }
+
+    func clearSession() {
+        [
+            legacyAccount,
+            accessTokenAccount,
+            refreshTokenAccount,
+            metadataAccount
+        ].forEach(delete(account:))
+    }
+
+    private func loadLegacySession() -> AuthSession? {
+        guard let data = loadData(account: legacyAccount) else { return nil }
+        return try? decoder.decode(AuthSession.self, from: data)
+    }
+
+    private func loadMetadata() -> AuthSessionMetadata? {
+        guard let data = loadData(account: metadataAccount) else { return nil }
+        return try? decoder.decode(AuthSessionMetadata.self, from: data)
+    }
+
+    private func saveMetadata(_ metadata: AuthSessionMetadata) {
+        guard let data = try? encoder.encode(metadata) else { return }
+        saveData(data, account: metadataAccount)
+    }
+
+    private func loadString(account: String) -> String? {
+        guard let data = loadData(account: account),
+              let value = String(data: data, encoding: .utf8),
+              let trimmedValue = value.authTrimmedNonEmpty else {
+            return nil
+        }
+        return trimmedValue
+    }
+
+    private func saveString(_ value: String, account: String) {
+        saveData(Data(value.utf8), account: account)
+    }
+
+    private func loadData(account: String) -> Data? {
+        var query = baseQuery(account: account)
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
 
         var item: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &item)
-        guard status == errSecSuccess,
-              let data = item as? Data else {
-            return nil
-        }
-        return try? decoder.decode(AuthSession.self, from: data)
+        guard status == errSecSuccess else { return nil }
+        return item as? Data
     }
 
-    func saveSession(_ session: AuthSession) {
-        guard let data = try? encoder.encode(session) else {
-            return
-        }
-
+    private func saveData(_ data: Data, account: String) {
         let attributes = [kSecValueData as String: data]
-        let status = SecItemUpdate(baseQuery as CFDictionary, attributes as CFDictionary)
+        let status = SecItemUpdate(baseQuery(account: account) as CFDictionary, attributes as CFDictionary)
         if status == errSecItemNotFound {
-            var insertQuery = baseQuery
+            var insertQuery = baseQuery(account: account)
             insertQuery[kSecValueData as String] = data
             insertQuery[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
             SecItemAdd(insertQuery as CFDictionary, nil)
         }
     }
 
-    func clearSession() {
-        SecItemDelete(baseQuery as CFDictionary)
+    private func delete(account: String) {
+        SecItemDelete(baseQuery(account: account) as CFDictionary)
     }
 
-    private var baseQuery: [String: Any] {
+    private func baseQuery(account: String) -> [String: Any] {
         [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account
         ]
+    }
+}
+
+private struct AuthSessionMetadata: Codable, Equatable {
+    let userID: String?
+    let email: String?
+}
+
+private extension String {
+    var authTrimmedNonEmpty: String? {
+        let trimmedValue = trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmedValue.isEmpty ? nil : trimmedValue
     }
 }
 

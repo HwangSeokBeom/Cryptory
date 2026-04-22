@@ -152,6 +152,9 @@ struct ContentView: View {
         .onChange(of: scenePhase) { _, newValue in
             vm.onScenePhaseChanged(newValue)
         }
+        .onOpenURL { url in
+            _ = LiveGoogleSignInProvider.shared.handleOpenURL(url)
+        }
         .onChange(of: isExchangeConnectionsSheetPresented) { _, isPresented in
             vm.syncExchangeConnectionsPresentationState(
                 isPresented,

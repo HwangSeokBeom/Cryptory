@@ -54,6 +54,40 @@ enum AppExternalLink: String, CaseIterable, Identifiable {
     var analyticsName: String {
         "external_link_\(rawValue)"
     }
+
+    var policyDebugName: String {
+        switch self {
+        case .home:
+            return "homepage"
+        case .privacyPolicy:
+            return "privacy"
+        case .termsOfService:
+            return "terms"
+        case .support:
+            return "support"
+        case .deleteAccount:
+            return "delete_account"
+        case .investmentDisclaimer:
+            return "disclaimer"
+        }
+    }
+
+    var systemImageName: String {
+        switch self {
+        case .home:
+            return "house"
+        case .privacyPolicy:
+            return "hand.raised"
+        case .termsOfService:
+            return "doc.text"
+        case .support:
+            return "questionmark.circle"
+        case .deleteAccount:
+            return "person.crop.circle.badge.minus"
+        case .investmentDisclaimer:
+            return "exclamationmark.triangle"
+        }
+    }
 }
 
 struct SafariDestination: Identifiable, Equatable {

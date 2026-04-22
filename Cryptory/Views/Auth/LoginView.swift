@@ -1,4 +1,6 @@
 import SwiftUI
+import AuthenticationServices
+import UIKit
 
 struct LoginView: View {
     @ObservedObject var vm: CryptoViewModel
@@ -15,6 +17,15 @@ struct LoginView: View {
         case signupPasswordConfirm
     }
 
+    private let footerLinks: [AppExternalLink] = [
+        .termsOfService,
+        .privacyPolicy,
+        .support,
+        .deleteAccount,
+        .investmentDisclaimer,
+        .home
+    ]
+
     private var validation: SignUpFormValidationResult {
         vm.signUpValidation
     }
@@ -25,6 +36,7 @@ struct LoginView: View {
 
             ScrollView(showsIndicators: false) {
                 VStack(spacing: 20) {
+                    sheetGrabber
                     modeSelector
                     heroCopy
 
@@ -56,6 +68,14 @@ struct LoginView: View {
         .onChange(of: vm.signupEmail) { _, _ in clearSignUpServerErrorIfNeeded() }
         .onChange(of: vm.signupPassword) { _, _ in clearSignUpServerErrorIfNeeded() }
         .onChange(of: vm.signupPasswordConfirm) { _, _ in clearSignUpServerErrorIfNeeded() }
+    }
+
+    private var sheetGrabber: some View {
+        Capsule()
+            .fill(Color.themeBorder)
+            .frame(width: 42, height: 5)
+            .padding(.top, 2)
+            .accessibilityHidden(true)
     }
 
     private var modeSelector: some View {
@@ -152,6 +172,8 @@ struct LoginView: View {
                     }
                 }
             )
+
+            socialAuthSection
         }
     }
 
@@ -246,6 +268,115 @@ struct LoginView: View {
                     }
                 }
             )
+
+            socialAuthSection
+        }
+    }
+
+    private var socialAuthSection: some View {
+        VStack(spacing: 12) {
+            dividerLabel("또는")
+
+            socialButton(
+                title: vm.isSigningIn(with: .google) ? "Google 로그인 중..." : "Google로 계속하기",
+                systemImage: "g.circle.fill",
+                isLoading: vm.isSigningIn(with: .google),
+                action: {
+                    Task {
+                        await vm.submitGoogleSignIn(presenting: UIApplication.shared.cryptoryTopViewController())
+                    }
+                }
+            )
+
+            appleSignInButton
+        }
+        .padding(.top, 2)
+    }
+
+    private func dividerLabel(_ title: String) -> some View {
+        HStack(spacing: 12) {
+            Rectangle()
+                .fill(Color.themeBorder)
+                .frame(height: 1)
+
+            Text(title)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(.textMuted)
+
+            Rectangle()
+                .fill(Color.themeBorder)
+                .frame(height: 1)
+        }
+    }
+
+    private func socialButton(
+        title: String,
+        systemImage: String,
+        isLoading: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                if isLoading {
+                    ProgressView()
+                        .progressViewStyle(.circular)
+                        .tint(.themeText)
+                } else {
+                    Image(systemName: systemImage)
+                        .font(.system(size: 18, weight: .semibold))
+                }
+
+                Text(title)
+                    .font(.system(size: 15, weight: .bold))
+            }
+            .foregroundColor(.themeText)
+            .frame(maxWidth: .infinity)
+            .frame(minHeight: 50)
+            .background(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(Color.bgSecondary)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .stroke(Color.themeBorder, lineWidth: 1)
+                    )
+            )
+        }
+        .buttonStyle(AuthPressableButtonStyle())
+        .disabled(vm.isAuthenticationBusy)
+    }
+
+    private var appleSignInButton: some View {
+        ZStack {
+            SignInWithAppleButton(.continue) { request in
+                request.requestedScopes = [.fullName, .email]
+            } onCompletion: { result in
+                Task {
+                    await vm.submitAppleSignIn(result: result)
+                }
+            }
+            .signInWithAppleButtonStyle(.white)
+            .frame(height: 50)
+            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .allowsHitTesting(!vm.isAuthenticationBusy)
+            .opacity(vm.isAuthenticationBusy && !vm.isSigningIn(with: .apple) ? 0.55 : 1)
+
+            if vm.isSigningIn(with: .apple) {
+                HStack(spacing: 10) {
+                    ProgressView()
+                        .progressViewStyle(.circular)
+                        .tint(.black)
+
+                    Text("Apple 로그인 중...")
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundColor(.black)
+                }
+                .frame(maxWidth: .infinity)
+                .frame(height: 50)
+                .background(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(Color.white)
+                )
+            }
         }
     }
 
@@ -309,7 +440,7 @@ struct LoginView: View {
                         .fill(Color.accent.opacity(0.12))
                 )
         }
-        .buttonStyle(.plain)
+        .buttonStyle(AuthPressableButtonStyle())
     }
 
     private var footerPrompt: some View {
@@ -333,35 +464,54 @@ struct LoginView: View {
     }
 
     private var footerExternalLinks: some View {
-        VStack(spacing: 7) {
-            HStack(spacing: 12) {
-                footerLinkButton(.termsOfService)
-                footerLinkButton(.privacyPolicy)
-            }
-
-            HStack(spacing: 12) {
-                footerLinkButton(.support)
-                footerLinkButton(.deleteAccount)
-            }
-
-            HStack(spacing: 12) {
-                footerLinkButton(.investmentDisclaimer)
-                footerLinkButton(.home)
+        LazyVGrid(
+            columns: [
+                GridItem(.flexible(), spacing: 10),
+                GridItem(.flexible(), spacing: 10)
+            ],
+            spacing: 10
+        ) {
+            ForEach(footerLinks) { link in
+                footerLinkButton(link)
             }
         }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(Color.bgSecondary.opacity(0.72))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .stroke(Color.themeBorder.opacity(0.9), lineWidth: 1)
+                )
+        )
     }
 
     private func footerLinkButton(_ link: AppExternalLink) -> some View {
         Button {
             openExternalLink(link)
         } label: {
-            Text(link.title)
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundColor(.textMuted)
-                .lineLimit(1)
-                .minimumScaleFactor(0.85)
+            HStack(spacing: 7) {
+                Image(systemName: link.systemImageName)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(.accent)
+                    .frame(width: 15)
+
+                Text(link.title)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(.themeText)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+
+                Spacer(minLength: 0)
+            }
+            .frame(maxWidth: .infinity, minHeight: 42, alignment: .leading)
+            .padding(.horizontal, 10)
+            .background(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(Color.bgTertiary.opacity(0.82))
+            )
         }
-        .buttonStyle(.plain)
+        .buttonStyle(AuthPressableButtonStyle())
     }
 
     @ViewBuilder
@@ -496,6 +646,7 @@ struct LoginView: View {
     }
 
     private func openExternalLink(_ link: AppExternalLink) {
+        AppLogger.debug(.auth, "[PolicyLinkDebug] action=open destination=\(link.policyDebugName)")
         safariDestination = SafariDestination(link: link)
     }
 }
@@ -503,4 +654,34 @@ struct LoginView: View {
 private enum MessageTone {
     case error
     case secondary
+}
+
+private struct AuthPressableButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .opacity(configuration.isPressed ? 0.72 : 1)
+            .scaleEffect(configuration.isPressed ? 0.985 : 1)
+            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+    }
+}
+
+private extension UIApplication {
+    func cryptoryTopViewController(
+        base: UIViewController? = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows)
+            .first { $0.isKeyWindow }?
+            .rootViewController
+    ) -> UIViewController? {
+        if let navigationController = base as? UINavigationController {
+            return cryptoryTopViewController(base: navigationController.visibleViewController)
+        }
+        if let tabBarController = base as? UITabBarController {
+            return cryptoryTopViewController(base: tabBarController.selectedViewController)
+        }
+        if let presentedViewController = base?.presentedViewController {
+            return cryptoryTopViewController(base: presentedViewController)
+        }
+        return base
+    }
 }

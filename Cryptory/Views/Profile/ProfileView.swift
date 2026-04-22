@@ -78,10 +78,15 @@ struct ProfileView: View {
                     )
                 case .withdraw:
                     return Alert(
-                        title: Text("회원탈퇴 안내를 열까요?"),
-                        message: Text("앱에서는 안내 페이지로 이동해 탈퇴 절차를 확인할 수 있어요."),
-                        primaryButton: .destructive(Text("안내 열기")) {
-                            openExternalLink(.deleteAccount)
+                        title: Text("회원탈퇴를 진행할까요?"),
+                        message: Text("서버에서 계정을 삭제하고 현재 기기의 로그인 세션을 정리합니다. 삭제 전 안내 페이지에서 처리 범위를 확인할 수 있어요."),
+                        primaryButton: .destructive(Text("탈퇴")) {
+                            Task {
+                                let didDelete = await vm.deleteAccount()
+                                if didDelete {
+                                    dismiss()
+                                }
+                            }
                         },
                         secondaryButton: .cancel(Text("취소"))
                     )
@@ -211,6 +216,7 @@ struct ProfileView: View {
             policyRow(.support, subtitle: "문의, 문제 신고, 앱 사용 지원 페이지를 엽니다.")
             policyRow(.privacyPolicy, subtitle: "개인정보 수집과 처리 기준을 확인합니다.")
             policyRow(.termsOfService, subtitle: "서비스 이용 조건과 책임 범위를 확인합니다.")
+            policyRow(.deleteAccount, subtitle: "계정 삭제 절차와 데이터 처리 범위를 확인합니다.")
             policyRow(.investmentDisclaimer, subtitle: "투자 유의사항과 면책 범위를 확인합니다.")
             policyRow(.home, subtitle: "공식 홈페이지를 엽니다.")
         }
@@ -234,14 +240,26 @@ struct ProfileView: View {
                 }
             }
 
-            actionRow(
-                icon: "person.crop.circle.badge.minus",
-                iconColor: .down,
-                title: "회원탈퇴",
-                subtitle: "탈퇴 절차와 계정삭제 안내 페이지를 엽니다.",
-                usesDestructiveTint: true
-            ) {
-                confirmationAction = .withdraw
+            if vm.isAuthenticated {
+                actionRow(
+                    icon: "person.crop.circle.badge.minus",
+                    iconColor: .down,
+                    title: vm.isDeletingAccount ? "회원탈퇴 처리 중" : "회원탈퇴 요청",
+                    subtitle: "계정 삭제를 서버에 요청하고 로컬 세션을 정리합니다.",
+                    usesDestructiveTint: true
+                ) {
+                    confirmationAction = .withdraw
+                }
+            } else {
+                actionRow(
+                    icon: "person.crop.circle.badge.minus",
+                    iconColor: .down,
+                    title: "계정삭제 안내",
+                    subtitle: "로그인하지 않아도 탈퇴 절차와 지원 경로를 확인할 수 있어요.",
+                    usesDestructiveTint: true
+                ) {
+                    openExternalLink(.deleteAccount)
+                }
             }
         }
         .padding(16)
@@ -403,6 +421,7 @@ struct ProfileView: View {
     }
 
     private func openExternalLink(_ link: AppExternalLink) {
+        AppLogger.debug(.auth, "[PolicyLinkDebug] action=open destination=\(link.policyDebugName)")
         safariDestination = SafariDestination(link: link)
     }
 

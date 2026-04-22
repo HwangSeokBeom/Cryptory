@@ -547,6 +547,11 @@ struct APIConfiguration {
     let baseURL: String
     let loginPath: String
     let registerPath: String
+    let refreshPath: String
+    let googleLoginPath: String
+    let appleLoginPath: String
+    let logoutPath: String
+    let deleteAccountPath: String
     let marketMarketsPath: String
     let marketTickersPath: String
     let marketOrderbookPath: String
@@ -568,6 +573,11 @@ struct APIConfiguration {
         baseURL: String,
         loginPath: String,
         registerPath: String = "/api/v1/auth/register",
+        refreshPath: String = "/api/v1/auth/refresh",
+        googleLoginPath: String = "/api/v1/auth/google",
+        appleLoginPath: String = "/api/v1/auth/apple",
+        logoutPath: String = "/api/v1/auth/logout",
+        deleteAccountPath: String = "/api/v1/auth/me",
         marketMarketsPath: String,
         marketTickersPath: String,
         marketOrderbookPath: String,
@@ -588,6 +598,11 @@ struct APIConfiguration {
         self.baseURL = baseURL
         self.loginPath = loginPath
         self.registerPath = registerPath
+        self.refreshPath = refreshPath
+        self.googleLoginPath = googleLoginPath
+        self.appleLoginPath = appleLoginPath
+        self.logoutPath = logoutPath
+        self.deleteAccountPath = deleteAccountPath
         self.marketMarketsPath = marketMarketsPath
         self.marketTickersPath = marketTickersPath
         self.marketOrderbookPath = marketOrderbookPath
@@ -629,6 +644,11 @@ struct APIConfiguration {
             baseURL: runtimeConfiguration.restBaseURL.absoluteString,
             loginPath: environment["CRYPTORY_LOGIN_PATH"] ?? "/api/v1/auth/login",
             registerPath: environment["CRYPTORY_REGISTER_PATH"] ?? "/api/v1/auth/register",
+            refreshPath: environment["CRYPTORY_REFRESH_PATH"] ?? "/api/v1/auth/refresh",
+            googleLoginPath: environment["CRYPTORY_GOOGLE_LOGIN_PATH"] ?? "/api/v1/auth/google",
+            appleLoginPath: environment["CRYPTORY_APPLE_LOGIN_PATH"] ?? "/api/v1/auth/apple",
+            logoutPath: environment["CRYPTORY_LOGOUT_PATH"] ?? "/api/v1/auth/logout",
+            deleteAccountPath: environment["CRYPTORY_DELETE_ACCOUNT_PATH"] ?? "/api/v1/auth/me",
             marketMarketsPath: environment["CRYPTORY_MARKET_MARKETS_PATH"] ?? "/market/markets",
             marketTickersPath: environment["CRYPTORY_MARKET_TICKERS_PATH"] ?? "/market/tickers",
             marketOrderbookPath: environment["CRYPTORY_MARKET_ORDERBOOK_PATH"] ?? "/market/orderbook",
@@ -666,9 +686,32 @@ struct SignUpRequest: Equatable {
     let acceptedTerms: Bool
 }
 
+struct GoogleSocialLoginRequest: Equatable {
+    let idToken: String
+    let email: String?
+    let displayName: String?
+    let deviceID: String?
+}
+
+struct AppleSocialLoginRequest: Equatable {
+    let identityToken: String
+    let authorizationCode: String?
+    let userIdentifier: String
+    let email: String?
+    let fullName: String?
+    let givenName: String?
+    let familyName: String?
+    let deviceID: String?
+}
+
 protocol AuthenticationServiceProtocol {
     func signIn(email: String, password: String) async throws -> AuthSession
     func signUp(request: SignUpRequest) async throws -> AuthSession
+    func signInWithGoogle(request: GoogleSocialLoginRequest) async throws -> AuthSession
+    func signInWithApple(request: AppleSocialLoginRequest) async throws -> AuthSession
+    func refreshSession(refreshToken: String) async throws -> AuthSession
+    func signOut(session: AuthSession) async throws
+    func deleteAccount(session: AuthSession) async throws
 }
 
 protocol MarketRepositoryProtocol {
@@ -980,6 +1023,132 @@ final class LiveAuthenticationService: AuthenticationServiceProtocol {
         }
 
         return try await signIn(email: request.email, password: request.password)
+    }
+
+    func signInWithGoogle(request: GoogleSocialLoginRequest) async throws -> AuthSession {
+        var body: JSONObject = [
+            "idToken": request.idToken
+        ]
+        body["credential"] = request.idToken
+        if let email = request.email?.trimmedNonEmpty {
+            body["email"] = email
+        }
+        if let displayName = request.displayName?.trimmedNonEmpty {
+            body["displayName"] = displayName
+        }
+        if let deviceID = request.deviceID?.trimmedNonEmpty {
+            body["deviceId"] = deviceID
+        }
+
+        let json = try await client.requestJSON(
+            path: client.configuration.googleLoginPath,
+            method: "POST",
+            body: body,
+            accessRequirement: .publicAccess
+        )
+
+        let payload = unwrapPayload(json)
+        guard let dictionary = payload as? JSONObject else {
+            throw NetworkServiceError.parsingFailed("구글 로그인 응답을 확인할 수 없어요.")
+        }
+
+        return try parseAuthSession(
+            from: dictionary,
+            fallbackEmail: request.email,
+            context: "구글 로그인"
+        )
+    }
+
+    func signInWithApple(request: AppleSocialLoginRequest) async throws -> AuthSession {
+        var body: JSONObject = [
+            "identityToken": request.identityToken,
+            "idToken": request.identityToken,
+            "userIdentifier": request.userIdentifier
+        ]
+        if let authorizationCode = request.authorizationCode?.trimmedNonEmpty {
+            body["authorizationCode"] = authorizationCode
+        }
+        if let email = request.email?.trimmedNonEmpty {
+            body["email"] = email
+        }
+        if let fullName = request.fullName?.trimmedNonEmpty {
+            body["fullName"] = fullName
+        }
+        if let givenName = request.givenName?.trimmedNonEmpty {
+            body["givenName"] = givenName
+        }
+        if let familyName = request.familyName?.trimmedNonEmpty {
+            body["familyName"] = familyName
+        }
+        if let deviceID = request.deviceID?.trimmedNonEmpty {
+            body["deviceId"] = deviceID
+        }
+
+        let json = try await client.requestJSON(
+            path: client.configuration.appleLoginPath,
+            method: "POST",
+            body: body,
+            accessRequirement: .publicAccess
+        )
+
+        let payload = unwrapPayload(json)
+        guard let dictionary = payload as? JSONObject else {
+            throw NetworkServiceError.parsingFailed("애플 로그인 응답을 확인할 수 없어요.")
+        }
+
+        return try parseAuthSession(
+            from: dictionary,
+            fallbackEmail: request.email,
+            context: "애플 로그인"
+        )
+    }
+
+    func refreshSession(refreshToken: String) async throws -> AuthSession {
+        let json = try await client.requestJSON(
+            path: client.configuration.refreshPath,
+            method: "POST",
+            body: [
+                "refreshToken": refreshToken
+            ],
+            accessRequirement: .publicAccess
+        )
+
+        let payload = unwrapPayload(json)
+        guard let dictionary = payload as? JSONObject else {
+            throw NetworkServiceError.parsingFailed("세션 갱신 응답을 확인할 수 없어요.")
+        }
+
+        return try parseAuthSession(
+            from: dictionary,
+            fallbackEmail: nil,
+            context: "세션 갱신"
+        )
+    }
+
+    func signOut(session: AuthSession) async throws {
+        let body: JSONObject?
+        if let refreshToken = session.refreshToken?.trimmedNonEmpty {
+            body = ["refreshToken": refreshToken]
+        } else {
+            body = nil
+        }
+
+        _ = try await client.requestJSON(
+            path: client.configuration.logoutPath,
+            method: "POST",
+            body: body,
+            accessRequirement: .authenticatedRequired,
+            accessToken: session.accessToken
+        )
+    }
+
+    func deleteAccount(session: AuthSession) async throws {
+        _ = try await client.requestJSON(
+            path: client.configuration.deleteAccountPath,
+            method: "DELETE",
+            accessRequirement: .authenticatedRequired,
+            accessToken: session.accessToken
+        )
     }
 
     private func parseAuthSession(
@@ -3109,7 +3278,7 @@ private extension URL {
     }
 }
 
-private extension String {
+extension String {
     var trimmedNonEmpty: String? {
         let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed

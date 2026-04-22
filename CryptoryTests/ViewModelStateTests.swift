@@ -237,6 +237,61 @@ final class ViewModelStateTests: XCTestCase {
     }
 
     @MainActor
+    func testLoginSavesAccessAndRefreshTokenToSessionStore() async {
+        let expectedSession = AuthSession(
+            accessToken: "access-token",
+            refreshToken: "refresh-token",
+            userID: "user-1",
+            email: "user@example.com"
+        )
+        let authService = SpyAuthenticationService(signInResult: .success(expectedSession))
+        let sessionStore = SpyAuthSessionStore()
+        let vm = CryptoViewModel(
+            marketRepository: StubMarketRepository(),
+            tradingRepository: SpyTradingRepository(),
+            portfolioRepository: SpyPortfolioRepository(),
+            kimchiPremiumRepository: StubKimchiPremiumRepository(),
+            exchangeConnectionsRepository: SpyExchangeConnectionsRepository(),
+            authService: authService,
+            authSessionStore: sessionStore,
+            publicWebSocketService: NoOpPublicWebSocketService(),
+            privateWebSocketService: NoOpPrivateWebSocketService()
+        )
+
+        vm.loginEmail = "user@example.com"
+        vm.loginPassword = "password"
+        await vm.submitLogin()
+
+        XCTAssertEqual(sessionStore.savedSession, expectedSession)
+        XCTAssertEqual(vm.authState.session, expectedSession)
+    }
+
+    @MainActor
+    func testInjectedStoredSessionRestoresAuthenticatedState() async {
+        let storedSession = AuthSession(
+            accessToken: "stored-access-token",
+            refreshToken: nil,
+            userID: "user-1",
+            email: "user@example.com"
+        )
+        let sessionStore = SpyAuthSessionStore(sessionToLoad: storedSession)
+        let vm = CryptoViewModel(
+            marketRepository: StubMarketRepository(),
+            tradingRepository: SpyTradingRepository(),
+            portfolioRepository: SpyPortfolioRepository(),
+            kimchiPremiumRepository: StubKimchiPremiumRepository(),
+            exchangeConnectionsRepository: SpyExchangeConnectionsRepository(),
+            authService: StubAuthenticationService(),
+            authSessionStore: sessionStore,
+            publicWebSocketService: NoOpPublicWebSocketService(),
+            privateWebSocketService: NoOpPrivateWebSocketService()
+        )
+
+        XCTAssertTrue(vm.isAuthenticated)
+        XCTAssertEqual(vm.authState.session, storedSession)
+    }
+
+    @MainActor
     func testLoginOnTradeGateReturnsToTradeAndLoadsTradingData() async {
         let portfolioRepository = SpyPortfolioRepository()
         let tradingRepository = SpyTradingRepository()

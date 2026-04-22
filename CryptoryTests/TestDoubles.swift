@@ -604,13 +604,35 @@ struct StubAuthenticationService: AuthenticationServiceProtocol {
     func signUp(request: SignUpRequest) async throws -> AuthSession {
         AuthSession(accessToken: "token", refreshToken: nil, userID: "user-1", email: request.email)
     }
+
+    func signInWithGoogle(request: GoogleSocialLoginRequest) async throws -> AuthSession {
+        AuthSession(accessToken: "token", refreshToken: nil, userID: "user-1", email: request.email)
+    }
+
+    func signInWithApple(request: AppleSocialLoginRequest) async throws -> AuthSession {
+        AuthSession(accessToken: "token", refreshToken: nil, userID: "user-1", email: request.email)
+    }
+
+    func refreshSession(refreshToken: String) async throws -> AuthSession {
+        AuthSession(accessToken: "refreshed-token", refreshToken: refreshToken, userID: "user-1", email: "user@example.com")
+    }
+
+    func signOut(session: AuthSession) async throws {}
+
+    func deleteAccount(session: AuthSession) async throws {}
 }
 
 final class SpyAuthenticationService: AuthenticationServiceProtocol {
     var signInResult: Result<AuthSession, Error>
     var signUpResult: Result<AuthSession, Error>
+    var refreshResult: Result<AuthSession, Error> = .success(
+        AuthSession(accessToken: "refreshed-token", refreshToken: "refresh-token", userID: "user-1", email: "user@example.com")
+    )
     private(set) var signInCallCount = 0
     private(set) var signUpCallCount = 0
+    private(set) var refreshCallCount = 0
+    private(set) var signOutCallCount = 0
+    private(set) var deleteAccountCallCount = 0
     var shouldBlockSignUp = false
     private var signUpContinuation: CheckedContinuation<Void, Never>?
 
@@ -643,10 +665,58 @@ final class SpyAuthenticationService: AuthenticationServiceProtocol {
         return try signUpResult.get()
     }
 
+    func signInWithGoogle(request: GoogleSocialLoginRequest) async throws -> AuthSession {
+        signInCallCount += 1
+        return try signInResult.get()
+    }
+
+    func signInWithApple(request: AppleSocialLoginRequest) async throws -> AuthSession {
+        signInCallCount += 1
+        return try signInResult.get()
+    }
+
+    func refreshSession(refreshToken: String) async throws -> AuthSession {
+        refreshCallCount += 1
+        return try refreshResult.get()
+    }
+
+    func signOut(session: AuthSession) async throws {
+        signOutCallCount += 1
+    }
+
+    func deleteAccount(session: AuthSession) async throws {
+        deleteAccountCallCount += 1
+    }
+
     func resumeSignUp() {
         shouldBlockSignUp = false
         signUpContinuation?.resume()
         signUpContinuation = nil
+    }
+}
+
+final class SpyAuthSessionStore: AuthSessionStoring {
+    var sessionToLoad: AuthSession?
+    private(set) var savedSession: AuthSession?
+    private(set) var clearCallCount = 0
+
+    init(sessionToLoad: AuthSession? = nil) {
+        self.sessionToLoad = sessionToLoad
+    }
+
+    func loadSession() -> AuthSession? {
+        sessionToLoad
+    }
+
+    func saveSession(_ session: AuthSession) {
+        savedSession = session
+        sessionToLoad = session
+    }
+
+    func clearSession() {
+        clearCallCount += 1
+        savedSession = nil
+        sessionToLoad = nil
     }
 }
 

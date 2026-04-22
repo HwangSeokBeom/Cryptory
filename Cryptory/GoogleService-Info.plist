@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>BUNDLE_ID</key>
+	<string>com.hwb.Cryptory</string>
+	<key>CLIENT_ID</key>
+	<string>142113558371-t5s22ri6gjl5aur76s81910gf2hb8p09.apps.googleusercontent.com</string>
+	<key>PLIST_VERSION</key>
+	<string>1</string>
+	<key>REVERSED_CLIENT_ID</key>
+	<string>com.googleusercontent.apps.142113558371-t5s22ri6gjl5aur76s81910gf2hb8p09</string>
+</dict>
+</plist>
