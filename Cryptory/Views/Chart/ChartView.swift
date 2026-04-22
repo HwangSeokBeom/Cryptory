@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ChartView: View {
     @ObservedObject var vm: CryptoViewModel
+    @State private var isChartSettingsPresented = false
     private let instanceID: Int
 
     init(vm: CryptoViewModel) {
@@ -12,34 +13,50 @@ struct ChartView: View {
     }
 
     var body: some View {
-        if vm.isSelectedExchangeChartUnsupported {
-            unsupportedState
-        } else if let coin = vm.selectedCoin {
-            ScrollView {
-                VStack(spacing: 0) {
-                    coinHeader(coin)
-                    ScreenStatusBannerView(viewState: vm.chartStatusViewState)
-                        .padding(.horizontal, 16)
-                        .padding(.top, 12)
-                    PeriodSelector(vm: vm)
-                    candleSection
-                    stats24H
-                    orderbookSection
-                    tradesSection
+        Group {
+            if vm.isSelectedExchangeChartUnsupported {
+                unsupportedState
+            } else if let coin = vm.selectedCoin {
+                ScrollView {
+                    VStack(spacing: 0) {
+                        coinHeader(coin)
+                        ScreenStatusBannerView(viewState: vm.chartStatusViewState)
+                            .padding(.horizontal, 16)
+                            .padding(.top, 12)
+                        PeriodSelector(vm: vm) {
+                            isChartSettingsPresented = true
+                        }
+                        candleSection
+                        stats24H
+                        orderbookSection
+                        tradesSection
+                    }
                 }
+                .onAppear {
+                    AppLogger.debug(
+                        .lifecycle,
+                        "ChartView onAppear #\(instanceID) \(coin.marketIdentity(exchange: vm.exchange).logFields) interval=\(vm.chartPeriod)"
+                    )
+                }
+                .onDisappear {
+                    AppLogger.debug(.lifecycle, "ChartView onDisappear #\(instanceID)")
+                }
+            } else {
+                emptyState
             }
-            .onAppear {
-                AppLogger.debug(
-                    .lifecycle,
-                    "ChartView onAppear #\(instanceID) \(coin.marketIdentity(exchange: vm.exchange).logFields) interval=\(vm.chartPeriod)"
-                )
-            }
-            .onDisappear {
-                AppLogger.debug(.lifecycle, "ChartView onDisappear #\(instanceID)")
-            }
-        } else {
-            emptyState
         }
+        .background(
+            ChartSettingsSheetPresenter(
+                isPresented: $isChartSettingsPresented,
+                state: vm.chartSettingsState,
+                currentSymbol: vm.selectedCoin?.symbol,
+                comparisonCandidates: vm.chartComparisonCandidates,
+                onStateChange: { state in
+                    vm.applyChartSettings(state)
+                }
+            )
+            .frame(width: 0, height: 0)
+        )
     }
 
     private var emptyState: some View {
@@ -207,7 +224,12 @@ struct ChartView: View {
                         CandleChartView(
                             candles: vm.candles,
                             width: min(geo.size.width - 16, 390),
-                            height: 220
+                            height: 220,
+                            settings: vm.appliedChartSettingsState,
+                            comparisonSeries: vm.comparedChartSeries,
+                            currentPrice: vm.currentPrice,
+                            bestAskPrice: vm.orderbook?.asks.first?.price,
+                            bestBidPrice: vm.orderbook?.bids.first?.price
                         )
                         .frame(maxWidth: .infinity)
 

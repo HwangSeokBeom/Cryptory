@@ -1,6 +1,7 @@
 {
   "images" : [
     {
+      "filename" : "Cryptory AppIcon 1024 - D High Contrast.png",
       "idiom" : "universal",
       "platform" : "ios",
       "size" : "1024x1024"
@@ -12,6 +13,7 @@
           "value" : "dark"
         }
       ],
+      "filename" : "Cryptory AppIcon 1024 - D High Contrast 1.png",
       "idiom" : "universal",
       "platform" : "ios",
       "size" : "1024x1024"
@@ -23,6 +25,7 @@
           "value" : "tinted"
         }
       ],
+      "filename" : "Cryptory AppIcon 1024 - D High Contrast 2.png",
       "idiom" : "universal",
       "platform" : "ios",
       "size" : "1024x1024"

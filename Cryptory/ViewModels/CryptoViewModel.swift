@@ -741,6 +741,9 @@ final class CryptoViewModel: ObservableObject {
     @Published private(set) var orderbookState: OrderBookState = .idle
     @Published private(set) var recentTradesState: TradesState = .idle
     @Published private(set) var chartStatusViewState: ScreenStatusViewState = .idle
+    @Published private(set) var chartSettingsState: ChartSettingsState
+    @Published private(set) var appliedChartSettingsState: ChartSettingsState
+    @Published private(set) var comparedChartSeries: [ChartComparisonSeries] = []
 
     @Published var orderSide: OrderSide = .buy
     @Published var orderType: OrderType = .limit
@@ -815,6 +818,7 @@ final class CryptoViewModel: ObservableObject {
     private let exchangeConnectionFormValidator = ExchangeConnectionFormValidator()
     private let kimchiPremiumViewStateUseCase = KimchiPremiumViewStateUseCase()
     private let defaults: UserDefaults
+    private let chartSettingsStorage: ChartSettingsStorage
     private var presentExchangeConnectionsSheet: (() -> Void)?
     private var dismissExchangeConnectionsSheet: (() -> Void)?
 
@@ -979,6 +983,8 @@ final class CryptoViewModel: ObservableObject {
     private var activeChartCandleMeta: ResponseMeta = .empty
     private var activeChartOrderbookMeta: ResponseMeta = .empty
     private var activeChartTradesMeta: ResponseMeta = .empty
+    private var chartComparisonTask: Task<Void, Never>?
+    private var activeChartComparisonSignature: String?
     private var kimchiPremiumFetchTasksByContext: [KimchiPremiumRequestContext: Task<KimchiPremiumSnapshot, Error>] = [:]
     private var kimchiPremiumFetchContext: KimchiPremiumRequestContext?
     private var lastSuccessfulKimchiPremiumRequestContext: KimchiPremiumRequestContext?
@@ -1046,6 +1052,8 @@ final class CryptoViewModel: ObservableObject {
         userDefaults: UserDefaults = .standard
     ) {
         let resolvedDisplayMode = Self.loadMarketDisplayMode(from: userDefaults)
+        let chartSettingsStorage = ChartSettingsStorage(defaults: userDefaults)
+        let restoredChartSettings = chartSettingsStorage.load()
         self.marketRepository = marketRepository ?? LiveMarketRepository()
         self.tradingRepository = tradingRepository ?? LiveTradingRepository()
         self.portfolioRepository = portfolioRepository ?? LivePortfolioRepository()
@@ -1059,6 +1067,9 @@ final class CryptoViewModel: ObservableObject {
         self.marketSnapshotCacheStore = marketSnapshotCacheStore ?? Self.defaultMarketSnapshotCacheStore()
         self.assetImageClient = assetImageClient
         self.defaults = userDefaults
+        self.chartSettingsStorage = chartSettingsStorage
+        self.chartSettingsState = restoredChartSettings
+        self.appliedChartSettingsState = restoredChartSettings
         self.marketDisplayMode = resolvedDisplayMode
         self.favCoins = Set(userDefaults.stringArray(forKey: favoritesKey) ?? [])
         AppLogger.debug(.auth, "[AuthFlowDebug] action=session_restore_started")
@@ -1097,6 +1108,7 @@ final class CryptoViewModel: ObservableObject {
         tradingOpenOrdersFetchTask?.cancel()
         tradingFillsFetchTask?.cancel()
         exchangeConnectionsFetchTask?.cancel()
+        chartComparisonTask?.cancel()
         publicPollingTask?.cancel()
         privatePollingTask?.cancel()
         marketHydrationTask?.cancel()
@@ -1319,6 +1331,33 @@ final class CryptoViewModel: ObservableObject {
 
     var recentTradeRows: [ChartTradeRowViewState] {
         recentTradeRows(for: recentTrades)
+    }
+
+    var chartComparisonCandidates: [ChartComparisonCandidate] {
+        let exchange = selectedExchange
+        let universe = resolvedMarketUniverse(for: exchange)
+        var coinsBySymbol = Dictionary(
+            uniqueKeysWithValues: CoinCatalog.fallbackTopSymbols.map {
+                let coin = CoinCatalog.coin(symbol: $0, exchange: exchange)
+                return (coin.symbol, coin)
+            }
+        )
+        universe.forEach { coin in
+            coinsBySymbol[coin.symbol] = coin
+        }
+        let orderedSymbols = prioritizedSymbols(from: Array(coinsBySymbol.keys), exchange: exchange)
+
+        return orderedSymbols.compactMap { symbol in
+            guard let coin = coinsBySymbol[symbol] else {
+                return nil
+            }
+            return ChartComparisonCandidate(
+                symbol: coin.symbol,
+                name: coin.name,
+                nameEn: coin.nameEn,
+                isFavorite: favCoins.contains(coin.symbol)
+            )
+        }
     }
 
     var currentTradingChance: TradingChance? {
@@ -3837,6 +3876,170 @@ final class CryptoViewModel: ObservableObject {
         }
     }
 
+    func applyChartSettings(_ state: ChartSettingsState, source: String = "chart_settings_sheet") {
+        let normalizedState = state.normalized
+        let didPersistedStateChange = chartSettingsState != normalizedState
+        let previousStyle = chartSettingsState.selectedChartStyle
+
+        if didPersistedStateChange {
+            chartSettingsState = normalizedState
+            chartSettingsStorage.save(normalizedState)
+        }
+
+        syncChartSettingsToRenderer(normalizedState, source: source)
+
+        guard didPersistedStateChange else {
+            return
+        }
+
+        AppLogger.debug(
+            .route,
+            "[ChartSettings] source=\(source) style=\(normalizedState.selectedChartStyle.rawValue) top=\(normalizedState.selectedTopIndicators.map(\.rawValue).joined(separator: ",")) bottom=\(normalizedState.selectedBottomIndicators.map(\.rawValue).joined(separator: ",")) compared=\(normalizedState.comparedSymbols.joined(separator: ",")) viewOptions=bestBidAsk:\(normalizedState.showBestBidAskLine),globalColors:\(normalizedState.useGlobalExchangeColorScheme),utc:\(normalizedState.useUTC)"
+        )
+
+        if previousStyle != normalizedState.selectedChartStyle {
+            AppLogger.debug(
+                .route,
+                "[ChartSettings] chart_style_changed previous=\(previousStyle.rawValue) next=\(normalizedState.selectedChartStyle.rawValue) dataReload=false"
+            )
+        }
+    }
+
+    private func syncChartSettingsToRenderer(_ state: ChartSettingsState, source: String) {
+        let normalizedState = state.normalized
+        guard appliedChartSettingsState != normalizedState else {
+            scheduleComparedChartSeriesRefresh(reason: "\(source)_renderer_resync", context: lastChartSnapshotContext)
+            return
+        }
+
+        appliedChartSettingsState = normalizedState
+        assert(normalizedState.comparedSymbols.count <= ChartSettingsState.maximumComparedSymbolCount)
+        AppLogger.debug(
+            .route,
+            "[ChartSettings] renderer_sync source=\(source) style=\(normalizedState.selectedChartStyle.rawValue) comparedCount=\(normalizedState.comparedSymbols.count)"
+        )
+        scheduleComparedChartSeriesRefresh(reason: source, context: lastChartSnapshotContext)
+    }
+
+    private func clearComparedChartSeries(reason: String) {
+        chartComparisonTask?.cancel()
+        chartComparisonTask = nil
+        activeChartComparisonSignature = nil
+        if comparedChartSeries.isEmpty == false {
+            comparedChartSeries = []
+        }
+        AppLogger.debug(.route, "[ChartSettings] compare_series_cleared reason=\(reason)")
+    }
+
+    private func scheduleComparedChartSeriesRefresh(
+        reason: String,
+        context: ChartRequestContext? = nil
+    ) {
+        let effectiveContext = context ?? lastChartSnapshotContext
+        guard let effectiveContext,
+              effectiveContext.exchange == selectedExchange else {
+            clearComparedChartSeries(reason: "\(reason)_missing_context")
+            return
+        }
+
+        let currentSymbol = selectedCoin?.symbol ?? effectiveContext.symbol
+        let comparedSymbols = appliedChartSettingsState.comparedSymbols.filter { $0 != currentSymbol }
+        guard comparedSymbols.isEmpty == false else {
+            clearComparedChartSeries(reason: "\(reason)_empty_selection")
+            return
+        }
+
+        let signature = [
+            effectiveContext.marketIdentity.cacheKey,
+            effectiveContext.mappedInterval,
+            comparedSymbols.joined(separator: ",")
+        ].joined(separator: "|")
+
+        guard activeChartComparisonSignature != signature else {
+            return
+        }
+
+        activeChartComparisonSignature = signature
+        chartComparisonTask?.cancel()
+
+        chartComparisonTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+
+            let palette = ["#F59E0B", "#34D399", "#60A5FA", "#F472B6", "#A78BFA"]
+            var nextSeries: [ChartComparisonSeries] = []
+
+            for (index, symbol) in comparedSymbols.enumerated() {
+                guard Task.isCancelled == false else { return }
+
+                let key = self.chartRequestKey(
+                    exchange: effectiveContext.exchange,
+                    symbol: symbol,
+                    interval: effectiveContext.mappedInterval
+                )
+                let response = await self.fetchCandleSnapshot(for: key)
+                guard Task.isCancelled == false else { return }
+
+                let candles: [CandleData]
+                switch response {
+                case .success(let snapshot):
+                    let prepared = self.prepareCandlesForLive(
+                        snapshot.candles,
+                        interval: effectiveContext.mappedInterval,
+                        seedPrice: self.pricesByMarketIdentity[key.marketIdentity]?.price
+                    )
+                    let fetchedAt = snapshot.meta.fetchedAt ?? Date()
+                    self.storeChartDetailCandleEntry(
+                        candles: prepared,
+                        meta: snapshot.meta,
+                        fetchedAt: fetchedAt,
+                        keys: [key],
+                        rememberSuccess: snapshot.meta.isChartAvailable != false
+                    )
+                    candles = prepared
+                case .failure:
+                    candles = self.lastSuccessfulCandles[key]?.candles
+                        ?? self.candleCacheByKey[key]?.candles
+                        ?? []
+                }
+
+                guard candles.isEmpty == false else {
+                    AppLogger.debug(
+                        .route,
+                        "[ChartSettings] compare_series_skipped symbol=\(symbol) reason=no_candles interval=\(effectiveContext.mappedInterval)"
+                    )
+                    continue
+                }
+
+                nextSeries.append(
+                    ChartComparisonSeries(
+                        symbol: symbol,
+                        name: self.chartComparisonDisplayName(for: symbol, exchange: effectiveContext.exchange),
+                        candles: candles,
+                        colorHex: palette[index % palette.count]
+                    )
+                )
+            }
+
+            guard self.activeChartComparisonSignature == signature,
+                  self.selectedExchange == effectiveContext.exchange,
+                  (self.selectedCoin?.symbol ?? effectiveContext.symbol) == currentSymbol else {
+                return
+            }
+
+            self.comparedChartSeries = nextSeries
+            AppLogger.debug(
+                .route,
+                "[ChartSettings] compare_series_synced reason=\(reason) interval=\(effectiveContext.mappedInterval) count=\(nextSeries.count)"
+            )
+        }
+    }
+
+    private func chartComparisonDisplayName(for symbol: String, exchange: Exchange) -> String {
+        chartComparisonCandidates.first(where: { $0.symbol == symbol })?.name
+            ?? resolvedMarketUniverse(for: exchange).first(where: { $0.symbol == symbol })?.name
+            ?? CoinCatalog.coin(symbol: symbol, exchange: exchange).name
+    }
+
     func refreshMarketData(forceRefresh: Bool = true, reason: String = "manual") async {
         if activeMarketPresentationSnapshot?.exchange == selectedExchange {
             beginSameExchangeMarketReuse(reason: reason)
@@ -3860,6 +4063,7 @@ final class CryptoViewModel: ObservableObject {
 
     func loadChartData(forceRefresh: Bool = false, reason: String = "manual") async {
         guard capabilityResolver.supportsChart(on: selectedExchange) else {
+            clearComparedChartSeries(reason: "unsupported_chart")
             activeChartCandleMeta = .empty
             activeChartOrderbookMeta = .empty
             activeChartTradesMeta = .empty
@@ -3884,6 +4088,7 @@ final class CryptoViewModel: ObservableObject {
 
         ensureSelectedCoinIfPossible(for: selectedExchange)
         guard let coin = selectedCoin else {
+            clearComparedChartSeries(reason: "selected_coin_missing")
             activeChartCandleMeta = .empty
             activeChartOrderbookMeta = .empty
             activeChartTradesMeta = .empty
@@ -3909,6 +4114,7 @@ final class CryptoViewModel: ObservableObject {
             mappedInterval: mappedInterval,
             window: chartWindow
         )
+        scheduleComparedChartSeriesRefresh(reason: "\(reason)_request_start", context: context)
         let requestKey = chartRequestKey(marketIdentity: context.marketIdentity, interval: context.mappedInterval)
         let fallbackRequestKey = chartDetailFallbackRequestKey(coin: coin, context: context)
         let resourceKey = chartResourceKey(marketIdentity: context.marketIdentity)

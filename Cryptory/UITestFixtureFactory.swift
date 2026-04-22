@@ -4,10 +4,11 @@ import Foundation
 enum UITestFixtureFactory {
     @MainActor
     static func makeViewModelIfNeeded() -> CryptoViewModel? {
-        guard ProcessInfo.processInfo.environment["CRYPTORY_UI_TEST_SCENARIO"] == "kimchi_freshness" else {
+        guard let scenario = ProcessInfo.processInfo.environment["CRYPTORY_UI_TEST_SCENARIO"] else {
             return nil
         }
 
+        let defaults = makeIsolatedDefaults(scenario: scenario)
         let viewModel = CryptoViewModel(
             marketRepository: UITestMarketRepository(),
             tradingRepository: UITestTradingRepository(),
@@ -17,10 +18,29 @@ enum UITestFixtureFactory {
             authService: UITestAuthenticationService(),
             publicWebSocketService: UITestPublicWebSocketService(),
             privateWebSocketService: UITestPrivateWebSocketService(),
-            marketSnapshotCacheStore: nil
+            marketSnapshotCacheStore: nil,
+            userDefaults: defaults
         )
-        viewModel.setActiveTab(.kimchi)
+
+        switch scenario {
+        case "kimchi_freshness":
+            viewModel.setActiveTab(.kimchi)
+        case "chart_settings":
+            viewModel.selectCoin(CoinCatalog.coin(symbol: "BTC", isTradable: true, isKimchiComparable: true))
+        default:
+            return nil
+        }
+
         return viewModel
+    }
+
+    private static func makeIsolatedDefaults(scenario: String) -> UserDefaults {
+        let suiteName = "Cryptory.UITests.\(scenario)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        if ProcessInfo.processInfo.environment["CRYPTORY_UI_TEST_RESET_DEFAULTS"] != "0" {
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+        return defaults
     }
 }
 
@@ -76,7 +96,15 @@ private struct UITestMarketRepository: MarketRepositoryProtocol {
     }
 
     func fetchOrderbook(symbol: String, exchange: Exchange) async throws -> OrderbookSnapshot {
-        OrderbookSnapshot(exchange: exchange, symbol: symbol, orderbook: OrderbookData(asks: [], bids: []), meta: .empty)
+        OrderbookSnapshot(
+            exchange: exchange,
+            symbol: symbol,
+            orderbook: OrderbookData(
+                asks: [OrderbookEntry(price: 150_200_000, qty: 0.4)],
+                bids: [OrderbookEntry(price: 149_900_000, qty: 0.7)]
+            ),
+            meta: .empty
+        )
     }
 
     func fetchTrades(symbol: String, exchange: Exchange) async throws -> PublicTradesSnapshot {
@@ -84,7 +112,20 @@ private struct UITestMarketRepository: MarketRepositoryProtocol {
     }
 
     func fetchCandles(symbol: String, exchange: Exchange, interval: String) async throws -> CandleSnapshot {
-        CandleSnapshot(exchange: exchange, symbol: symbol, interval: interval, candles: [], meta: .empty)
+        let baseTime = 1_775_000_000
+        let candles = (0..<36).map { index in
+            let open = 149_000_000 + Double(index * 42_000)
+            let close = open + (index.isMultiple(of: 3) ? -180_000 : 230_000)
+            return CandleData(
+                time: baseTime + index * 60,
+                open: open,
+                high: max(open, close) + 310_000,
+                low: min(open, close) - 280_000,
+                close: close,
+                volume: 2_000 + index * 120
+            )
+        }
+        return CandleSnapshot(exchange: exchange, symbol: symbol, interval: interval, candles: candles, meta: .empty)
     }
 }
 
