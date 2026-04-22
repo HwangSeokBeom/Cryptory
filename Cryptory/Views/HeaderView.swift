@@ -11,22 +11,14 @@ struct ExchangeButtonBoundsPreferenceKey: PreferenceKey {
 struct HeaderView: View {
     @ObservedObject var vm: CryptoViewModel
     let onOpenProfile: () -> Void
-    @State private var safariDestination: SafariDestination?
     private let controlHeight: CGFloat = 48
     private let controlCornerRadius: CGFloat = 18
     private let exchangeMinimumWidth: CGFloat = 136
 
     var body: some View {
         HStack(alignment: .center, spacing: 12) {
-            Button {
-                openExternalLink(.home)
-            } label: {
-                brandSection
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .buttonStyle(.plain)
-            .accessibilityHint("홈페이지 열기")
-            .frame(maxWidth: .infinity, alignment: .leading)
+            brandSection
+                .frame(maxWidth: .infinity, alignment: .leading)
 
             HStack(spacing: 10) {
                 if vm.shouldShowExchangeSelector {
@@ -59,10 +51,6 @@ struct HeaderView: View {
                     .frame(height: 1)
             }
         )
-        .sheet(item: $safariDestination) { destination in
-            SafariSheet(destination: destination)
-                .ignoresSafeArea()
-        }
     }
 
     private var brandSection: some View {
@@ -75,21 +63,11 @@ struct HeaderView: View {
     }
 
     private var brandMark: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(
-                    LinearGradient(
-                        colors: [Color.accent, Color(hex: "#D97706")],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
-                .frame(width: 44, height: 44)
-
-            Text("₿")
-                .font(.system(size: 18, weight: .black))
-                .foregroundColor(.black.opacity(0.86))
-        }
+        Image("CryptoryBrandIcon")
+            .resizable()
+            .scaledToFit()
+            .frame(width: 44, height: 44)
+            .accessibilityHidden(true)
     }
 
     private var brandText: some View {
@@ -172,9 +150,5 @@ struct HeaderView: View {
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                     .stroke(Color.themeBorder, lineWidth: 1)
             )
-    }
-
-    private func openExternalLink(_ link: AppExternalLink) {
-        safariDestination = SafariDestination(link: link)
     }
 }
