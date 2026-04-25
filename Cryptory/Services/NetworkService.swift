@@ -138,6 +138,11 @@ enum AppConfig {
     }
 }
 
+enum SocialAuthEndpoint {
+    static let google = "/api/v1/auth/social/google"
+    static let apple = "/api/v1/auth/social/apple"
+}
+
 struct AppRuntimeConfiguration {
     let environment: AppEnvironment
     let restBaseURL: URL
@@ -177,7 +182,7 @@ struct AppRuntimeConfiguration {
             for: resolvedEnvironment,
             environment: values
         )
-        let restBaseURL = sanitizedURL(
+        let restBaseURL = sanitizedBaseURL(
             string: runtimeSetting(in: values, keys: "API_BASE_URL", "CRYPTORY_API_BASE_URL")
                 ?? environmentSpecificRESTBaseURLString(for: resolvedEnvironment, environment: values),
             fallback: defaultRESTBaseURL,
@@ -221,6 +226,8 @@ struct AppRuntimeConfiguration {
         AppLogger.configuration("Web base URL -> \(configuration.webBaseURL.absoluteString)")
         AppLogger.configuration("Public WS URL -> \(configuration.publicMarketWebSocketURL.absoluteString)")
         AppLogger.configuration("Private WS URL -> \(configuration.privateTradingWebSocketURL.absoluteString)")
+        AppLogger.authConfiguration("Social endpoint google -> \(SocialAuthEndpoint.google)")
+        AppLogger.authConfiguration("Social endpoint apple -> \(SocialAuthEndpoint.apple)")
 
         return configuration
     }
@@ -331,6 +338,18 @@ struct AppRuntimeConfiguration {
             return fallback
         }
         return url
+    }
+
+    private static func sanitizedBaseURL(string: String?, fallback: URL, label: String) -> URL {
+        let url = sanitizedURL(string: string, fallback: fallback, label: label)
+        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            return url
+        }
+
+        components.path = ""
+        components.query = nil
+        components.fragment = nil
+        return components.url ?? url
     }
 }
 
@@ -675,8 +694,8 @@ struct APIConfiguration {
         loginPath: String,
         registerPath: String = "/api/v1/auth/register",
         refreshPath: String = "/api/v1/auth/refresh",
-        googleLoginPath: String = "/api/v1/auth/google",
-        appleLoginPath: String = "/api/v1/auth/apple",
+        googleLoginPath: String = SocialAuthEndpoint.google,
+        appleLoginPath: String = SocialAuthEndpoint.apple,
         logoutPath: String = "/api/v1/auth/logout",
         deleteAccountPath: String = "/api/v1/auth/me",
         marketMarketsPath: String,
@@ -751,8 +770,8 @@ struct APIConfiguration {
             loginPath: environment["CRYPTORY_LOGIN_PATH"] ?? "/api/v1/auth/login",
             registerPath: environment["CRYPTORY_REGISTER_PATH"] ?? "/api/v1/auth/register",
             refreshPath: environment["CRYPTORY_REFRESH_PATH"] ?? "/api/v1/auth/refresh",
-            googleLoginPath: environment["CRYPTORY_GOOGLE_LOGIN_PATH"] ?? "/api/v1/auth/google",
-            appleLoginPath: environment["CRYPTORY_APPLE_LOGIN_PATH"] ?? "/api/v1/auth/apple",
+            googleLoginPath: SocialAuthEndpoint.google,
+            appleLoginPath: SocialAuthEndpoint.apple,
             logoutPath: environment["CRYPTORY_LOGOUT_PATH"] ?? "/api/v1/auth/logout",
             deleteAccountPath: environment["CRYPTORY_DELETE_ACCOUNT_PATH"] ?? "/api/v1/auth/me",
             marketMarketsPath: environment["CRYPTORY_MARKET_MARKETS_PATH"] ?? "/market/markets",
@@ -794,6 +813,7 @@ struct SignUpRequest: Equatable {
 
 struct GoogleSocialLoginRequest: Equatable {
     let idToken: String
+    let accessToken: String?
     let email: String?
     let displayName: String?
     let deviceID: String?
@@ -1135,7 +1155,9 @@ final class LiveAuthenticationService: AuthenticationServiceProtocol {
         var body: JSONObject = [
             "idToken": request.idToken
         ]
-        body["credential"] = request.idToken
+        if let accessToken = request.accessToken?.trimmedNonEmpty {
+            body["accessToken"] = accessToken
+        }
         if let email = request.email?.trimmedNonEmpty {
             body["email"] = email
         }
@@ -1168,7 +1190,6 @@ final class LiveAuthenticationService: AuthenticationServiceProtocol {
     func signInWithApple(request: AppleSocialLoginRequest) async throws -> AuthSession {
         var body: JSONObject = [
             "identityToken": request.identityToken,
-            "idToken": request.identityToken,
             "userIdentifier": request.userIdentifier
         ]
         if let authorizationCode = request.authorizationCode?.trimmedNonEmpty {
@@ -1270,6 +1291,10 @@ final class LiveAuthenticationService: AuthenticationServiceProtocol {
         return AuthSession(
             accessToken: accessToken,
             refreshToken: dictionary.string(["refreshToken", "refresh_token"]),
+            tokenType: dictionary.string(["tokenType", "token_type"]),
+            expiresIn: dictionary.int(["expiresIn", "expires_in"]),
+            refreshTokenExpiresAt: dictionary.string(["refreshTokenExpiresAt", "refresh_token_expires_at"]),
+            sessionID: dictionary.string(["sessionId", "sessionID", "session_id"]),
             userID: dictionary.string(["userId", "user_id", "id"]) ?? user?.string(["userId", "user_id", "id"]),
             email: dictionary.string(["email"]) ?? user?.string(["email"]) ?? fallbackEmail
         )

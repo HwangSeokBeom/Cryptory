@@ -4,6 +4,7 @@ import UIKit
 
 struct GoogleSignInCredential: Equatable {
     let idToken: String
+    let accessToken: String?
     let email: String?
     let displayName: String?
 }
@@ -43,6 +44,7 @@ final class LiveGoogleSignInProvider: GoogleSignInProviding {
 
         return GoogleSignInCredential(
             idToken: idToken,
+            accessToken: result.user.accessToken.tokenString.trimmedNonEmpty,
             email: result.user.profile?.email,
             displayName: result.user.profile?.name
         )

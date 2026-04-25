@@ -13,3 +13,8 @@ PRIVATE_WS_PATH = /ws/trading
 
 GOOGLE_CLIENT_ID = 142113558371-t5s22ri6gjl5aur76s81910gf2hb8p09.apps.googleusercontent.com
 GOOGLE_REVERSED_CLIENT_ID = com.googleusercontent.apps.142113558371-t5s22ri6gjl5aur76s81910gf2hb8p09
+
+// Optional local overrides for real-device LAN IPs and auth provider IDs.
+// Example: LOCAL_SERVER_HOST = 192.168.x.x
+#include? "LocalSecrets.xcconfig"
+#include? "AuthSecrets.xcconfig"

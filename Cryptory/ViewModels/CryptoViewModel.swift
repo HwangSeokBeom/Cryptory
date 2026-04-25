@@ -4609,6 +4609,7 @@ final class CryptoViewModel: ObservableObject {
             let session = try await authService.signInWithGoogle(
                 request: GoogleSocialLoginRequest(
                     idToken: credential.idToken,
+                    accessToken: credential.accessToken,
                     email: credential.email,
                     displayName: credential.displayName,
                     deviceID: currentDeviceID

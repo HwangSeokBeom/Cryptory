@@ -817,12 +817,14 @@ final class URLProtocolSpy: URLProtocol {
     static var responseStatusCode = 200
     static var responseData = Data("{}".utf8)
     static var lastRequest: URLRequest?
+    static var lastRequestBody: Data?
 
     static func reset() {
         requestCount = 0
         responseStatusCode = 200
         responseData = Data("{}".utf8)
         lastRequest = nil
+        lastRequestBody = nil
     }
 
     override class func canInit(with request: URLRequest) -> Bool { true }
@@ -831,6 +833,7 @@ final class URLProtocolSpy: URLProtocol {
     override func startLoading() {
         Self.requestCount += 1
         Self.lastRequest = request
+        Self.lastRequestBody = request.httpBody ?? request.httpBodyStream?.readAllData()
         let response = HTTPURLResponse(url: request.url!, statusCode: Self.responseStatusCode, httpVersion: nil, headerFields: nil)!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: Self.responseData)
@@ -838,4 +841,27 @@ final class URLProtocolSpy: URLProtocol {
     }
 
     override func stopLoading() {}
+}
+
+private extension InputStream {
+    func readAllData() -> Data {
+        open()
+        defer { close() }
+
+        var data = Data()
+        let bufferSize = 1024
+        let buffer = UnsafeMutablePointer<UInt8>.allocate(capacity: bufferSize)
+        defer { buffer.deallocate() }
+
+        while hasBytesAvailable {
+            let count = read(buffer, maxLength: bufferSize)
+            if count > 0 {
+                data.append(buffer, count: count)
+            } else {
+                break
+            }
+        }
+
+        return data
+    }
 }

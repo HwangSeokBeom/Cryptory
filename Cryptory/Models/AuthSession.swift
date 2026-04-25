@@ -4,8 +4,32 @@ import Security
 struct AuthSession: Codable, Equatable {
     let accessToken: String
     let refreshToken: String?
+    let tokenType: String?
+    let expiresIn: Int?
+    let refreshTokenExpiresAt: String?
+    let sessionID: String?
     let userID: String?
     let email: String?
+
+    init(
+        accessToken: String,
+        refreshToken: String?,
+        tokenType: String? = nil,
+        expiresIn: Int? = nil,
+        refreshTokenExpiresAt: String? = nil,
+        sessionID: String? = nil,
+        userID: String?,
+        email: String?
+    ) {
+        self.accessToken = accessToken
+        self.refreshToken = refreshToken
+        self.tokenType = tokenType
+        self.expiresIn = expiresIn
+        self.refreshTokenExpiresAt = refreshTokenExpiresAt
+        self.sessionID = sessionID
+        self.userID = userID
+        self.email = email
+    }
 
     var hasRefreshToken: Bool {
         refreshToken?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
@@ -15,6 +39,10 @@ struct AuthSession: Codable, Equatable {
         AuthSession(
             accessToken: accessToken,
             refreshToken: refreshToken?.authTrimmedNonEmpty ?? fallbackRefreshToken?.authTrimmedNonEmpty,
+            tokenType: tokenType,
+            expiresIn: expiresIn,
+            refreshTokenExpiresAt: refreshTokenExpiresAt,
+            sessionID: sessionID,
             userID: userID,
             email: email
         )
@@ -56,6 +84,10 @@ struct KeychainAuthSessionStore: AuthSessionStoring {
             return AuthSession(
                 accessToken: accessToken,
                 refreshToken: loadString(account: refreshTokenAccount),
+                tokenType: metadata?.tokenType,
+                expiresIn: metadata?.expiresIn,
+                refreshTokenExpiresAt: metadata?.refreshTokenExpiresAt,
+                sessionID: metadata?.sessionID,
                 userID: metadata?.userID,
                 email: metadata?.email
             )
@@ -79,7 +111,16 @@ struct KeychainAuthSessionStore: AuthSessionStoring {
             delete(account: refreshTokenAccount)
         }
 
-        saveMetadata(AuthSessionMetadata(userID: session.userID, email: session.email))
+        saveMetadata(
+            AuthSessionMetadata(
+                tokenType: session.tokenType,
+                expiresIn: session.expiresIn,
+                refreshTokenExpiresAt: session.refreshTokenExpiresAt,
+                sessionID: session.sessionID,
+                userID: session.userID,
+                email: session.email
+            )
+        )
         delete(account: legacyAccount)
     }
 
@@ -156,6 +197,10 @@ struct KeychainAuthSessionStore: AuthSessionStoring {
 }
 
 private struct AuthSessionMetadata: Codable, Equatable {
+    let tokenType: String?
+    let expiresIn: Int?
+    let refreshTokenExpiresAt: String?
+    let sessionID: String?
     let userID: String?
     let email: String?
 }

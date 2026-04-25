@@ -2,6 +2,45 @@ import XCTest
 @testable import Cryptory
 
 final class NetworkAndAuthTests: XCTestCase {
+    private func makeAPIConfiguration(baseURL: String = "https://example.com") -> APIConfiguration {
+        APIConfiguration(
+            baseURL: baseURL,
+            loginPath: "/api/v1/auth/login",
+            marketMarketsPath: "/market/markets",
+            marketTickersPath: "/market/tickers",
+            marketOrderbookPath: "/market/orderbook",
+            marketTradesPath: "/market/trades",
+            marketCandlesPath: "/market/candles",
+            tradingChancePath: "/trading/chance",
+            tradingOrdersPath: "/trading/orders",
+            tradingOpenOrdersPath: "/trading/open-orders",
+            tradingFillsPath: "/trading/fills",
+            portfolioSummaryPath: "/portfolio/summary",
+            portfolioHistoryPath: "/portfolio/history",
+            kimchiPremiumPath: "/kimchi-premium",
+            exchangeConnectionsPath: "/exchange-connections",
+            exchangeConnectionsCreateEnabled: true,
+            exchangeConnectionsUpdateEnabled: true,
+            exchangeConnectionsDeleteEnabled: true
+        )
+    }
+
+    private func makeAuthenticationService(baseURL: String = "https://example.com") -> LiveAuthenticationService {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [URLProtocolSpy.self]
+        let session = URLSession(configuration: configuration)
+        let client = APIClient(
+            configuration: makeAPIConfiguration(baseURL: baseURL),
+            session: session
+        )
+        return LiveAuthenticationService(client: client)
+    }
+
+    private func lastRequestBody() throws -> JSONObject {
+        let bodyData = try XCTUnwrap(URLProtocolSpy.lastRequestBody)
+        let body = try JSONSerialization.jsonObject(with: bodyData)
+        return try XCTUnwrap(body as? JSONObject)
+    }
 
     func testTabAccessPolicyMatchesRequirements() {
         XCTAssertEqual(Tab.market.accessRequirement, .publicAccess)
@@ -29,6 +68,77 @@ final class NetworkAndAuthTests: XCTestCase {
         XCTAssertEqual(configuration.portfolioHistoryPath, "/portfolio/history")
         XCTAssertEqual(configuration.kimchiPremiumPath, "/kimchi-premium")
         XCTAssertEqual(configuration.exchangeConnectionsPath, "/exchange-connections")
+    }
+
+    func testSocialAuthConfigurationUsesContractPaths() throws {
+        let devRuntime = AppRuntimeConfiguration.resolve(
+            environment: ["APP_ENV": "Dev"],
+            buildConfiguration: .debug
+        )
+        let prodRuntime = AppRuntimeConfiguration.resolve(
+            environment: ["APP_ENV": "Prod"],
+            buildConfiguration: .release
+        )
+        let devConfiguration = APIConfiguration.resolve(
+            environment: ["APP_ENV": "Dev"],
+            buildConfiguration: .debug
+        )
+        let prodConfiguration = APIConfiguration.resolve(
+            environment: ["APP_ENV": "Prod"],
+            buildConfiguration: .release
+        )
+
+        XCTAssertEqual(devRuntime.restBaseURL.absoluteString, "http://127.0.0.1:3002")
+        XCTAssertEqual(prodRuntime.restBaseURL.absoluteString, "http://crytory.duckdns.org")
+        XCTAssertEqual(devConfiguration.googleLoginPath, "/api/v1/auth/social/google")
+        XCTAssertEqual(devConfiguration.appleLoginPath, "/api/v1/auth/social/apple")
+        XCTAssertEqual(prodConfiguration.googleLoginPath, "/api/v1/auth/social/google")
+        XCTAssertEqual(prodConfiguration.appleLoginPath, "/api/v1/auth/social/apple")
+
+        let devClient = APIClient(configuration: devConfiguration)
+        let prodClient = APIClient(configuration: prodConfiguration)
+        XCTAssertEqual(
+            try devClient.makeRequest(path: devConfiguration.googleLoginPath, method: "POST", accessRequirement: .publicAccess).url?.absoluteString,
+            "http://127.0.0.1:3002/api/v1/auth/social/google"
+        )
+        XCTAssertEqual(
+            try devClient.makeRequest(path: devConfiguration.appleLoginPath, method: "POST", accessRequirement: .publicAccess).url?.absoluteString,
+            "http://127.0.0.1:3002/api/v1/auth/social/apple"
+        )
+        XCTAssertEqual(
+            try prodClient.makeRequest(path: prodConfiguration.googleLoginPath, method: "POST", accessRequirement: .publicAccess).url?.absoluteString,
+            "http://crytory.duckdns.org/api/v1/auth/social/google"
+        )
+        XCTAssertEqual(
+            try prodClient.makeRequest(path: prodConfiguration.appleLoginPath, method: "POST", accessRequirement: .publicAccess).url?.absoluteString,
+            "http://crytory.duckdns.org/api/v1/auth/social/apple"
+        )
+    }
+
+    func testSocialAuthPathsIgnoreLegacyPathOverrides() {
+        let configuration = APIConfiguration.resolve(
+            environment: [
+                "APP_ENV": "Dev",
+                "CRYPTORY_GOOGLE_LOGIN_PATH": "/api/v1/auth/" + "google",
+                "CRYPTORY_APPLE_LOGIN_PATH": "/api/v1/auth/" + "apple"
+            ],
+            buildConfiguration: .debug
+        )
+
+        XCTAssertEqual(configuration.googleLoginPath, "/api/v1/auth/social/google")
+        XCTAssertEqual(configuration.appleLoginPath, "/api/v1/auth/social/apple")
+    }
+
+    func testRuntimeConfigurationStripsPathFromRESTBaseURL() {
+        let configuration = AppRuntimeConfiguration.resolve(
+            environment: [
+                "APP_ENV": "Dev",
+                "API_BASE_URL": "http://127.0.0.1:3002/api/v1"
+            ],
+            buildConfiguration: .debug
+        )
+
+        XCTAssertEqual(configuration.restBaseURL.absoluteString, "http://127.0.0.1:3002")
     }
 
     func testRuntimeConfigurationDefaultsToDevelopmentForDebugBuilds() {
@@ -70,6 +180,93 @@ final class NetworkAndAuthTests: XCTestCase {
         XCTAssertEqual(configuration.environment, .development)
         XCTAssertEqual(configuration.restBaseURL.absoluteString, "http://192.168.0.24:3002")
         XCTAssertEqual(configuration.publicMarketWebSocketURL.absoluteString, "ws://192.168.0.24:3002/ws/market")
+    }
+
+    func testGoogleSocialLoginUsesSocialPathAndContractBody() async throws {
+        URLProtocolSpy.reset()
+        URLProtocolSpy.responseData = Data(
+            """
+            {
+              "data": {
+                "accessToken": "access-token",
+                "refreshToken": "refresh-token",
+                "tokenType": "Bearer",
+                "expiresIn": 3600,
+                "refreshTokenExpiresAt": "2026-05-01T00:00:00Z",
+                "sessionId": "session-1",
+                "user": {
+                  "id": "user-1",
+                  "email": "user@example.com"
+                }
+              }
+            }
+            """.utf8
+        )
+        let service = makeAuthenticationService()
+
+        let session = try await service.signInWithGoogle(
+            request: GoogleSocialLoginRequest(
+                idToken: "google-id-token",
+                accessToken: "google-access-token",
+                email: "user@example.com",
+                displayName: "Test User",
+                deviceID: "device-1"
+            )
+        )
+        let body = try lastRequestBody()
+
+        XCTAssertEqual(URLProtocolSpy.lastRequest?.url?.path, "/api/v1/auth/social/google")
+        XCTAssertEqual(body["idToken"] as? String, "google-id-token")
+        XCTAssertEqual(body["accessToken"] as? String, "google-access-token")
+        XCTAssertNil(body["credential"])
+        XCTAssertEqual(session.accessToken, "access-token")
+        XCTAssertEqual(session.refreshToken, "refresh-token")
+        XCTAssertEqual(session.tokenType, "Bearer")
+        XCTAssertEqual(session.expiresIn, 3600)
+        XCTAssertEqual(session.refreshTokenExpiresAt, "2026-05-01T00:00:00Z")
+        XCTAssertEqual(session.sessionID, "session-1")
+        XCTAssertEqual(session.userID, "user-1")
+        XCTAssertEqual(session.email, "user@example.com")
+    }
+
+    func testAppleSocialLoginUsesSocialPathAndContractBody() async throws {
+        URLProtocolSpy.reset()
+        URLProtocolSpy.responseData = Data(
+            """
+            {
+              "data": {
+                "accessToken": "access-token",
+                "refreshToken": "refresh-token",
+                "user": {
+                  "id": "user-1",
+                  "email": "apple@example.com"
+                }
+              }
+            }
+            """.utf8
+        )
+        let service = makeAuthenticationService()
+
+        _ = try await service.signInWithApple(
+            request: AppleSocialLoginRequest(
+                identityToken: "apple-identity-token",
+                authorizationCode: "apple-auth-code",
+                userIdentifier: "apple-user",
+                email: "apple@example.com",
+                fullName: "Apple User",
+                givenName: "Apple",
+                familyName: "User",
+                deviceID: "device-1"
+            )
+        )
+        let body = try lastRequestBody()
+
+        XCTAssertEqual(URLProtocolSpy.lastRequest?.url?.path, "/api/v1/auth/social/apple")
+        XCTAssertEqual(body["identityToken"] as? String, "apple-identity-token")
+        XCTAssertEqual(body["authorizationCode"] as? String, "apple-auth-code")
+        XCTAssertEqual(body["fullName"] as? String, "Apple User")
+        XCTAssertEqual(body["email"] as? String, "apple@example.com")
+        XCTAssertNil(body["idToken"])
     }
 
     func testSignUpUsesServerAuthRegisterPathAndParsesNestedUserResponse() async throws {

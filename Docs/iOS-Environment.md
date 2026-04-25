@@ -65,20 +65,26 @@
 | `WEB_BASE_URL` | `http://crytory.duckdns.org` | `http://127.0.0.1:3002` |
 | Public WS URL | `ws://crytory.duckdns.org/ws/market` | `ws://127.0.0.1:3002/ws/market` |
 | Private WS URL | `ws://crytory.duckdns.org/ws/trading` | `ws://127.0.0.1:3002/ws/trading` |
+| Google social login | `http://crytory.duckdns.org/api/v1/auth/social/google` | `http://127.0.0.1:3002/api/v1/auth/social/google` |
+| Apple social login | `http://crytory.duckdns.org/api/v1/auth/social/apple` | `http://127.0.0.1:3002/api/v1/auth/social/apple` |
 
 ## 7. Simulator Local Server
 
 1. Start the backend locally on port `3002`.
 2. Run `Cryptory-Dev` in Xcode.
 3. The simulator connects to `http://127.0.0.1:3002` and `ws://127.0.0.1:3002`.
-4. To use a different port, update `LOCAL_SERVER_PORT` in `Configurations/Debug-Dev.xcconfig` and rebuild.
+4. Verify the social routes are registered on the local server:
+   - `curl -i -X POST http://127.0.0.1:3002/api/v1/auth/social/google -H "Content-Type: application/json" -d '{"idToken":"test"}'`
+   - `curl -i -X POST http://127.0.0.1:3002/api/v1/auth/social/apple -H "Content-Type: application/json" -d '{"identityToken":"test"}'`
+5. A `400` or `401` response means the route exists. A `404` means the backend route or prefix is not registered yet.
+6. To use a different port, update `LOCAL_SERVER_PORT` in `Configurations/Debug-Dev.xcconfig` and rebuild.
 
 ## 8. Real Device Local Server
 
 1. Start the backend bound to the Mac's LAN interface, usually `0.0.0.0:3002`.
 2. Put the iPhone and Mac on the same local network.
 3. Find the Mac LAN IP, for example `192.168.x.x`.
-4. Change `LOCAL_SERVER_HOST` in `Configurations/Debug-Dev.xcconfig` from `127.0.0.1` to that LAN IP and rebuild `Cryptory-Dev`.
+4. Change `LOCAL_SERVER_HOST` in `Configurations/Debug-Dev.xcconfig`, or create `Configurations/LocalSecrets.xcconfig` with `LOCAL_SERVER_HOST = 192.168.x.x`, and rebuild `Cryptory-Dev`.
 5. Keep port `3002` or update `LOCAL_SERVER_PORT` consistently.
 6. Allow the iOS local network permission prompt if shown.
 
@@ -91,6 +97,8 @@
 5. Verify startup logs:
    - `[CONFIG] Environment -> Dev` or `[CONFIG] Environment -> Prod`
    - `[CONFIG] REST base URL -> ...`
+   - `[AUTH] Social endpoint google -> /api/v1/auth/social/google`
+   - `[AUTH] Social endpoint apple -> /api/v1/auth/social/apple`
    - `[CONFIG] Public WS URL -> ...`
 
 ## 10. Login, Deep Link, Push, and Web Auth Check
