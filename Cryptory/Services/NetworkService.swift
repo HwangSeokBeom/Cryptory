@@ -44,6 +44,36 @@ enum NetworkServiceError: LocalizedError {
             return .unknown
         }
     }
+
+    var isNotFound: Bool {
+        if case .httpError(let statusCode, _, _) = self {
+            return statusCode == 404
+        }
+        return false
+    }
+
+    func userFacingDescription(fallback: String) -> String {
+        switch self {
+        case .httpError(let statusCode, let message, _):
+            let normalized = message.lowercased()
+            if statusCode == 404
+                || normalized.contains("route ")
+                || normalized.contains("not found")
+                || normalized.contains("cannot get")
+                || normalized.contains("cannot post") {
+                return fallback
+            }
+            return message
+        case .transportError:
+            return "네트워크 상태를 확인한 뒤 다시 시도해주세요."
+        case .parsingFailed:
+            return "서버 응답을 해석하지 못했어요. 잠시 후 다시 시도해주세요."
+        case .invalidURL, .invalidResponse:
+            return "서버 요청을 처리하지 못했어요. 잠시 후 다시 시도해주세요."
+        case .authenticationRequired:
+            return "로그인이 필요한 요청이에요."
+        }
+    }
 }
 
 struct ResponseMeta: Equatable, Codable {
@@ -997,6 +1027,75 @@ final class APIClient {
             AppLogger.debug(
                 .network,
                 "Decode failure <- route=\(path) url=\(request.url?.absoluteString ?? path) bytes=\(data.count)"
+            )
+            throw NetworkServiceError.parsingFailed("서버 응답 형식을 해석하지 못했어요.")
+        }
+    }
+
+    func requestPublicContentJSONWithDebugLog(
+        path: String,
+        method: String = "GET",
+        queryItems: [URLQueryItem] = [],
+        body: JSONObject? = nil,
+        endpoint: String,
+        canonical: Bool,
+        decodeTarget: String,
+        normalizedSymbol: String? = nil
+    ) async throws -> Any {
+        let request = try makeRequest(
+            path: path,
+            method: method,
+            queryItems: queryItems,
+            body: body,
+            accessRequirement: .publicAccess
+        )
+        AppLogger.debug(
+            .network,
+            "[PublicContentAPI] request endpoint=\(endpoint) method=\(method) canonical=\(canonical) url=\(request.url?.absoluteString ?? path)\(normalizedSymbol.map { " symbol=\($0)" } ?? "") decodeTarget=\(decodeTarget)"
+        )
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch {
+            let failure = TransportFailureMapper.map(error)
+            AppLogger.debug(
+                .network,
+                "[PublicContentAPI] transport failed endpoint=\(endpoint) url=\(request.url?.absoluteString ?? path) error=\(failure.message)"
+            )
+            throw NetworkServiceError.transportError(failure.message, failure.category)
+        }
+
+        guard let httpResponse = response as? HTTPURLResponse else {
+            AppLogger.debug(.network, "[PublicContentAPI] invalid response endpoint=\(endpoint)")
+            throw NetworkServiceError.invalidResponse
+        }
+
+        let bodyPrefix = String(data: Data(data.prefix(1000)), encoding: .utf8)?
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "\r", with: " ")
+            ?? "<non-utf8 body>"
+        AppLogger.debug(
+            .network,
+            "[PublicContentAPI] response endpoint=\(endpoint) status=\(httpResponse.statusCode) bodyPrefix=\(bodyPrefix)"
+        )
+
+        guard (200...299).contains(httpResponse.statusCode) else {
+            let parsedError = parseServerError(from: data, statusCode: httpResponse.statusCode)
+            throw NetworkServiceError.httpError(httpResponse.statusCode, parsedError.message, parsedError.category)
+        }
+
+        if data.isEmpty {
+            return [:]
+        }
+
+        do {
+            return try JSONSerialization.jsonObject(with: data)
+        } catch {
+            AppLogger.debug(
+                .network,
+                "[PublicContentAPI] decode failed endpoint=\(endpoint) target=\(decodeTarget) path=$ error=\(error)"
             )
             throw NetworkServiceError.parsingFailed("서버 응답 형식을 해석하지 못했어요.")
         }

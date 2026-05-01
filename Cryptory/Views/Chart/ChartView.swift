@@ -17,27 +17,17 @@ struct ChartView: View {
             if vm.isSelectedExchangeChartUnsupported {
                 unsupportedState
             } else if let coin = vm.selectedCoin {
-                ScrollView {
-                    VStack(spacing: 0) {
-                        coinHeader(coin)
-                        ScreenStatusBannerView(viewState: vm.chartStatusViewState)
-                            .padding(.horizontal, 16)
-                            .padding(.top, 12)
-                        PeriodSelector(vm: vm) {
-                            isChartSettingsPresented = true
-                        }
-                        candleSection
-                        analysisDisclaimer
-                        stats24H
-                        orderbookSection
-                        tradesSection
-                    }
+                VStack(spacing: 0) {
+                    coinHeader(coin)
+                    detailTabBar
+                    detailContent(for: coin)
                 }
                 .onAppear {
                     AppLogger.debug(
                         .lifecycle,
                         "ChartView onAppear #\(instanceID) \(coin.marketIdentity(exchange: vm.exchange).logFields) interval=\(vm.chartPeriod)"
                     )
+                    vm.loadCoinDetailContent(symbol: coin.symbol)
                 }
                 .onDisappear {
                     AppLogger.debug(.lifecycle, "ChartView onDisappear #\(instanceID)")
@@ -163,6 +153,22 @@ struct ChartView: View {
                         )
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel(vm.favCoins.contains(coin.symbol) ? "관심 코인 해제" : "관심 코인 추가")
+
+                Button {
+                    vm.showNotification("가격 알림은 참고용 알림으로 준비 중입니다.", type: .success)
+                } label: {
+                    Image(systemName: "bell.badge")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundColor(.textMuted)
+                        .padding(8)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8)
+                                .fill(Color.bgSecondary)
+                        )
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("가격 알림")
             }
         }
         .padding(.horizontal, 16)
@@ -175,6 +181,106 @@ struct ChartView: View {
         )
     }
 
+    private var detailTabBar: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 20) {
+                ForEach(CoinDetailTab.allCases) { tab in
+                    Button {
+                        vm.selectedCoinDetailTab = tab
+                    } label: {
+                        VStack(spacing: 8) {
+                            Text(tab.title)
+                                .font(.system(size: 15, weight: vm.selectedCoinDetailTab == tab ? .heavy : .bold))
+                                .foregroundColor(vm.selectedCoinDetailTab == tab ? .themeText : .textMuted)
+                                .lineLimit(1)
+                            Rectangle()
+                                .fill(vm.selectedCoinDetailTab == tab ? Color.accent : Color.clear)
+                                .frame(height: 3)
+                        }
+                        .frame(minWidth: 54)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("\(tab.title) 탭")
+                }
+            }
+            .padding(.horizontal, 16)
+        }
+        .overlay(
+            Rectangle()
+                .frame(height: 1)
+                .foregroundColor(.themeBorder),
+            alignment: .bottom
+        )
+        .background(Color.bg)
+    }
+
+    @ViewBuilder
+    private func detailContent(for coin: CoinInfo) -> some View {
+        switch vm.selectedCoinDetailTab {
+        case .info:
+            CoinInfoDetailView(
+                state: vm.coinInfoState,
+                coin: coin,
+                ticker: vm.headerSummaryState.value ?? vm.currentTicker,
+                onRetry: { vm.loadCoinInfo(symbol: coin.symbol, forceRefresh: true) }
+            )
+        case .chart:
+            chartTabContent(for: coin)
+        case .analysis:
+            CoinAnalysisDetailView(
+                state: vm.coinAnalysisState,
+                selectedTimeframe: vm.selectedAnalysisTimeframe,
+                onSelectTimeframe: vm.selectAnalysisTimeframe,
+                onRetry: {
+                    vm.loadCoinAnalysis(
+                        symbol: coin.symbol,
+                        timeframe: vm.selectedAnalysisTimeframe,
+                        forceRefresh: true
+                    )
+                }
+            )
+        case .community:
+            CoinCommunityDetailView(
+                symbol: coin.symbol,
+                state: vm.coinCommunityState,
+                draft: $vm.communityDraft,
+                onFilter: { filter in
+                    vm.loadCoinCommunity(symbol: coin.symbol, filter: filter, forceRefresh: true)
+                },
+                onSubmit: {
+                    vm.submitCoinCommunityPost(symbol: coin.symbol)
+                },
+                onVote: { direction in
+                    vm.voteCoinOpinion(symbol: coin.symbol, direction: direction)
+                },
+                onRetry: {
+                    vm.loadCoinCommunity(symbol: coin.symbol, filter: .all, forceRefresh: true)
+                },
+                isSubmitting: vm.isSubmittingCommunityPost,
+                isVoting: vm.isVotingCoinOpinion
+            )
+        }
+    }
+
+    private func chartTabContent(for coin: CoinInfo) -> some View {
+        ScrollView {
+            VStack(spacing: 0) {
+                ScreenStatusBannerView(viewState: vm.chartStatusViewState)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 12)
+                PeriodSelector(vm: vm) {
+                    isChartSettingsPresented = true
+                }
+                candleSection
+                stats24H
+                coinMarketDataSection(coin)
+                orderbookSection
+                tradesSection
+                chartDisclaimer
+            }
+            .padding(.bottom, 164)
+        }
+    }
     @ViewBuilder
     private var candleSection: some View {
         switch vm.candlesState {
@@ -259,14 +365,80 @@ struct ChartView: View {
         .padding(.top, 12)
     }
 
-    private var analysisDisclaimer: some View {
-        Text("차트와 분석 정보는 참고용 시장 데이터이며, 투자 조언이나 거래 신호가 아닙니다.")
+    private var chartDisclaimer: some View {
+        Text("차트와 시장 데이터는 참고용 정보이며, 투자 조언이나 거래 신호가 아닙니다.")
             .font(.system(size: 11, weight: .semibold))
             .foregroundColor(.textMuted)
             .lineSpacing(2)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 16)
             .padding(.top, 8)
+    }
+
+    private func coinMarketDataSection(_ coin: CoinInfo) -> some View {
+        let info = vm.coinInfoState.value
+        let ticker = vm.marketStatsState.value ?? vm.currentTicker
+        return VStack(alignment: .leading, spacing: 14) {
+            Text("차트 보조 데이터")
+                .font(.system(size: 16, weight: .heavy))
+                .foregroundColor(.themeText)
+
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
+                marketMetric("현재가", krwPrice(info?.currentPrice ?? ticker?.price) ?? "데이터 준비 중", color: info?.currentPrice == nil && ticker == nil ? .textMuted : .themeText)
+                marketMetric("24시간 고가", krwPrice(info?.high24h ?? ticker?.high24) ?? "제공되지 않음", color: info?.high24h == nil && ticker == nil ? .textMuted : .up)
+                marketMetric("24시간 저가", krwPrice(info?.low24h ?? ticker?.low24) ?? "제공되지 않음", color: info?.low24h == nil && ticker == nil ? .textMuted : .down)
+                marketMetric("24시간 거래대금", currency(info?.tradeValue24h ?? ticker?.volume) ?? "제공되지 않음", color: .themeText)
+            }
+
+            if let change = ticker?.change ?? info?.priceChangePercentages[.h24] {
+                HStack {
+                    Text("24시간 변동률")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(.textSecondary)
+                    Spacer()
+                    Text(String(format: "%+.2f%%", change))
+                        .font(.mono(14, weight: .heavy))
+                        .foregroundColor(change >= 0 ? .up : .down)
+                }
+            }
+
+            if info == nil {
+                Text("\(coin.displaySymbol) 시장 정보를 불러오는 중입니다. 제공되지 않는 항목은 준비 상태로 표시됩니다.")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(.textMuted)
+                    .lineSpacing(2)
+            } else if info?.fallbackUsed == true {
+                Text("일부 정보는 거래소 스냅샷 기준으로 표시됩니다.")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(.textMuted)
+                    .lineSpacing(2)
+            }
+        }
+        .padding(16)
+        .background(sectionCardBackground)
+        .padding(.horizontal, 16)
+        .padding(.top, 12)
+    }
+
+    private func marketMetric(_ title: String, _ value: String, color: Color) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(.textMuted)
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+            Text(value)
+                .font(.mono(14, weight: .heavy))
+                .foregroundColor(color)
+                .lineLimit(1)
+                .minimumScaleFactor(0.65)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color.bgTertiary)
+        )
     }
 
     @ViewBuilder

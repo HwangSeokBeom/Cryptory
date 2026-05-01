@@ -16,12 +16,16 @@ enum Tab: String, CaseIterable, Equatable {
     case portfolio
     case kimchi
 
+    static var allCases: [Tab] {
+        [.market, .chart, .news, .portfolio, .kimchi]
+    }
+
     var systemImage: String {
         switch self {
         case .market: return "chart.line.uptrend.xyaxis"
         case .chart: return "chart.xyaxis.line"
         case .news: return "newspaper"
-        case .trade: return "arrow.left.arrow.right.circle"
+        case .trade: return "newspaper"
         case .portfolio: return "wallet.pass"
         case .kimchi: return "flame"
         }
@@ -32,7 +36,7 @@ enum Tab: String, CaseIterable, Equatable {
         case .market: return "시세"
         case .chart: return "차트"
         case .news: return "뉴스"
-        case .trade: return "제한"
+        case .trade: return "뉴스"
         case .portfolio: return "자산"
         case .kimchi: return "김프"
         }
@@ -49,9 +53,9 @@ enum Tab: String, CaseIterable, Equatable {
 
     var showsExchangeSelector: Bool {
         switch self {
-        case .market, .chart, .trade:
+        case .market, .chart:
             return true
-        case .news, .portfolio, .kimchi:
+        case .trade, .news, .portfolio, .kimchi:
             return false
         }
     }
@@ -766,6 +770,17 @@ final class CryptoViewModel: ObservableObject {
     @Published private(set) var portfolioHistoryState: Loadable<[PortfolioHistoryItem]> = .idle
     @Published private(set) var portfolioStatusViewState: ScreenStatusViewState = .idle
 
+    @Published private(set) var newsState: Loadable<[CryptoNewsItem]> = .idle
+    @Published private(set) var marketTrendsState: Loadable<MarketTrendsSnapshot> = .idle
+    @Published private(set) var coinInfoState: Loadable<CoinDetailInfo> = .idle
+    @Published private(set) var coinAnalysisState: Loadable<CoinAnalysisSnapshot> = .idle
+    @Published private(set) var coinCommunityState: Loadable<CoinCommunitySnapshot> = .idle
+    @Published var selectedCoinDetailTab: CoinDetailTab = .info
+    @Published private(set) var selectedAnalysisTimeframe: CoinAnalysisTimeframe = .h1
+    @Published var communityDraft = ""
+    @Published private(set) var isSubmittingCommunityPost = false
+    @Published private(set) var isVotingCoinOpinion = false
+
     @Published private(set) var selectedDomesticKimchiExchange: Exchange = .upbit
     @Published private(set) var kimchiPremiumState: Loadable<[KimchiPremiumCoinViewState]> = .idle
     @Published private(set) var kimchiStatusViewState: ScreenStatusViewState = .idle
@@ -806,6 +821,7 @@ final class CryptoViewModel: ObservableObject {
     private let portfolioRepository: PortfolioRepositoryProtocol
     private let kimchiPremiumRepository: KimchiPremiumRepositoryProtocol
     private let exchangeConnectionsRepository: ExchangeConnectionsRepositoryProtocol
+    private let publicContentRepository: PublicContentRepositoryProtocol
     private let authService: AuthenticationServiceProtocol
     private let authSessionStore: AuthSessionStoring?
     private let googleSignInProvider: GoogleSignInProviding
@@ -1045,6 +1061,7 @@ final class CryptoViewModel: ObservableObject {
         portfolioRepository: PortfolioRepositoryProtocol? = nil,
         kimchiPremiumRepository: KimchiPremiumRepositoryProtocol? = nil,
         exchangeConnectionsRepository: ExchangeConnectionsRepositoryProtocol? = nil,
+        publicContentRepository: PublicContentRepositoryProtocol? = nil,
         authService: AuthenticationServiceProtocol? = nil,
         authSessionStore: AuthSessionStoring? = nil,
         googleSignInProvider: GoogleSignInProviding? = nil,
@@ -1062,6 +1079,7 @@ final class CryptoViewModel: ObservableObject {
         self.portfolioRepository = portfolioRepository ?? LivePortfolioRepository()
         self.kimchiPremiumRepository = kimchiPremiumRepository ?? LiveKimchiPremiumRepository()
         self.exchangeConnectionsRepository = exchangeConnectionsRepository ?? LiveExchangeConnectionsRepository()
+        self.publicContentRepository = publicContentRepository ?? LivePublicContentRepository()
         self.authService = authService ?? LiveAuthenticationService()
         self.authSessionStore = authSessionStore ?? Self.defaultAuthSessionStore()
         self.googleSignInProvider = googleSignInProvider ?? LiveGoogleSignInProvider.shared
@@ -3863,17 +3881,234 @@ final class CryptoViewModel: ObservableObject {
         updateExchange(exchange, source: source)
     }
 
-    func selectCoin(_ coin: CoinInfo) {
+    func selectCoin(_ coin: CoinInfo, initialDetailTab: CoinDetailTab = .chart) {
         selectedCoin = coin
+        selectedCoinDetailTab = initialDetailTab
         prefillOrderPriceIfPossible()
         setActiveTab(.chart)
+        loadCoinDetailContent(symbol: coin.symbol)
     }
 
     func selectCoinForTrade(_ coin: CoinInfo) {
         selectedCoin = coin
+        selectedCoinDetailTab = .chart
         prefillOrderPriceIfPossible()
         setActiveTab(.chart)
+        loadCoinDetailContent(symbol: coin.symbol)
         showNotification("보유 코인의 정보성 차트로 이동했어요.", type: .success)
+    }
+
+    func loadNewsAndTrendsIfNeeded(forceRefresh: Bool = false) {
+        if forceRefresh || newsState == .idle {
+            loadNews(forceRefresh: forceRefresh)
+        }
+        if forceRefresh || marketTrendsState == .idle {
+            loadMarketTrends(forceRefresh: forceRefresh)
+        }
+    }
+
+    func loadNews(forceRefresh: Bool = false) {
+        if newsState.isLoading && !forceRefresh {
+            return
+        }
+        newsState = .loading
+        let repository = publicContentRepository
+        Task { @MainActor in
+            do {
+                let snapshot = try await repository.fetchNews(category: nil, symbol: nil, cursor: nil, limit: 40)
+                newsState = snapshot.items.isEmpty ? .empty : .loaded(snapshot.items)
+            } catch {
+                newsState = .failed(friendlyPublicContentErrorMessage(error, fallback: "뉴스를 불러오지 못했어요."))
+            }
+        }
+    }
+
+    func loadMarketTrends(forceRefresh: Bool = false) {
+        if marketTrendsState.isLoading && !forceRefresh {
+            return
+        }
+        marketTrendsState = .loading
+        let repository = publicContentRepository
+        Task { @MainActor in
+            do {
+                marketTrendsState = .loaded(try await repository.fetchMarketTrends())
+            } catch {
+                marketTrendsState = .failed(friendlyPublicContentErrorMessage(error, fallback: "시장 데이터를 불러오지 못했어요."))
+            }
+        }
+    }
+
+    func loadCoinDetailContent(symbol: String? = nil, forceRefresh: Bool = false) {
+        guard let rawSymbol = symbol ?? selectedCoin?.symbol else {
+            return
+        }
+        let symbol = LivePublicContentRepository.normalizedSymbol(rawSymbol)
+        loadCoinInfo(symbol: symbol, forceRefresh: forceRefresh)
+        loadCoinAnalysis(symbol: symbol, timeframe: selectedAnalysisTimeframe, forceRefresh: forceRefresh)
+        loadCoinCommunity(symbol: symbol, filter: .all, forceRefresh: forceRefresh)
+    }
+
+    func selectAnalysisTimeframe(_ timeframe: CoinAnalysisTimeframe) {
+        guard selectedAnalysisTimeframe != timeframe else {
+            return
+        }
+        selectedAnalysisTimeframe = timeframe
+        if let symbol = selectedCoin?.symbol {
+            loadCoinAnalysis(symbol: symbol, timeframe: timeframe, forceRefresh: true)
+        }
+    }
+
+    func loadCoinInfo(symbol: String, forceRefresh: Bool = false) {
+        if coinInfoState.isLoading && !forceRefresh {
+            return
+        }
+        coinInfoState = .loading
+        let repository = publicContentRepository
+        let coin = selectedCoin ?? CoinCatalog.coin(symbol: symbol)
+        Task { @MainActor in
+            do {
+                coinInfoState = .loaded(try await repository.fetchCoinInfo(symbol: symbol))
+            } catch {
+                coinInfoState = .loaded(makeCoinInfoFallback(coin: coin))
+            }
+        }
+    }
+
+    func loadCoinAnalysis(
+        symbol: String,
+        timeframe: CoinAnalysisTimeframe,
+        forceRefresh: Bool = false
+    ) {
+        if coinAnalysisState.isLoading && !forceRefresh {
+            return
+        }
+        coinAnalysisState = .loading
+        let repository = publicContentRepository
+        Task { @MainActor in
+            do {
+                coinAnalysisState = .loaded(try await repository.fetchCoinAnalysis(symbol: symbol, timeframe: timeframe))
+            } catch {
+                coinAnalysisState = .failed(friendlyPublicContentErrorMessage(error, fallback: "분석 정보를 불러오지 못했어요."))
+            }
+        }
+    }
+
+    func loadCoinCommunity(
+        symbol: String,
+        filter: CoinCommunityFilter,
+        forceRefresh: Bool = false
+    ) {
+        if coinCommunityState.isLoading && !forceRefresh {
+            return
+        }
+        coinCommunityState = .loading
+        let repository = publicContentRepository
+        Task { @MainActor in
+            do {
+                let snapshot = try await repository.fetchCoinCommunity(
+                    symbol: symbol,
+                    sort: "latest",
+                    filter: filter,
+                    cursor: nil,
+                    limit: 30
+                )
+                coinCommunityState = .loaded(snapshot)
+            } catch {
+                coinCommunityState = .failed(friendlyPublicContentErrorMessage(error, fallback: "커뮤니티를 불러오지 못했어요."))
+            }
+        }
+    }
+
+    func submitCoinCommunityPost(symbol: String) {
+        let content = communityDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard content.isEmpty == false else {
+            showNotification("의견 내용을 입력해주세요.", type: .error)
+            return
+        }
+        guard content.count >= 2 else {
+            showNotification("의견은 2자 이상 입력해주세요.", type: .error)
+            return
+        }
+        guard content.count <= 500 else {
+            showNotification("의견은 500자 이하로 입력해주세요.", type: .error)
+            return
+        }
+        guard isSubmittingCommunityPost == false else {
+            return
+        }
+        isSubmittingCommunityPost = true
+        let repository = publicContentRepository
+        Task { @MainActor in
+            defer { isSubmittingCommunityPost = false }
+            do {
+                _ = try await repository.createCoinCommunityPost(symbol: symbol, content: content)
+                communityDraft = ""
+                loadCoinCommunity(symbol: symbol, filter: .all, forceRefresh: true)
+            } catch {
+                showNotification(friendlyPublicContentErrorMessage(error, fallback: "의견을 남기지 못했어요."), type: .error)
+            }
+        }
+    }
+
+    func voteCoinOpinion(symbol: String, direction: String) {
+        guard isVotingCoinOpinion == false else {
+            return
+        }
+        isVotingCoinOpinion = true
+        let repository = publicContentRepository
+        Task { @MainActor in
+            defer { isVotingCoinOpinion = false }
+            do {
+                let vote = try await repository.voteCoin(symbol: symbol, direction: direction)
+                if case .loaded(let snapshot) = coinCommunityState {
+                    coinCommunityState = .loaded(CoinCommunitySnapshot(posts: snapshot.posts, vote: vote, nextCursor: snapshot.nextCursor))
+                }
+            } catch {
+                showNotification(friendlyPublicContentErrorMessage(error, fallback: "의견 투표를 반영하지 못했어요."), type: .error)
+            }
+        }
+    }
+
+    private func makeCoinInfoFallback(coin: CoinInfo) -> CoinDetailInfo {
+        let ticker = headerSummaryState.value ?? currentTicker
+        return CoinDetailInfo(
+            symbol: coin.symbol,
+            displaySymbol: coin.displaySymbol,
+            name: coin.nameEn.isEmpty ? coin.name : coin.nameEn,
+            logoURL: coin.iconURL.flatMap(URL.init(string:)),
+            provider: nil,
+            providerId: nil,
+            rank: nil,
+            marketCap: nil,
+            circulatingSupply: nil,
+            maxSupply: nil,
+            totalSupply: nil,
+            currentPrice: ticker?.price,
+            priceCurrency: "KRW",
+            high24h: ticker?.high24,
+            low24h: ticker?.low24,
+            allTimeHigh: nil,
+            allTimeLow: nil,
+            volume24h: ticker?.volume,
+            tradeValue24h: ticker?.volume,
+            marketCapChange24h: nil,
+            marketAsOf: nil,
+            priceChangePercentages: [.h24: ticker?.change].compactMapValues { $0 },
+            description: nil,
+            officialURL: nil,
+            explorerURL: nil,
+            dataProvider: "Market snapshot",
+            metadataSource: nil,
+            marketSource: "Market snapshot",
+            fallbackUsed: true
+        )
+    }
+
+    private func friendlyPublicContentErrorMessage(_ error: Error, fallback: String) -> String {
+        if let networkError = error as? NetworkServiceError {
+            return networkError.userFacingDescription(fallback: fallback)
+        }
+        return fallback
     }
 
     @discardableResult
@@ -7403,7 +7638,7 @@ final class CryptoViewModel: ObservableObject {
             await loadExchangeConnections(reason: "\(reason)_portfolio_connections")
             await loadPortfolio(reason: "\(reason)_portfolio")
         case .news:
-            break
+            loadNewsAndTrendsIfNeeded(forceRefresh: forceRefresh)
         case .trade:
             guard AppFeatureFlags.current.isOrderEnabled,
                   AppFeatureFlags.current.isTradingEnabled else {

@@ -818,6 +818,8 @@ final class URLProtocolSpy: URLProtocol {
     static var responseData = Data("{}".utf8)
     static var lastRequest: URLRequest?
     static var lastRequestBody: Data?
+    static var responseQueue: [(statusCode: Int, data: Data)] = []
+    static var requestedPaths: [String] = []
 
     static func reset() {
         requestCount = 0
@@ -825,6 +827,8 @@ final class URLProtocolSpy: URLProtocol {
         responseData = Data("{}".utf8)
         lastRequest = nil
         lastRequestBody = nil
+        responseQueue = []
+        requestedPaths = []
     }
 
     override class func canInit(with request: URLRequest) -> Bool { true }
@@ -834,9 +838,13 @@ final class URLProtocolSpy: URLProtocol {
         Self.requestCount += 1
         Self.lastRequest = request
         Self.lastRequestBody = request.httpBody ?? request.httpBodyStream?.readAllData()
-        let response = HTTPURLResponse(url: request.url!, statusCode: Self.responseStatusCode, httpVersion: nil, headerFields: nil)!
+        Self.requestedPaths.append(request.url?.path ?? "")
+        let queuedResponse = Self.responseQueue.isEmpty ? nil : Self.responseQueue.removeFirst()
+        let statusCode = queuedResponse?.statusCode ?? Self.responseStatusCode
+        let data = queuedResponse?.data ?? Self.responseData
+        let response = HTTPURLResponse(url: request.url!, statusCode: statusCode, httpVersion: nil, headerFields: nil)!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        client?.urlProtocol(self, didLoad: Self.responseData)
+        client?.urlProtocol(self, didLoad: data)
         client?.urlProtocolDidFinishLoading(self)
     }
 

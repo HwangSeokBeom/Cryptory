@@ -132,7 +132,7 @@ struct PortfolioView: View {
     }
 
     private var readOnlyNotice: some View {
-        Text("거래소 연동은 읽기 전용 자산 조회 목적으로만 사용됩니다. Cryptory는 암호화폐 매수·매도·전송·입금·출금·주문 실행 기능을 제공하지 않습니다.")
+        Text("거래소 연동은 읽기 전용 자산 조회 목적으로만 사용됩니다. Cryptory는 앱 안에서 자산을 실행하거나 이동시키는 기능을 제공하지 않습니다.")
             .font(.system(size: 12, weight: .semibold))
             .foregroundColor(.textSecondary)
             .lineSpacing(3)
