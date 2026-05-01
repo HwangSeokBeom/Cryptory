@@ -241,7 +241,7 @@ enum ProtectedFeature: String, Identifiable, Equatable {
         case .portfolio:
             return "자산"
         case .trade:
-            return "주문"
+            return "제한된 기능"
         case .exchangeConnections:
             return "거래소 연결"
         }
@@ -252,7 +252,7 @@ enum ProtectedFeature: String, Identifiable, Equatable {
         case .portfolio:
             return "이 기능은 로그인 후 사용할 수 있어요"
         case .trade:
-            return "주문은 로그인과 거래소 연결이 필요한 개인 기능이에요"
+            return "이 기능은 현재 제공되지 않아요"
         case .exchangeConnections:
             return "거래소 API 키 연결과 관리는 로그인 후 사용할 수 있어요"
         }
@@ -263,9 +263,9 @@ enum ProtectedFeature: String, Identifiable, Equatable {
         case .portfolio:
             return "로그인 후 내 자산과 거래소 연결을 관리할 수 있어요."
         case .trade:
-            return "거래소 연결 후 내 주문과 체결 내역을 확인할 수 있어요."
+            return "Cryptory는 앱 내 거래성 기능을 제공하지 않습니다."
         case .exchangeConnections:
-            return "읽기 전용 연결과 주문 가능 연결 정책을 확인하고 관리할 수 있어요."
+            return "읽기 전용 연결 정책을 확인하고 관리할 수 있어요."
         }
     }
 }

@@ -147,8 +147,8 @@ struct ProfileView: View {
                     .foregroundColor(.themeText)
 
                 Text(vm.isAuthenticated
-                     ? "현재 로그인 세션이 활성화되어 있으며, 거래소 API 연결과 정책/지원 관리를 이 화면에서 정리할 수 있어요."
-                     : "로그인 후 거래소 연결, 자산 확인, 주문 기능 같은 개인화 기능을 사용할 수 있어요.")
+                     ? "현재 로그인 세션이 활성화되어 있으며, 읽기 전용 거래소 API 연결과 정책/지원 관리를 이 화면에서 정리할 수 있어요."
+                     : "로그인 후 읽기 전용 거래소 연결과 자산 확인 같은 개인화 기능을 사용할 수 있어요.")
                     .font(.system(size: 12))
                     .foregroundColor(.textSecondary)
                     .lineSpacing(2)

@@ -9,16 +9,16 @@ enum ExchangeConnectionPermission: String, CaseIterable, Equatable, Hashable {
         case .readOnly:
             return "조회 전용"
         case .tradeEnabled:
-            return "주문 가능"
+            return "읽기 전용 제한"
         }
     }
 
     var description: String {
         switch self {
         case .readOnly:
-            return "잔고와 체결 내역만 조회할 수 있어요."
+            return "잔고와 보유 자산만 조회할 수 있어요."
         case .tradeEnabled:
-            return "잔고 조회와 주문 실행을 모두 사용할 수 있어요."
+            return "앱스토어 제출 빌드에서는 읽기 전용으로 제한됩니다."
         }
     }
 }

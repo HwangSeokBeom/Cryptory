@@ -126,7 +126,7 @@ struct LoginView: View {
                 .foregroundColor(.themeText)
 
             Text(vm.authFlowMode == .login
-                 ? "로그인 후 내 자산, 주문, 거래소 연결을 바로 이어서 사용할 수 있어요."
+                 ? "로그인 후 내 자산과 읽기 전용 거래소 연결을 바로 이어서 사용할 수 있어요."
                  : "이메일로 계정을 만들고 약관 동의 후 바로 로그인 상태로 진입합니다.")
                 .font(.system(size: 13))
                 .foregroundColor(.textSecondary)

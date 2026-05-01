@@ -21,6 +21,9 @@ struct PortfolioView: View {
                         .padding(.horizontal, 16)
                         .padding(.top, 14)
 
+                        readOnlyNotice
+                            .padding(.horizontal, 16)
+
                         ScreenStatusBannerView(viewState: vm.portfolioStatusViewState)
                             .padding(.horizontal, 16)
 
@@ -50,8 +53,7 @@ struct PortfolioView: View {
         case .empty:
             return "연결된 거래소가 없어요."
         case .loaded:
-            let tradableCount = vm.exchangeConnections.filter { $0.permission == .tradeEnabled && $0.isActive }.count
-            return "총 \(vm.exchangeConnections.count)개 연결, 주문 가능 \(tradableCount)개"
+            return "총 \(vm.exchangeConnections.count)개 읽기 전용 연결"
         }
     }
 
@@ -126,8 +128,24 @@ struct PortfolioView: View {
             portfolioCompositionSection
             exchangeAssetsSection
             topAssetsSection
-            historySection
         }
+    }
+
+    private var readOnlyNotice: some View {
+        Text("거래소 연동은 읽기 전용 자산 조회 목적으로만 사용됩니다. Cryptory는 암호화폐 매수·매도·전송·입금·출금·주문 실행 기능을 제공하지 않습니다.")
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundColor(.textSecondary)
+            .lineSpacing(3)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(14)
+            .background(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(Color.accent.opacity(0.1))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .stroke(Color.accent.opacity(0.26), lineWidth: 1)
+                    )
+            )
     }
 
     @ViewBuilder
@@ -196,7 +214,7 @@ struct PortfolioView: View {
 
     private var historySection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            sectionHeader("최근 자산 변동", subtitle: "실제 거래·입출금 내역만 표시")
+            sectionHeader("최근 자산 변동", subtitle: "읽기 전용 자산 변화만 표시")
 
             switch vm.portfolioHistoryState {
             case .idle, .loading:
@@ -213,7 +231,7 @@ struct PortfolioView: View {
             case .empty:
                 stateMessage(
                     title: "최근 자산 변동 내역이 없어요.",
-                    detail: "거래나 입출금이 발생하면 여기에 표시돼요."
+                    detail: "동기화된 자산 변화가 확인되면 여기에 표시돼요."
                 )
 
             case .loaded(let items):
@@ -615,7 +633,7 @@ private struct ExchangeAssetSectionCard: View, Equatable {
                         Text("₩" + PriceFormatter.formatInteger(section.totalAsset))
                             .font(.mono(14, weight: .bold))
                             .foregroundColor(.themeText)
-                        Text("가용 ₩" + PriceFormatter.formatInteger(section.availableAsset))
+                        Text("조회액 ₩" + PriceFormatter.formatInteger(section.availableAsset))
                             .font(.system(size: 10))
                             .foregroundColor(.textMuted)
                     }
@@ -710,7 +728,7 @@ private struct ExchangeHoldingRow: View, Equatable {
                 }
 
                 HStack {
-                    Text("평균 \(PriceFormatter.formatPrice(row.averageBuyPrice))")
+                    Text("평균 단가 \(PriceFormatter.formatPrice(row.averageBuyPrice))")
                         .font(.system(size: 10))
                         .foregroundColor(.textMuted)
                     Spacer()

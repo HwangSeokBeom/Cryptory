@@ -27,6 +27,7 @@ struct ChartView: View {
                             isChartSettingsPresented = true
                         }
                         candleSection
+                        analysisDisclaimer
                         stats24H
                         orderbookSection
                         tradesSection
@@ -258,6 +259,16 @@ struct ChartView: View {
         .padding(.top, 12)
     }
 
+    private var analysisDisclaimer: some View {
+        Text("차트와 분석 정보는 참고용 시장 데이터이며, 투자 조언이나 거래 신호가 아닙니다.")
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundColor(.textMuted)
+            .lineSpacing(2)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 16)
+            .padding(.top, 8)
+    }
+
     @ViewBuilder
     private var orderbookSection: some View {
         switch vm.orderbookState {
@@ -326,7 +337,7 @@ struct ChartView: View {
         switch vm.recentTradesState {
         case .idle, .loading:
             loadingSectionCard(
-                title: "최근 체결을 불러오는 중...",
+                title: "최근 시장 기록을 불러오는 중...",
                 height: 124
             )
             .padding(.top, 14)
@@ -334,7 +345,7 @@ struct ChartView: View {
         case .failed(let message):
             sectionStateCard(
                 icon: "clock.badge.exclamationmark",
-                title: "최근 체결을 불러오지 못했어요",
+                title: "최근 시장 기록을 불러오지 못했어요",
                 description: message,
                 height: 124,
                 actionTitle: "다시 시도",
@@ -345,7 +356,7 @@ struct ChartView: View {
         case .unavailable(let message):
             sectionStateCard(
                 icon: "clock.badge.exclamationmark",
-                title: "최근 체결 데이터가 일시적으로 제공되지 않아요",
+                title: "최근 시장 기록이 일시적으로 제공되지 않아요",
                 description: message,
                 height: 124,
                 actionTitle: "다시 시도",
@@ -356,8 +367,8 @@ struct ChartView: View {
         case .empty:
             sectionStateCard(
                 icon: "clock",
-                title: "최근 체결 데이터가 아직 없어요",
-                description: "새 체결이 들어오면 이 영역에 바로 표시됩니다.",
+                title: "최근 시장 기록이 아직 없어요",
+                description: "새 시장 데이터가 들어오면 이 영역에 바로 표시됩니다.",
                 height: 124,
                 actionTitle: "다시 시도",
                 action: retryChartData

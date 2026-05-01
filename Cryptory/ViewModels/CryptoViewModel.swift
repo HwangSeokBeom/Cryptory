@@ -11,6 +11,7 @@ enum ScreenAccessRequirement: String, Equatable {
 enum Tab: String, CaseIterable, Equatable {
     case market
     case chart
+    case news
     case trade
     case portfolio
     case kimchi
@@ -19,6 +20,7 @@ enum Tab: String, CaseIterable, Equatable {
         switch self {
         case .market: return "chart.line.uptrend.xyaxis"
         case .chart: return "chart.xyaxis.line"
+        case .news: return "newspaper"
         case .trade: return "arrow.left.arrow.right.circle"
         case .portfolio: return "wallet.pass"
         case .kimchi: return "flame"
@@ -29,7 +31,8 @@ enum Tab: String, CaseIterable, Equatable {
         switch self {
         case .market: return "시세"
         case .chart: return "차트"
-        case .trade: return "주문"
+        case .news: return "뉴스"
+        case .trade: return "제한"
         case .portfolio: return "자산"
         case .kimchi: return "김프"
         }
@@ -37,7 +40,7 @@ enum Tab: String, CaseIterable, Equatable {
 
     var accessRequirement: ScreenAccessRequirement {
         switch self {
-        case .market, .chart, .kimchi:
+        case .market, .chart, .news, .kimchi:
             return .publicAccess
         case .trade, .portfolio:
             return .authenticatedRequired
@@ -48,7 +51,7 @@ enum Tab: String, CaseIterable, Equatable {
         switch self {
         case .market, .chart, .trade:
             return true
-        case .portfolio, .kimchi:
+        case .news, .portfolio, .kimchi:
             return false
         }
     }
@@ -59,7 +62,7 @@ enum Tab: String, CaseIterable, Equatable {
             return .portfolio
         case .trade:
             return .trade
-        case .market, .chart, .kimchi:
+        case .market, .chart, .news, .kimchi:
             return nil
         }
     }
@@ -623,7 +626,7 @@ private enum ChartSectionKind {
         case .orderbook:
             return "호가"
         case .trades:
-            return "최근 체결"
+            return "최근 시장 기록"
         }
     }
 }
@@ -1394,7 +1397,10 @@ final class CryptoViewModel: ObservableObject {
     }
 
     var hasTradeEnabledConnection: Bool {
-        loadedExchangeConnections.contains {
+        guard AppFeatureFlags.current.isTradingEnabled else {
+            return false
+        }
+        return loadedExchangeConnections.contains {
             $0.exchange == selectedExchange && $0.isActive && $0.permission == .tradeEnabled
         }
     }
@@ -3294,7 +3300,7 @@ final class CryptoViewModel: ObservableObject {
         case .orderbook:
             return "\(exchange.displayName) 호가 데이터가 일시적으로 제공되지 않고 있어요."
         case .trades:
-            return "\(exchange.displayName) 최근 체결 데이터가 일시적으로 제공되지 않고 있어요."
+            return "\(exchange.displayName) 최근 시장 기록이 일시적으로 제공되지 않고 있어요."
         }
     }
 
@@ -3305,7 +3311,7 @@ final class CryptoViewModel: ObservableObject {
         case .orderbook:
             return "최신 호가 데이터를 불러오지 못했어요. 마지막 데이터를 표시 중입니다."
         case .trades:
-            return "최신 체결 데이터를 불러오지 못했어요. 마지막 데이터를 표시 중입니다."
+            return "최신 시장 기록을 불러오지 못했어요. 마지막 데이터를 표시 중입니다."
         }
     }
 
@@ -3639,6 +3645,13 @@ final class CryptoViewModel: ObservableObject {
     }
 
     func setActiveTab(_ tab: Tab) {
+        if tab == .trade, AppFeatureFlags.current.isOrderEnabled == false {
+            AppLogger.debug(.route, "[RouteGuard] blocked trade tab route; redirecting to news")
+            showNotification("Cryptory는 앱 내 주문 실행 기능을 제공하지 않습니다.", type: .error)
+            setActiveTab(.news)
+            return
+        }
+
         guard activeTab != tab else {
             AppLogger.debug(.route, "[TabState] activeTab unchanged -> \(tab.rawValue)")
             return
@@ -3859,8 +3872,30 @@ final class CryptoViewModel: ObservableObject {
     func selectCoinForTrade(_ coin: CoinInfo) {
         selectedCoin = coin
         prefillOrderPriceIfPossible()
-        setActiveTab(.trade)
-        logOrderHeaderPriceDebug(reason: "select_coin_for_trade", force: true)
+        setActiveTab(.chart)
+        showNotification("보유 코인의 정보성 차트로 이동했어요.", type: .success)
+    }
+
+    @discardableResult
+    func handleIncomingURL(_ url: URL) -> Bool {
+        guard url.scheme?.lowercased().contains("cryptory") == true else {
+            return false
+        }
+
+        if AppRouteGuard.isTradingRoute(url) {
+            AppLogger.debug(.route, "[RouteGuard] blocked trading deep link -> \(url.absoluteString)")
+            showNotification("거래성 링크는 열 수 없습니다. 시장 정보 화면으로 이동합니다.", type: .error)
+            setActiveTab(selectedCoin == nil ? .market : .chart)
+            return true
+        }
+
+        if let tab = AppRouteGuard.informationalTab(for: url) {
+            setActiveTab(tab)
+            return true
+        }
+
+        setActiveTab(.market)
+        return true
     }
 
     func setChartInterval(_ interval: String) {
@@ -4075,7 +4110,7 @@ final class CryptoViewModel: ObservableObject {
                 phase: "unsupported_chart"
             )
             updateOrderbookState(.unavailable("이 거래소는 호가를 지원하지 않아요."))
-            updateTradesState(.unavailable("이 거래소는 최근 체결을 지원하지 않아요."))
+            updateTradesState(.unavailable("이 거래소는 최근 시장 기록을 지원하지 않아요."))
             chartStatusViewState = screenStatusFactory.makeStatusViewState(
                 meta: .empty,
                 streamingStatus: .snapshotOnly,
@@ -5305,13 +5340,17 @@ final class CryptoViewModel: ObservableObject {
             return false
         }
 
+        let resolvedPermission: ExchangeConnectionPermission = AppFeatureFlags.current.isReadOnlyPortfolioEnabled
+            ? .readOnly
+            : permission
+
         do {
             _ = try await runAuthenticatedRequest(session: session) { [exchangeConnectionsRepository] refreshedSession in
                 try await exchangeConnectionsRepository.createConnection(
                     session: refreshedSession,
                     request: ExchangeConnectionUpsertRequest(
                         exchange: exchange,
-                        permission: permission,
+                        permission: resolvedPermission,
                         nickname: nickname.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty,
                         credentials: credentials.filter { !$0.value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
                     )
@@ -5354,13 +5393,17 @@ final class CryptoViewModel: ObservableObject {
             return false
         }
 
+        let resolvedPermission: ExchangeConnectionPermission = AppFeatureFlags.current.isReadOnlyPortfolioEnabled
+            ? .readOnly
+            : permission
+
         do {
             _ = try await runAuthenticatedRequest(session: session) { [exchangeConnectionsRepository] refreshedSession in
                 try await exchangeConnectionsRepository.updateConnection(
                     session: refreshedSession,
                     request: ExchangeConnectionUpdateRequest(
                         id: connection.id,
-                        permission: permission,
+                        permission: resolvedPermission,
                         nickname: nickname.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty,
                         credentials: filteredCredentials
                     )
@@ -5625,6 +5668,22 @@ final class CryptoViewModel: ObservableObject {
     }
 
     func loadOrders(reason: String = "manual") async {
+        guard AppFeatureFlags.current.isOrderEnabled,
+              AppFeatureFlags.current.isTradingEnabled,
+              AppFeatureFlags.current.isPrivateExchangeTradingAPIEnabled else {
+            assignOrderHistoryState(.idle, reason: "\(reason)_blocked")
+            assignFillsState(.idle, reason: "\(reason)_blocked")
+            assignTradingChanceState(.idle, reason: "\(reason)_blocked")
+            assignSelectedOrderDetailState(.idle, reason: "\(reason)_blocked")
+            tradingStatusViewState = screenStatusFactory.makeStatusViewState(
+                meta: .empty,
+                streamingStatus: currentPrivateStreamingStatus,
+                context: .trade,
+                warningMessage: "Cryptory는 앱 내 주문 실행 기능을 제공하지 않습니다."
+            )
+            return
+        }
+
         guard capabilityResolver.supportsTrading(on: selectedExchange) else {
             assignOrderHistoryState(.failed("이 거래소는 주문 기능을 지원하지 않아요."), reason: "\(reason)_unsupported")
             assignFillsState(.idle, reason: "\(reason)_unsupported")
@@ -6730,6 +6789,13 @@ final class CryptoViewModel: ObservableObject {
     }
 
     func submitOrder() async {
+        guard AppFeatureFlags.current.isOrderEnabled,
+              AppFeatureFlags.current.isTradingEnabled,
+              AppFeatureFlags.current.isPrivateExchangeTradingAPIEnabled else {
+            showNotification("Cryptory는 앱 내 주문 실행 기능을 제공하지 않습니다.", type: .error)
+            return
+        }
+
         guard let session = authState.session else {
             presentLogin(for: .trade)
             return
@@ -7336,7 +7402,16 @@ final class CryptoViewModel: ObservableObject {
         case .portfolio:
             await loadExchangeConnections(reason: "\(reason)_portfolio_connections")
             await loadPortfolio(reason: "\(reason)_portfolio")
+        case .news:
+            break
         case .trade:
+            guard AppFeatureFlags.current.isOrderEnabled,
+                  AppFeatureFlags.current.isTradingEnabled else {
+                assignTradingChanceState(.idle, reason: "\(reason)_blocked")
+                assignOrderHistoryState(.idle, reason: "\(reason)_blocked")
+                assignFillsState(.idle, reason: "\(reason)_blocked")
+                return
+            }
             await loadMarkets(for: selectedExchange, forceRefresh: false, reason: "\(reason)_trade_markets")
             ensureSelectedCoinIfPossible(for: selectedExchange)
             await loadExchangeConnections(reason: "\(reason)_trade_connections")
@@ -7424,7 +7499,11 @@ final class CryptoViewModel: ObservableObject {
 
         var subscriptions = Set<PrivateTradingSubscription>()
 
-        if activeTab == .trade, selectedExchange.supportsOrder {
+        if activeTab == .trade,
+           AppFeatureFlags.current.isOrderEnabled,
+           AppFeatureFlags.current.isTradingEnabled,
+           AppFeatureFlags.current.isPrivateExchangeTradingAPIEnabled,
+           selectedExchange.supportsOrder {
             subscriptions.insert(
                 PrivateTradingSubscription(
                     channel: .orders,
@@ -7550,7 +7629,7 @@ final class CryptoViewModel: ObservableObject {
             await loadChartData(reason: "polling_fallback_chart")
         case .kimchi:
             await loadKimchiPremium(reason: "polling_fallback_kimchi")
-        case .trade, .portfolio:
+        case .news, .trade, .portfolio:
             break
         }
     }
@@ -7569,7 +7648,7 @@ final class CryptoViewModel: ObservableObject {
                 await loadExchangeConnections(reason: "polling_fallback_trade")
             }
             await loadOrders(reason: "polling_fallback_trade")
-        case .market, .chart, .kimchi:
+        case .market, .chart, .news, .kimchi:
             break
         }
     }
@@ -13717,7 +13796,7 @@ final class CryptoViewModel: ObservableObject {
                     )
                 )
             }
-        case .portfolio, .kimchi:
+        case .news, .portfolio, .kimchi:
             break
         }
 

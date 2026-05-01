@@ -134,7 +134,7 @@ struct MarketView: View {
                 subtitle: "대표 종목과 전체 리스트가 순차적으로 채워집니다.",
                 representativeTitle: "랭킹 보드",
                 listTitle: "코인원 시세",
-                volumeTitle: "체결량",
+                volumeTitle: "거래량",
                 accentStart: vm.selectedExchange.color.opacity(0.9),
                 accentEnd: Color(hex: "#8DE4DB")
             )

@@ -1536,6 +1536,8 @@ final class LiveTradingRepository: TradingRepositoryProtocol {
     }
 
     func fetchChance(session: AuthSession, exchange: Exchange, symbol: String) async throws -> TradingChance {
+        try Self.requireTradingAPIEnabled()
+
         let json = try await client.requestJSON(
             path: client.configuration.tradingChancePath,
             queryItems: [
@@ -1555,6 +1557,8 @@ final class LiveTradingRepository: TradingRepositoryProtocol {
     }
 
     func createOrder(session: AuthSession, request: TradingOrderCreateRequest) async throws -> OrderRecord {
+        try Self.requireTradingAPIEnabled()
+
         var body: JSONObject = [
             "symbol": request.symbol,
             "exchange": request.exchange.rawValue,
@@ -1583,6 +1587,8 @@ final class LiveTradingRepository: TradingRepositoryProtocol {
     }
 
     func cancelOrder(session: AuthSession, exchange: Exchange, orderID: String) async throws {
+        try Self.requireTradingAPIEnabled()
+
         _ = try await client.requestJSON(
             path: client.configuration.tradingOrderDetailPath(exchange: exchange, orderID: orderID),
             method: "DELETE",
@@ -1592,6 +1598,8 @@ final class LiveTradingRepository: TradingRepositoryProtocol {
     }
 
     func fetchOrderDetail(session: AuthSession, exchange: Exchange, orderID: String) async throws -> OrderRecord {
+        try Self.requireTradingAPIEnabled()
+
         let json = try await client.requestJSON(
             path: client.configuration.tradingOrderDetailPath(exchange: exchange, orderID: orderID),
             accessRequirement: .authenticatedRequired,
@@ -1607,6 +1615,8 @@ final class LiveTradingRepository: TradingRepositoryProtocol {
     }
 
     func fetchOpenOrders(session: AuthSession, exchange: Exchange, symbol: String?) async throws -> OrderRecordsSnapshot {
+        try Self.requireTradingAPIEnabled()
+
         var queryItems = [URLQueryItem(name: "exchange", value: exchange.rawValue)]
         if let symbol, !symbol.isEmpty {
             queryItems.append(URLQueryItem(name: "symbol", value: symbol))
@@ -1623,6 +1633,8 @@ final class LiveTradingRepository: TradingRepositoryProtocol {
     }
 
     func fetchFills(session: AuthSession, exchange: Exchange, symbol: String?) async throws -> TradeFillsSnapshot {
+        try Self.requireTradingAPIEnabled()
+
         var queryItems = [URLQueryItem(name: "exchange", value: exchange.rawValue)]
         if let symbol, !symbol.isEmpty {
             queryItems.append(URLQueryItem(name: "symbol", value: symbol))
@@ -1645,6 +1657,18 @@ final class LiveTradingRepository: TradingRepositoryProtocol {
         }
 
         return TradeFillsSnapshot(exchange: exchange, fills: fills, meta: container.meta)
+    }
+
+    private static func requireTradingAPIEnabled() throws {
+        guard AppFeatureFlags.current.isOrderEnabled,
+              AppFeatureFlags.current.isTradingEnabled,
+              AppFeatureFlags.current.isPrivateExchangeTradingAPIEnabled else {
+            throw NetworkServiceError.httpError(
+                403,
+                "Cryptory는 앱 내 주문 실행 기능을 제공하지 않습니다.",
+                .permissionDenied
+            )
+        }
     }
 
     private func parseOrderRecordsSnapshot(json: Any, exchange: Exchange) throws -> OrderRecordsSnapshot {
@@ -3038,6 +3062,9 @@ private struct ExchangeConnectionDTO {
         } else {
             permission = rawPermission == ExchangeConnectionPermission.tradeEnabled.rawValue ? .tradeEnabled : .readOnly
         }
+        let resolvedPermission: ExchangeConnectionPermission = AppFeatureFlags.current.isReadOnlyPortfolioEnabled
+            ? .readOnly
+            : permission
 
         let statusRawValue = dictionary.string(["status", "connectionStatus", "validationStatus"])?.lowercased()
         let status: ExchangeConnectionStatus
@@ -3059,7 +3086,7 @@ private struct ExchangeConnectionDTO {
         self.entity = ExchangeConnection(
             id: dictionary.string(["id", "connectionId", "connection_id"]) ?? exchange.rawValue,
             exchange: exchange,
-            permission: permission,
+            permission: resolvedPermission,
             nickname: dictionary.string(["nickname", "label"]),
             isActive: dictionary.bool(["isActive", "is_active", "enabled"]) ?? (status != .disconnected),
             status: status,

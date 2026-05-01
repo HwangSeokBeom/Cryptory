@@ -149,12 +149,12 @@ enum Exchange: String, CaseIterable, Identifiable, Codable {
                 issuanceSteps: [
                     "이미 키가 있다면 외부 링크를 열지 않고 위 인증 정보에 바로 붙여넣으세요.",
                     "처음 발급하는 경우 공식 Open API 안내에서 발급 조건과 허용 IP 등록 방법을 확인하세요.",
-                    "조회 전용은 자산/주문 조회만, 주문 기능은 조회 권한에 주문 권한만 추가하세요."
+                    "읽기 전용 자산 조회 권한만 선택하고 다른 실행 권한은 제외하세요."
                 ],
                 permissionTips: [
-                    "조회 전용 연결: 자산 조회, 주문 조회",
-                    "주문 가능 연결: 조회 권한 + 주문 권한",
-                    "출금 권한은 부여하지 않는 것을 권장"
+                    "읽기 전용 연결: 자산 조회",
+                    "실행 권한은 연결하지 않음",
+                    "외부 이동 권한은 부여하지 않는 것을 권장"
                 ],
                 cautionNotes: [
                     "2채널 인증 완료 후 발급할 수 있어요.",
@@ -171,18 +171,18 @@ enum Exchange: String, CaseIterable, Identifiable, Codable {
                 issueSummary: "빗썸 마이페이지 API 관리에서 API Key / Secret Key를 발급합니다.",
                 issuanceSteps: [
                     "빗썸 웹 로그인 후 마이페이지 > API 관리로 이동하세요.",
-                    "자동 거래에 필요한 권한만 선택하고 Key를 생성하세요.",
+                    "자산 조회에 필요한 읽기 전용 권한만 선택하고 Key를 생성하세요.",
                     "발급된 Secret Key를 즉시 복사한 뒤 앱에 붙여넣으세요."
                 ],
                 permissionTips: [
-                    "조회용 연결: 자산조회, 주문조회",
-                    "주문 연결: 자산조회 + 주문조회 + 주문하기",
+                    "조회용 연결: 자산조회",
+                    "실행 권한은 선택하지 않음",
                     "불필요한 기능은 허용하지 않는 것이 안전합니다."
                 ],
                 cautionNotes: [
                     "처음 발급할 때 사용할 기능을 선택해야 해요.",
-                    "자동 거래 기준으로는 자산조회, 주문조회, 주문하기만 허용하면 됩니다.",
-                    "출금 관련 권한은 연결하지 않는 것을 권장합니다."
+                    "Cryptory 연결 기준으로는 자산조회 권한만 허용하면 됩니다.",
+                    "외부 이동 관련 권한은 연결하지 않는 것을 권장합니다."
                 ],
                 testDescription: "저장 전에는 필수 필드와 권한 조합을 점검하고, 저장 후 응답 상태로 연결 여부를 확인합니다."
             )
@@ -198,9 +198,9 @@ enum Exchange: String, CaseIterable, Identifiable, Codable {
                     "발급된 Access Token과 Secret Key를 앱에 붙여넣고 연결 테스트 후 저장하세요."
                 ],
                 permissionTips: [
-                    "조회용 연결: 잔고 조회, 고객 정보, 주문 조회",
-                    "주문 연결: 조회 권한 + 주문 관리",
-                    "출금 관련 권한은 비활성화 권장"
+                    "조회용 연결: 잔고 조회, 고객 정보",
+                    "실행 권한은 선택하지 않음",
+                    "외부 이동 관련 권한은 비활성화 권장"
                 ],
                 cautionNotes: [
                     "Private API는 Access Token과 Secret Key 조합을 사용합니다.",
@@ -218,11 +218,11 @@ enum Exchange: String, CaseIterable, Identifiable, Codable {
                 issuanceSteps: [
                     "코빗 웹의 API 관리 페이지를 열고 새 API Key를 생성하세요.",
                     "앱 연동용으로는 HMAC-SHA256 방식의 Key/Secret 조합을 우선 사용하세요.",
-                    "조회 또는 주문 권한과 허용 IP를 확인한 뒤 앱에서 연결을 저장하세요."
+                    "읽기 전용 조회 권한과 허용 IP를 확인한 뒤 앱에서 연결을 저장하세요."
                 ],
                 permissionTips: [
-                    "조회용 연결: 자산 현황, 주문 조회",
-                    "주문 연결: 조회 권한 + 주문하기/취소",
+                    "조회용 연결: 자산 현황",
+                    "실행 권한은 선택하지 않음",
                     "지원 정책 변경 시 HMAC 대신 다른 서명 방식이 필요할 수 있습니다."
                 ],
                 cautionNotes: [
@@ -240,13 +240,13 @@ enum Exchange: String, CaseIterable, Identifiable, Codable {
                 issueSummary: "바이낸스 API Management에서 API Key / Secret Key를 생성합니다.",
                 issuanceSteps: [
                     "Binance 웹 또는 앱에서 API Management를 열고 Create API를 누르세요.",
-                    "읽기 권한만 필요한지, Spot Trading까지 필요한지 먼저 결정하세요.",
+                    "읽기 권한만 선택하고 다른 실행 권한은 제외하세요.",
                     "발급 직후 Secret Key를 복사하고, 가능하면 허용 IP를 제한하세요."
                 ],
                 permissionTips: [
                     "조회용 연결: Enable Reading",
-                    "주문 연결: Enable Reading + Spot Trading",
-                    "출금 권한은 연결하지 않는 것을 강하게 권장"
+                    "Spot Trading은 선택하지 않음",
+                    "외부 이동 권한은 연결하지 않는 것을 강하게 권장"
                 ],
                 cautionNotes: [
                     "KYC 완료 후에만 API Key를 생성할 수 있습니다.",

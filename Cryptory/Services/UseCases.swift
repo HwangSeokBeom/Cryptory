@@ -31,7 +31,9 @@ enum CandleIntervalCatalog {
 
 struct ExchangeCapabilityResolver {
     func supportsTrading(on exchange: Exchange) -> Bool {
-        exchange.supportsOrder
+        AppFeatureFlags.current.isOrderEnabled
+            && AppFeatureFlags.current.isTradingEnabled
+            && exchange.supportsOrder
     }
 
     func supportsPortfolio(on exchange: Exchange) -> Bool {

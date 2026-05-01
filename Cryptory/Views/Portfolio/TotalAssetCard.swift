@@ -93,12 +93,12 @@ struct TotalAssetCard: View, Equatable {
                         color: isUp ? .up : .down
                     )
                     statColumn(
-                        label: "가용자산",
+                        label: "평가 기준",
                         value: "₩" + PriceFormatter.formatInteger(availableAsset),
                         color: .accent
                     )
                     statColumn(
-                        label: "잠금자산",
+                        label: "보류 자산",
                         value: "₩" + PriceFormatter.formatInteger(lockedAsset),
                         color: .themeText
                     )

@@ -373,7 +373,7 @@ final class ChartSettingsBottomSheetViewController: UIViewController {
 
         let globalColorRow = ChartSettingsToggleRow(
             title: "해외거래소 차트 색상 적용",
-            subtitle: "매수/상승은 초록색, 매도/하락은 빨간색으로 표시합니다."
+            subtitle: "상승 흐름은 초록색, 하락 흐름은 빨간색으로 표시합니다."
         )
         globalColorRow.onToggle = { [weak self] isOn in
             self?.mutateState(source: "global_color_toggle") {
@@ -1434,8 +1434,8 @@ private final class ChartIndicatorDetailEditorViewController: UIViewController {
         case .stochastic:
             addIntStepper(title: "K 기간", value: configuration.period, range: 5...60, step: 1, source: "stochastic_k") { $0.period = $1 }
             addIntStepper(title: "D 기간", value: configuration.secondaryPeriod ?? 3, range: 1...20, step: 1, source: "stochastic_d") { $0.secondaryPeriod = $1 }
-            addDoubleStepper(title: "과매수 기준", value: configuration.primaryLevel ?? 80, range: 50...95, step: 1, source: "stochastic_upper") { $0.primaryLevel = $1 }
-            addDoubleStepper(title: "과매도 기준", value: configuration.secondaryLevel ?? 20, range: 5...50, step: 1, source: "stochastic_lower") { $0.secondaryLevel = $1 }
+            addDoubleStepper(title: "상단 기준", value: configuration.primaryLevel ?? 80, range: 50...95, step: 1, source: "stochastic_upper") { $0.primaryLevel = $1 }
+            addDoubleStepper(title: "하단 기준", value: configuration.secondaryLevel ?? 20, range: 5...50, step: 1, source: "stochastic_lower") { $0.secondaryLevel = $1 }
             addDoubleStepper(title: "선 두께", value: configuration.lineWidth, range: 0.8...4, step: 0.2, source: "stochastic_width") { $0.lineWidth = $1 }
             addColorPalette(title: "K 색상", selectedHex: configuration.primaryColorHex, source: "stochastic_k_color") { $0.primaryColorHex = $1 }
             addColorPalette(title: "D 색상", selectedHex: configuration.secondaryColorHex ?? "#60A5FA", source: "stochastic_d_color") { $0.secondaryColorHex = $1 }
