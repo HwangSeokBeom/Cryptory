@@ -812,6 +812,37 @@ final class FormAndViewStateTests: XCTestCase {
     }
 
     @MainActor
+    func testSparklineRenderPayloadKeepsSixtyPointGeometry() {
+        let points: [Double] = (0..<60).map { index in
+            let step = Double(index)
+            return 100.0 + sin(step / 3.0) * 4.0 + step * 0.05
+        }
+        let row = marketRow(
+            priceText: "125,000,000",
+            graphState: .liveVisible,
+            points: points,
+            sparklineSource: "sparkline_endpoint"
+        )
+        let sparklineRenderView = SparklineRenderView(frame: .zero)
+        let marketIdentity = MarketIdentity(exchange: .upbit, marketId: "KRW-BTC", symbol: "BTC")
+
+        XCTAssertEqual(row.sparklinePayload.pointCount, 60)
+        XCTAssertEqual(row.sparklinePayload.geometry?.normalizedPoints.count, 60)
+
+        sparklineRenderView.debugApply(
+            payload: row.sparklinePayload,
+            visualState: row.sparklinePayload.graphVisualState,
+            isUp: true,
+            marketIdentity: marketIdentity,
+            size: CGSize(width: 72, height: 20)
+        )
+
+        let snapshot = sparklineRenderView.debugSnapshot
+        XCTAssertTrue(snapshot.hasVisibleGraph)
+        XCTAssertGreaterThan(snapshot.graphBoundsHeight, 0)
+    }
+
+    @MainActor
     func testSparklineRenderViewRedrawsWhenGraphStateChanges() {
         let cachedRow = marketRow(
             priceText: "125,000,000",
@@ -1568,7 +1599,8 @@ final class FormAndViewStateTests: XCTestCase {
         graphState: MarketRowGraphState,
         points: [Double],
         suppressesCoarseRetainedReuse: Bool = false,
-        sourceVersion: Int = 0
+        sourceVersion: Int = 0,
+        sparklineSource: String? = nil
     ) -> MarketRowViewState {
         MarketRowViewState(
             selectedExchange: .upbit,
@@ -1580,6 +1612,7 @@ final class FormAndViewStateTests: XCTestCase {
             volumeText: "1.2조",
             sparkline: points,
             sparklinePointCount: points.count,
+            sparklineSource: sparklineSource,
             sparklineTimeframe: "1h",
             hasEnoughSparklineData: points.count >= 4,
             chartPresentation: graphState.chartPresentation,

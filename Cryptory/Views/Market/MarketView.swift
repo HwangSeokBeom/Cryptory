@@ -1,5 +1,8 @@
 import SwiftUI
 
+private let marketTabBarReservedHeight: CGFloat = 92
+private let marketScrollBottomPadding: CGFloat = 24
+
 private struct MarketExchangeStyle {
     let title: String
     let subtitle: String
@@ -44,9 +47,11 @@ struct MarketView: View {
             SearchBar(text: $vm.searchQuery)
             MarketSegmentedControl(selection: $vm.marketFilter)
                 .padding(.bottom, 10)
-            quoteSegmentedControl
-                .padding(.horizontal, 16)
-                .padding(.bottom, 10)
+            if !vm.supportedQuoteCurrencies.isEmpty {
+                quoteSegmentedControl
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 10)
+            }
 
             ScreenStatusBannerView(viewState: vm.marketStatusViewState)
                 .padding(.horizontal, 16)
@@ -59,21 +64,29 @@ struct MarketView: View {
                     .padding(.bottom, 10)
             }
 
-            ScrollView {
-                VStack(spacing: 16) {
-                    exchangeHero
-                    representativeSection
-                    listSection
-                }
-                .padding(.bottom, 20)
-                .transaction { transaction in
-                    if suppressesMarketSwapAnimations {
-                        transaction.disablesAnimations = true
-                        transaction.animation = nil
+            GeometryReader { proxy in
+                ScrollView {
+                    VStack(spacing: 16) {
+                        exchangeHero
+                        representativeSection
+                        listSection
+                    }
+                    .padding(.bottom, marketScrollBottomPadding + marketTabBarReservedHeight + proxy.safeAreaInsets.bottom)
+                    .transaction { transaction in
+                        if suppressesMarketSwapAnimations {
+                            transaction.disablesAnimations = true
+                            transaction.animation = nil
+                        }
                     }
                 }
+                .scrollDismissesKeyboard(.interactively)
+                .onAppear {
+                    AppLogger.debug(
+                        .layout,
+                        "[GraphLayout] exchange=\(vm.selectedExchange.rawValue) quoteCurrency=\(vm.selectedQuoteCurrency.rawValue) marketId=- rowWidth=0 contentWidth=\(Int(proxy.size.width)) sparklineWidth=\(Int(displayConfiguration.sparklineWidth)) sparklineHeight=\(Int(displayConfiguration.sparklineHeight)) priceWidth=\(Int(displayConfiguration.priceWidth)) changeWidth=\(Int(displayConfiguration.changeWidth)) volumeWidth=\(Int(displayConfiguration.volumeWidth)) didOverflow=false bottomInset=\(Int(marketScrollBottomPadding + marketTabBarReservedHeight + proxy.safeAreaInsets.bottom))"
+                    )
+                }
             }
-            .scrollDismissesKeyboard(.interactively)
         }
         .dismissKeyboardOnBackgroundTap(enabled: !vm.showExchangeMenu)
         .onAppear {
@@ -281,7 +294,12 @@ struct MarketView: View {
 
             marketTableHeader
 
-            if shouldShowListSkeleton {
+            if let unsupportedMessage = vm.marketUnsupportedStateMessage {
+                stateView(
+                    title: "지원하지 않는 마켓입니다.",
+                    detail: unsupportedMessage
+                )
+            } else if shouldShowListSkeleton {
                 LazyVStack(spacing: 0) {
                     ForEach(0..<8, id: \.self) { _ in
                         marketRowSkeleton
@@ -341,6 +359,7 @@ struct MarketView: View {
                             }
                         )
                         .equatable()
+                        .clipped()
 
                         Divider()
                             .background(Color.themeBorder.opacity(0.28))
@@ -350,6 +369,7 @@ struct MarketView: View {
                     RoundedRectangle(cornerRadius: 16, style: .continuous)
                         .fill(Color.bgSecondary)
                 )
+                .clipped()
                 .id("list-content-\(vm.selectedExchange.rawValue)")
                 .transition(.identity)
             }
@@ -512,10 +532,12 @@ struct MarketView: View {
                             payload: row.sparklinePayload,
                             isUp: row.isUp,
                             marketIdentity: row.marketIdentity,
-                            width: 76,
-                            height: 24
+                            width: 104,
+                            height: 36
                         )
                     )
+                    .frame(width: 104, height: 36)
+                    .clipped()
                 }
             }
             .padding(14)

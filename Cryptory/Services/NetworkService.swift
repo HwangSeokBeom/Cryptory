@@ -91,6 +91,29 @@ struct ResponseMeta: Equatable, Codable {
     let isOrderBookAvailable: Bool?
     let isTradesAvailable: Bool?
     let unavailableReason: String?
+    let supportedQuotes: [MarketQuoteCurrency]
+    let hasSupportedQuotesMetadata: Bool
+    let defaultQuoteCurrency: MarketQuoteCurrency?
+
+    private enum CodingKeys: String, CodingKey {
+        case fetchedAt
+        case isStale
+        case warningMessage
+        case partialFailureMessage
+        case source
+        case cacheHit
+        case emptyReason
+        case providerStatus
+        case latestFallbackDate
+        case availableDates
+        case isChartAvailable
+        case isOrderBookAvailable
+        case isTradesAvailable
+        case unavailableReason
+        case supportedQuotes
+        case hasSupportedQuotesMetadata
+        case defaultQuoteCurrency
+    }
 
     nonisolated init(
         fetchedAt: Date?,
@@ -106,7 +129,10 @@ struct ResponseMeta: Equatable, Codable {
         isChartAvailable: Bool? = nil,
         isOrderBookAvailable: Bool? = nil,
         isTradesAvailable: Bool? = nil,
-        unavailableReason: String? = nil
+        unavailableReason: String? = nil,
+        supportedQuotes: [MarketQuoteCurrency] = [],
+        hasSupportedQuotesMetadata: Bool = false,
+        defaultQuoteCurrency: MarketQuoteCurrency? = nil
     ) {
         self.fetchedAt = fetchedAt
         self.isStale = isStale
@@ -122,6 +148,33 @@ struct ResponseMeta: Equatable, Codable {
         self.isOrderBookAvailable = isOrderBookAvailable
         self.isTradesAvailable = isTradesAvailable
         self.unavailableReason = unavailableReason
+        self.supportedQuotes = supportedQuotes
+        self.hasSupportedQuotesMetadata = hasSupportedQuotesMetadata
+        self.defaultQuoteCurrency = defaultQuoteCurrency
+    }
+
+    nonisolated init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            fetchedAt: try container.decodeIfPresent(Date.self, forKey: .fetchedAt),
+            isStale: try container.decodeIfPresent(Bool.self, forKey: .isStale) ?? false,
+            warningMessage: try container.decodeIfPresent(String.self, forKey: .warningMessage),
+            partialFailureMessage: try container.decodeIfPresent(String.self, forKey: .partialFailureMessage),
+            source: try container.decodeIfPresent(String.self, forKey: .source),
+            cacheHit: try container.decodeIfPresent(Bool.self, forKey: .cacheHit),
+            emptyReason: try container.decodeIfPresent(String.self, forKey: .emptyReason),
+            providerStatus: try container.decodeIfPresent(String.self, forKey: .providerStatus),
+            latestFallbackDate: try container.decodeIfPresent(Date.self, forKey: .latestFallbackDate),
+            availableDates: try container.decodeIfPresent([Date].self, forKey: .availableDates),
+            isChartAvailable: try container.decodeIfPresent(Bool.self, forKey: .isChartAvailable),
+            isOrderBookAvailable: try container.decodeIfPresent(Bool.self, forKey: .isOrderBookAvailable),
+            isTradesAvailable: try container.decodeIfPresent(Bool.self, forKey: .isTradesAvailable),
+            unavailableReason: try container.decodeIfPresent(String.self, forKey: .unavailableReason),
+            supportedQuotes: try container.decodeIfPresent([MarketQuoteCurrency].self, forKey: .supportedQuotes) ?? [],
+            hasSupportedQuotesMetadata: try container.decodeIfPresent(Bool.self, forKey: .hasSupportedQuotesMetadata)
+                ?? container.contains(.supportedQuotes),
+            defaultQuoteCurrency: try container.decodeIfPresent(MarketQuoteCurrency.self, forKey: .defaultQuoteCurrency)
+        )
     }
 
     static let empty = ResponseMeta(
@@ -560,19 +613,48 @@ struct MarketCatalogSnapshot: Codable {
     let supportedIntervalsBySymbol: [String: [String]]
     let meta: ResponseMeta
     let filteredSymbols: [String]
+    let supportedQuotes: [MarketQuoteCurrency]
+    let defaultQuoteCurrency: MarketQuoteCurrency?
+
+    private enum CodingKeys: String, CodingKey {
+        case exchange
+        case markets
+        case supportedIntervalsBySymbol
+        case meta
+        case filteredSymbols
+        case supportedQuotes
+        case defaultQuoteCurrency
+    }
 
     init(
         exchange: Exchange,
         markets: [CoinInfo],
         supportedIntervalsBySymbol: [String: [String]],
         meta: ResponseMeta,
-        filteredSymbols: [String] = []
+        filteredSymbols: [String] = [],
+        supportedQuotes: [MarketQuoteCurrency] = [],
+        defaultQuoteCurrency: MarketQuoteCurrency? = nil
     ) {
         self.exchange = exchange
         self.markets = markets
         self.supportedIntervalsBySymbol = supportedIntervalsBySymbol
         self.meta = meta
         self.filteredSymbols = filteredSymbols
+        self.supportedQuotes = supportedQuotes
+        self.defaultQuoteCurrency = defaultQuoteCurrency
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            exchange: try container.decode(Exchange.self, forKey: .exchange),
+            markets: try container.decode([CoinInfo].self, forKey: .markets),
+            supportedIntervalsBySymbol: try container.decode([String: [String]].self, forKey: .supportedIntervalsBySymbol),
+            meta: try container.decode(ResponseMeta.self, forKey: .meta),
+            filteredSymbols: try container.decodeIfPresent([String].self, forKey: .filteredSymbols) ?? [],
+            supportedQuotes: try container.decodeIfPresent([MarketQuoteCurrency].self, forKey: .supportedQuotes) ?? [],
+            defaultQuoteCurrency: try container.decodeIfPresent(MarketQuoteCurrency.self, forKey: .defaultQuoteCurrency)
+        )
     }
 }
 
@@ -582,19 +664,48 @@ struct MarketTickerSnapshot: Codable {
     let tickers: [String: TickerData]
     let meta: ResponseMeta
     let filteredSymbols: [String]
+    let supportedQuotes: [MarketQuoteCurrency]
+    let defaultQuoteCurrency: MarketQuoteCurrency?
+
+    private enum CodingKeys: String, CodingKey {
+        case exchange
+        case coins
+        case tickers
+        case meta
+        case filteredSymbols
+        case supportedQuotes
+        case defaultQuoteCurrency
+    }
 
     init(
         exchange: Exchange,
         coins: [CoinInfo] = [],
         tickers: [String: TickerData],
         meta: ResponseMeta,
-        filteredSymbols: [String] = []
+        filteredSymbols: [String] = [],
+        supportedQuotes: [MarketQuoteCurrency] = [],
+        defaultQuoteCurrency: MarketQuoteCurrency? = nil
     ) {
         self.exchange = exchange
         self.coins = coins
         self.tickers = tickers
         self.meta = meta
         self.filteredSymbols = filteredSymbols
+        self.supportedQuotes = supportedQuotes
+        self.defaultQuoteCurrency = defaultQuoteCurrency
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            exchange: try container.decode(Exchange.self, forKey: .exchange),
+            coins: try container.decodeIfPresent([CoinInfo].self, forKey: .coins) ?? [],
+            tickers: try container.decode([String: TickerData].self, forKey: .tickers),
+            meta: try container.decode(ResponseMeta.self, forKey: .meta),
+            filteredSymbols: try container.decodeIfPresent([String].self, forKey: .filteredSymbols) ?? [],
+            supportedQuotes: try container.decodeIfPresent([MarketQuoteCurrency].self, forKey: .supportedQuotes) ?? [],
+            defaultQuoteCurrency: try container.decodeIfPresent(MarketQuoteCurrency.self, forKey: .defaultQuoteCurrency)
+        )
     }
 }
 
@@ -627,7 +738,49 @@ struct MarketSparklineSnapshot {
     let points: [Double]
     let pointCount: Int
     let source: String?
+    let quality: String?
+    let isDerived: Bool?
+    let realSeries: Bool?
+    let rangeRatio: Double?
+    let minPointCount: Int?
+    let maxPointCount: Int?
+    let firstTimestamp: Date?
+    let lastTimestamp: Date?
     let meta: ResponseMeta
+
+    init(
+        exchange: Exchange,
+        symbol: String,
+        interval: String,
+        points: [Double],
+        pointCount: Int,
+        source: String?,
+        quality: String? = nil,
+        isDerived: Bool? = nil,
+        realSeries: Bool? = nil,
+        rangeRatio: Double? = nil,
+        minPointCount: Int? = nil,
+        maxPointCount: Int? = nil,
+        firstTimestamp: Date? = nil,
+        lastTimestamp: Date? = nil,
+        meta: ResponseMeta
+    ) {
+        self.exchange = exchange
+        self.symbol = symbol
+        self.interval = interval
+        self.points = points
+        self.pointCount = pointCount
+        self.source = source
+        self.quality = quality
+        self.isDerived = isDerived
+        self.realSeries = realSeries
+        self.rangeRatio = rangeRatio
+        self.minPointCount = minPointCount
+        self.maxPointCount = maxPointCount
+        self.firstTimestamp = firstTimestamp
+        self.lastTimestamp = lastTimestamp
+        self.meta = meta
+    }
 }
 
 struct OrderRecordsSnapshot {
@@ -926,6 +1079,7 @@ protocol MarketRepositoryProtocol {
     func fetchCandles(symbol: String, exchange: Exchange, interval: String) async throws -> CandleSnapshot
     func fetchCandles(symbol: String, exchange: Exchange, quoteCurrency: MarketQuoteCurrency, interval: String, limit: Int) async throws -> CandleSnapshot
     func fetchSparkline(symbol: String, exchange: Exchange, quoteCurrency: MarketQuoteCurrency, interval: String, limit: Int) async throws -> MarketSparklineSnapshot
+    func fetchSparklines(marketIdentities: [MarketIdentity], exchange: Exchange, quoteCurrency: MarketQuoteCurrency, interval: String, limit: Int) async throws -> [MarketIdentity: MarketSparklineSnapshot]
 }
 
 extension MarketRepositoryProtocol {
@@ -943,6 +1097,27 @@ extension MarketRepositoryProtocol {
 
     func fetchSparkline(symbol: String, exchange: Exchange, quoteCurrency: MarketQuoteCurrency, interval: String, limit: Int) async throws -> MarketSparklineSnapshot {
         throw NetworkServiceError.httpError(404, "sparkline endpoint is unavailable", .maintenance)
+    }
+
+    func fetchSparklines(
+        marketIdentities: [MarketIdentity],
+        exchange: Exchange,
+        quoteCurrency: MarketQuoteCurrency,
+        interval: String,
+        limit: Int
+    ) async throws -> [MarketIdentity: MarketSparklineSnapshot] {
+        var snapshots = [MarketIdentity: MarketSparklineSnapshot]()
+        for marketIdentity in marketIdentities where marketIdentity.exchange == exchange && marketIdentity.quoteCurrency == quoteCurrency {
+            let requestSymbol = marketIdentity.marketId ?? marketIdentity.symbol
+            snapshots[marketIdentity] = try await fetchSparkline(
+                symbol: requestSymbol,
+                exchange: exchange,
+                quoteCurrency: quoteCurrency,
+                interval: interval,
+                limit: limit
+            )
+        }
+        return snapshots
     }
 }
 
@@ -1677,7 +1852,9 @@ final class LiveMarketRepository: MarketRepositoryProtocol {
             markets: resolvedUniverse.coins,
             supportedIntervalsBySymbol: intervalsBySymbol,
             meta: container.meta,
-            filteredSymbols: resolvedUniverse.filteredSymbols
+            filteredSymbols: resolvedUniverse.filteredSymbols,
+            supportedQuotes: container.meta.supportedQuotes,
+            defaultQuoteCurrency: container.meta.defaultQuoteCurrency
         )
     }
 
@@ -1802,7 +1979,9 @@ final class LiveMarketRepository: MarketRepositoryProtocol {
             coins: resolvedUniverse.coins,
             tickers: filteredTickers,
             meta: container.meta,
-            filteredSymbols: resolvedUniverse.filteredSymbols
+            filteredSymbols: resolvedUniverse.filteredSymbols,
+            supportedQuotes: container.meta.supportedQuotes,
+            defaultQuoteCurrency: container.meta.defaultQuoteCurrency
         )
     }
 
@@ -1945,17 +2124,73 @@ final class LiveMarketRepository: MarketRepositoryProtocol {
         interval: String,
         limit: Int
     ) async throws -> MarketSparklineSnapshot {
+        let requestIdentity: MarketIdentity
+        if symbol.rangeOfCharacter(from: CharacterSet(charactersIn: "-_/:")) != nil {
+            requestIdentity = MarketIdentity(exchange: exchange, marketId: symbol, symbol: symbol, quoteCurrency: quoteCurrency)
+        } else {
+            requestIdentity = MarketIdentity(exchange: exchange, symbol: symbol, quoteCurrency: quoteCurrency)
+        }
+        let snapshots = try await fetchSparklines(
+            marketIdentities: [requestIdentity],
+            exchange: exchange,
+            quoteCurrency: quoteCurrency,
+            interval: interval,
+            limit: limit
+        )
+        if let snapshot = snapshots[requestIdentity] {
+            return MarketSparklineSnapshot(
+                exchange: snapshot.exchange,
+                symbol: symbol,
+                interval: snapshot.interval,
+                points: snapshot.points,
+                pointCount: snapshot.pointCount,
+                source: snapshot.source,
+                quality: snapshot.quality,
+                isDerived: snapshot.isDerived,
+                realSeries: snapshot.realSeries,
+                rangeRatio: snapshot.rangeRatio,
+                minPointCount: snapshot.minPointCount,
+                maxPointCount: snapshot.maxPointCount,
+                firstTimestamp: snapshot.firstTimestamp,
+                lastTimestamp: snapshot.lastTimestamp,
+                meta: snapshot.meta
+            )
+        }
+        throw NetworkServiceError.parsingFailed("sparkline data is empty")
+    }
+
+    func fetchSparklines(
+        marketIdentities: [MarketIdentity],
+        exchange: Exchange,
+        quoteCurrency: MarketQuoteCurrency,
+        interval: String,
+        limit: Int
+    ) async throws -> [MarketIdentity: MarketSparklineSnapshot] {
+        let requestedIdentities = marketIdentities.filter {
+            $0.exchange == exchange && $0.quoteCurrency == quoteCurrency
+        }
+        guard requestedIdentities.isEmpty == false else {
+            return [:]
+        }
+
+        let marketIds = requestedIdentities.compactMap(\.marketId)
+        let symbolFallbacks = requestedIdentities.filter { $0.marketId == nil }.map(\.symbol)
         var queryItems = [
-            URLQueryItem(name: "symbol", value: symbol),
-            URLQueryItem(name: "symbols", value: symbol),
             URLQueryItem(name: "exchange", value: exchange.rawValue),
             URLQueryItem(name: "quoteCurrency", value: quoteCurrency.apiValue),
             URLQueryItem(name: "timeframe", value: interval.uppercased()),
             URLQueryItem(name: "interval", value: interval.lowercased()),
             URLQueryItem(name: "limit", value: String(limit))
         ]
-        if symbol.rangeOfCharacter(from: CharacterSet(charactersIn: "-_/:")) != nil {
-            queryItems.append(URLQueryItem(name: "marketIds", value: symbol))
+        if marketIds.isEmpty == false {
+            queryItems.append(URLQueryItem(name: "marketIds", value: marketIds.joined(separator: ",")))
+        }
+        if symbolFallbacks.isEmpty == false {
+            let symbols = symbolFallbacks.joined(separator: ",")
+            queryItems.append(URLQueryItem(name: "symbols", value: symbols))
+            if symbolFallbacks.count == 1, marketIds.isEmpty {
+                queryItems.append(URLQueryItem(name: "symbol", value: symbols))
+            }
         }
         let requestURL = (try? client.makeRequest(
             path: client.configuration.marketSparklinePath,
@@ -1964,7 +2199,7 @@ final class LiveMarketRepository: MarketRepositoryProtocol {
         ).url?.absoluteString) ?? client.configuration.marketSparklinePath
         AppLogger.debug(
             .network,
-            "[SparklineREST] request url=\(requestURL) exchange=\(exchange.rawValue) symbol=\(symbol) quote=\(quoteCurrency.rawValue) timeframe=\(interval.uppercased()) limit=\(limit)"
+            "[SparklineREST] request url=\(requestURL) exchange=\(exchange.rawValue) marketIds=\(marketIds.joined(separator: ",")) symbols=\(symbolFallbacks.joined(separator: ",")) quote=\(quoteCurrency.rawValue) timeframe=\(interval.uppercased()) limit=\(limit)"
         )
         let json = try await client.requestJSON(
             path: client.configuration.marketSparklinePath,
@@ -1974,22 +2209,76 @@ final class LiveMarketRepository: MarketRepositoryProtocol {
 
         let container = splitPayload(json)
         let dictionary = container.payload as? JSONObject
-        let itemDictionary = (dictionary?["items"] as? [Any])?.first as? JSONObject
-        let sparklinePayload: Any = itemDictionary ?? container.payload
-        let responseDictionary = itemDictionary ?? dictionary
-        let points = parseSparklinePoints(from: sparklinePayload)
-        guard points.count >= 2 else {
+        let itemDictionaries: [JSONObject]
+        if let items = dictionary?["items"] as? [Any] {
+            itemDictionaries = items.compactMap { $0 as? JSONObject }
+        } else if let dictionary {
+            itemDictionaries = [dictionary]
+        } else {
+            itemDictionaries = []
+        }
+
+        var byMarketId = [String: MarketIdentity]()
+        var bySymbol = [String: MarketIdentity]()
+        for identity in requestedIdentities {
+            if let marketId = identity.marketId {
+                byMarketId[marketId.uppercased()] = identity
+            }
+            bySymbol[identity.symbol.uppercased()] = identity
+        }
+
+        var snapshots = [MarketIdentity: MarketSparklineSnapshot]()
+        for item in itemDictionaries {
+            if let itemExchange = item.string(["exchange", "provider", "sourceExchange"])?.lowercased(),
+               itemExchange != exchange.rawValue {
+                AppLogger.debug(.network, "[SparklineREST] response_drop reason=exchange_mismatch requested=\(exchange.rawValue) itemExchange=\(itemExchange)")
+                continue
+            }
+            if let itemQuote = item.string(["quoteCurrency", "quote_currency", "quoteAsset", "quote_asset"])?.uppercased(),
+               itemQuote != quoteCurrency.rawValue.uppercased() && itemQuote != quoteCurrency.apiValue.uppercased() {
+                AppLogger.debug(.network, "[SparklineREST] response_drop reason=quote_mismatch requested=\(quoteCurrency.rawValue) itemQuote=\(itemQuote)")
+                continue
+            }
+            let candidateMarketId = item.string(["marketId", "market_id", "market", "code", "id"])?.uppercased()
+            let candidateSymbol = marketRawSymbol(from: item)?.uppercased()
+                ?? item.string(["symbol", "baseAsset", "base_asset", "baseCurrency", "base_currency"])?.uppercased()
+            let identity: MarketIdentity?
+            if let candidateMarketId {
+                identity = byMarketId[candidateMarketId]
+            } else if marketIds.isEmpty {
+                identity = candidateSymbol.flatMap { bySymbol[$0] }
+                    ?? (requestedIdentities.count == 1 ? requestedIdentities[0] : nil)
+            } else {
+                identity = nil
+            }
+            guard let identity else { continue }
+            let points = parseSparklinePoints(from: item)
+            guard points.count >= 2 else { continue }
+            let quality = item.string(["quality", "graphQuality", "graph_quality", "detailLevel", "detail_level"])
+            let source = item.string(["sparklineSource", "sparkline_source", "source", "provider"])
+            snapshots[identity] = MarketSparklineSnapshot(
+                exchange: exchange,
+                symbol: identity.marketId ?? identity.symbol,
+                interval: interval,
+                points: points,
+                pointCount: parseSparklinePointCount(from: item) ?? points.count,
+                source: source,
+                quality: quality,
+                isDerived: item.bool(["isDerived", "is_derived", "derived"]),
+                realSeries: item.bool(["realSeries", "real_series", "isRealSeries", "is_real_series"]),
+                rangeRatio: item.double(["rangeRatio", "range_ratio", "changePercentRange", "change_percent_range"]),
+                minPointCount: item.int(["minPointCount", "min_point_count"]),
+                maxPointCount: item.int(["maxPointCount", "max_point_count"]),
+                firstTimestamp: parseSparklinePointItems(from: item).first?.timestamp,
+                lastTimestamp: parseSparklinePointItems(from: item).last?.timestamp,
+                meta: container.meta
+            )
+        }
+
+        guard snapshots.isEmpty == false else {
             throw NetworkServiceError.parsingFailed("sparkline data is empty")
         }
-        return MarketSparklineSnapshot(
-            exchange: exchange,
-            symbol: symbol,
-            interval: interval,
-            points: points,
-            pointCount: parseSparklinePointCount(from: responseDictionary ?? [:]) ?? points.count,
-            source: responseDictionary?.string(["sparklineSource", "sparkline_source", "source", "provider"]),
-            meta: container.meta
-        )
+        return snapshots
     }
 }
 
@@ -3679,18 +3968,50 @@ private func splitPayload(_ json: Any) -> (payload: Any, meta: ResponseMeta) {
 
     let payload = unwrapPayload(dictionary)
     let freshness = dictionary.string(["freshness", "dataFreshness", "status"])?.lowercased()
+    let quoteMetadata = parseQuoteMetadata(root: dictionary, payload: payload)
     let meta = ResponseMeta(
         fetchedAt: parseDateValue(dictionary["asOf"] ?? dictionary["fetchedAt"] ?? dictionary["timestamp"] ?? dictionary["serverTime"]),
         isStale: dictionary.bool(["stale", "isStale"]) ?? (freshness == "stale"),
         warningMessage: dictionary.string(["warningMessage", "message"]),
         partialFailureMessage: dictionary.string(["partialFailureMessage", "partialError", "partial_error"]),
+        source: dictionary.string(["source", "provider"]),
+        cacheHit: dictionary.bool(["cacheHit", "cache_hit"]),
+        emptyReason: dictionary.string(["emptyReason", "empty_reason"]),
+        providerStatus: dictionary.string(["providerStatus", "provider_status", "status"]),
         isChartAvailable: dictionary.bool(["isChartAvailable", "chartAvailable", "supportsChart"]),
         isOrderBookAvailable: dictionary.bool(["isOrderBookAvailable", "orderBookAvailable", "orderbookAvailable", "supportsOrderBook", "supportsOrderbook"]),
         isTradesAvailable: dictionary.bool(["isTradesAvailable", "tradesAvailable", "supportsTrades"]),
-        unavailableReason: dictionary.string(["unavailableReason", "unavailable_reason", "reason"])
+        unavailableReason: dictionary.string(["unavailableReason", "unavailable_reason", "reason"]),
+        supportedQuotes: quoteMetadata.supportedQuotes,
+        hasSupportedQuotesMetadata: quoteMetadata.hasSupportedQuotesMetadata,
+        defaultQuoteCurrency: quoteMetadata.defaultQuoteCurrency
     )
 
     return (payload, meta)
+}
+
+private func parseQuoteMetadata(
+    root: JSONObject,
+    payload: Any
+) -> (supportedQuotes: [MarketQuoteCurrency], hasSupportedQuotesMetadata: Bool, defaultQuoteCurrency: MarketQuoteCurrency?) {
+    let supportedQuoteKeys = ["supportedQuotes", "supported_quotes", "quoteCurrencies", "quote_currencies"]
+    let payloadDictionary = payload as? JSONObject
+    let hasSupportedQuotesMetadata = root.containsAny(supportedQuoteKeys)
+        || (payloadDictionary?.containsAny(supportedQuoteKeys) ?? false)
+    let supportedQuoteStrings = root.stringArray(supportedQuoteKeys)
+        + (payloadDictionary?.stringArray(supportedQuoteKeys) ?? [])
+    var seenQuotes = Set<MarketQuoteCurrency>()
+    let supportedQuotes = supportedQuoteStrings.compactMap {
+        MarketQuoteCurrency(rawValue: $0.trimmingCharacters(in: .whitespacesAndNewlines).uppercased())
+    }
+    .filter { seenQuotes.insert($0).inserted }
+
+    let defaultQuoteString = root.string(["defaultQuoteCurrency", "default_quote_currency", "defaultQuote", "default_quote"])
+        ?? payloadDictionary?.string(["defaultQuoteCurrency", "default_quote_currency", "defaultQuote", "default_quote"])
+    let defaultQuoteCurrency = defaultQuoteString
+        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() }
+        .flatMap(MarketQuoteCurrency.init(rawValue:))
+    return (supportedQuotes, hasSupportedQuotesMetadata, defaultQuoteCurrency)
 }
 
 private func unwrapPayload(_ json: Any) -> Any {
@@ -3991,6 +4312,10 @@ private let alternateISO8601Formatter: ISO8601DateFormatter = {
 }()
 
 private extension Dictionary where Key == String, Value == Any {
+    func containsAny(_ keys: [String]) -> Bool {
+        keys.contains { self.keys.contains($0) }
+    }
+
     func string(_ keys: [String]) -> String? {
         for key in keys {
             if let value = self[key] as? String, !value.isEmpty {

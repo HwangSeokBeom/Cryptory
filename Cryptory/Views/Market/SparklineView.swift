@@ -74,7 +74,10 @@ private final class RetainedSparklineStore {
                     "[GraphHoldDebug] \(marketIdentity.logFields) action=first_paint_low_information_allowed detailLevel=\(incoming.detailLevel.cacheComponent) pointCount=\(incoming.pointCount)"
                 )
             }
-            let decision = incomingQuality.promotionDecision(over: retainedQuality)
+            let decision = MarketSparklineQuality.graphQualityDecision(
+                current: retainedQuality,
+                incoming: incomingQuality
+            )
             let displayPayload: MarketSparklineRenderPayload
             if let retainedPayload,
                retainedPayload.hasRenderableGraph,
@@ -169,7 +172,7 @@ private final class RetainedSparklineStore {
         }
         let existingQuality = sparklineQuality(for: existing)
         let incomingQuality = sparklineQuality(for: incoming)
-        if incomingQuality.promotionDecision(over: existingQuality).accepted {
+        if MarketSparklineQuality.shouldReplaceGraph(current: existingQuality, incoming: incomingQuality) {
             return true
         }
         return incomingQuality.visibleBindableChangeReason(over: existingQuality) != nil
@@ -233,17 +236,22 @@ private final class MarketSparklinePathCache {
         }
 
         let path = UIBezierPath()
-        let scaledPoints = geometry.normalizedPoints.map { point in
-            CGPoint(
+        let graphHeightUsage = MarketSparklineRenderPolicy.graphHeightUsage(
+            rangeRatio: geometry.relativeRange,
+            width: size.width,
+            height: size.height
+        )
+        let usageScale = geometry.graphHeightUsage > 0
+            ? graphHeightUsage / geometry.graphHeightUsage
+            : 1
+        let scaledPoints: [CGPoint] = geometry.normalizedPoints.map { point in
+            let adjustedY = 0.5 + (point.y - 0.5) * CGFloat(usageScale)
+            return CGPoint(
                 x: point.x * size.width,
-                y: point.y * size.height
+                y: min(max(adjustedY, 0.08), 0.92) * size.height
             )
         }
-        let boostedPoints = boostScaledPointsIfNeeded(
-            scaledPoints,
-            size: size,
-            geometry: geometry
-        )
+        let boostedPoints = scaledPoints
 
         guard let firstPoint = boostedPoints.first else {
             return nil
@@ -251,23 +259,8 @@ private final class MarketSparklinePathCache {
 
         path.move(to: firstPoint)
 
-        if boostedPoints.count == 2 {
-            path.addLine(to: boostedPoints[1])
-            return MarketSparklinePathResult(
-                path: path.cgPath,
-                didApplyTinyRangeBoost: boostedPoints != scaledPoints
-            )
-        }
-
         for index in 1..<boostedPoints.count {
-            let previousPoint = boostedPoints[index - 1]
-            let point = boostedPoints[index]
-            let midpoint = CGPoint(
-                x: (previousPoint.x + point.x) / 2,
-                y: (previousPoint.y + point.y) / 2
-            )
-            path.addQuadCurve(to: midpoint, controlPoint: previousPoint)
-            path.addQuadCurve(to: point, controlPoint: point)
+            path.addLine(to: boostedPoints[index])
         }
 
         return MarketSparklinePathResult(
@@ -454,7 +447,7 @@ final class SparklineRenderView: UIView {
     private func configureLayers() {
         let displayScale = traitCollection.displayScale
         strokeLayer.fillColor = UIColor.clear.cgColor
-        strokeLayer.lineWidth = 1.5
+        strokeLayer.lineWidth = 1.25
         strokeLayer.lineCap = .round
         strokeLayer.lineJoin = .round
         strokeLayer.contentsScale = displayScale
@@ -641,6 +634,10 @@ final class SparklineRenderView: UIView {
                         "[GraphDetailDebug] \(currentConfiguration.marketIdentity.logFields) action=flat_range_visual_boost_applied rawRange=\(geometry.rawRange) relativeRange=\(geometry.relativeRange)"
                     )
                 }
+                AppLogger.debug(
+                    .network,
+                    "[GraphRender] exchange=\(currentConfiguration.marketIdentity.exchange.rawValue) quoteCurrency=\(currentConfiguration.marketIdentity.quoteCurrency.rawValue) marketId=\(currentConfiguration.marketIdentity.marketId ?? currentConfiguration.marketIdentity.symbol) state=\(currentConfiguration.payload.graphState) pointCount=\(currentConfiguration.payload.pointCount) quality=\(currentConfiguration.payload.sourceName ?? currentConfiguration.payload.detailLevel.cacheComponent) isDerived=\(currentConfiguration.payload.detailLevel == .derivedPreview) realSeries=\(MarketSparklineRenderPolicy.isRealSeriesSource(currentConfiguration.payload.sourceName)) width=\(Int(renderSize.width.rounded(.toNearestOrEven))) height=\(Int(renderSize.height.rounded(.toNearestOrEven))) min=\(currentConfiguration.payload.shapeQuality.minValue) max=\(currentConfiguration.payload.shapeQuality.maxValue) mean=\(currentConfiguration.payload.geometry?.meanValue ?? 0) range=\(currentConfiguration.payload.shapeQuality.rawRange) rangeRatio=\(currentConfiguration.payload.geometry?.relativeRange ?? currentConfiguration.payload.shapeQuality.relativeRange) graphHeightUsage=\(MarketSparklineRenderPolicy.graphHeightUsage(rangeRatio: currentConfiguration.payload.geometry?.relativeRange ?? currentConfiguration.payload.shapeQuality.relativeRange, width: renderSize.width, height: renderSize.height)) flat=\(currentConfiguration.payload.shapeQuality.rawRange == 0) directionChanges=\(currentConfiguration.payload.shapeQuality.directionChangeCount) sampledCount=\(currentConfiguration.payload.geometry?.normalizedPoints.count ?? 0) clipped=false"
+                )
                 if effectiveReason == "detail_upgrade" {
                     AppLogger.debug(
                         .lifecycle,
@@ -917,8 +914,8 @@ struct SparklineView: View, Equatable {
         payload: MarketSparklineRenderPayload,
         isUp: Bool,
         marketIdentity: MarketIdentity,
-        width: CGFloat = 76,
-        height: CGFloat = 20
+        width: CGFloat = 84,
+        height: CGFloat = 34
     ) {
         let resolution = RetainedSparklineStore.shared.resolve(
             incoming: payload,
@@ -955,7 +952,7 @@ struct SparklineView: View, Equatable {
             .onAppear {
                 AppLogger.debug(
                     .network,
-                    "[SparklineRender] exchange=\(marketIdentity.exchange.rawValue) quoteCurrency=\(marketIdentity.quoteCurrency.rawValue) marketId=\(marketIdentity.marketId ?? marketIdentity.symbol) quality=\(resolvedConfiguration.payload.detailLevel.cacheComponent) pointCount=\(resolvedConfiguration.payload.pointCount) width=\(Int(width)) height=\(Int(height)) isFlat=\(resolvedConfiguration.payload.shapeQuality.isFlatLookingLowInformation)"
+                    "[GraphRender] exchange=\(marketIdentity.exchange.rawValue) quoteCurrency=\(marketIdentity.quoteCurrency.rawValue) marketId=\(marketIdentity.marketId ?? marketIdentity.symbol) state=\(resolvedConfiguration.payload.graphState) pointCount=\(resolvedConfiguration.payload.pointCount) quality=\(resolvedConfiguration.payload.sourceName ?? resolvedConfiguration.payload.detailLevel.cacheComponent) isDerived=\(resolvedConfiguration.payload.detailLevel == .derivedPreview) realSeries=\(MarketSparklineRenderPolicy.isRealSeriesSource(resolvedConfiguration.payload.sourceName)) width=\(Int(width)) height=\(Int(height)) min=\(resolvedConfiguration.payload.shapeQuality.minValue) max=\(resolvedConfiguration.payload.shapeQuality.maxValue) mean=\(resolvedConfiguration.payload.geometry?.meanValue ?? 0) range=\(resolvedConfiguration.payload.shapeQuality.rawRange) rangeRatio=\(resolvedConfiguration.payload.geometry?.relativeRange ?? resolvedConfiguration.payload.shapeQuality.relativeRange) graphHeightUsage=\(MarketSparklineRenderPolicy.graphHeightUsage(rangeRatio: resolvedConfiguration.payload.geometry?.relativeRange ?? resolvedConfiguration.payload.shapeQuality.relativeRange, width: width, height: height)) flat=\(resolvedConfiguration.payload.shapeQuality.rawRange == 0) directionChanges=\(resolvedConfiguration.payload.shapeQuality.directionChangeCount) sampledCount=\(resolvedConfiguration.payload.geometry?.normalizedPoints.count ?? 0) clipped=false"
                 )
             }
     }
