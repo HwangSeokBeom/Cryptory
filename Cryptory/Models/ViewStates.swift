@@ -301,29 +301,69 @@ struct MarketSparklineShapeQuality: Equatable {
 }
 
 enum MarketSparklineRenderPolicy {
-    static let minimumRenderablePointCount = 2
-    static let hydratedPointCount = 4
-    static let coarseUpperBoundPointCount = 8
-    static let promotedGraphPointCountThreshold = 24
+    nonisolated static let minimumRenderablePointCount = 2
+    nonisolated static let hydratedPointCount = 4
+    nonisolated static let coarseUpperBoundPointCount = 8
+    nonisolated static let promotedGraphPointCountThreshold = 24
 
-    static func hasRenderableGraph(points: [Double], pointCount: Int) -> Bool {
+    nonisolated static func hasRenderableGraph(points: [Double], pointCount: Int) -> Bool {
         points.count >= minimumRenderablePointCount && pointCount >= minimumRenderablePointCount
     }
 
-    static func hasHydratedGraph(points: [Double], pointCount: Int) -> Bool {
+    nonisolated static func hasHydratedGraph(points: [Double], pointCount: Int) -> Bool {
         points.count >= hydratedPointCount && pointCount >= hydratedPointCount
     }
 
-    static func isPromotedPointCount(_ pointCount: Int) -> Bool {
+    nonisolated static func sourceQualityRank(
+        sourceName: String?,
+        pointCount: Int,
+        shapeQuality: MarketSparklineShapeQuality
+    ) -> Int {
+        let source = (sourceName ?? "").lowercased()
+        guard source.isEmpty == false else {
+            return 0
+        }
+        if source.contains("candle_selected_detail") || source.contains("selected_chart") {
+            return 6
+        }
+        if source.contains("sparkline_endpoint") {
+            return pointCount >= 12 ? 5 : 3
+        }
+        if source.contains("provider_sparkline") || source.contains("ticker_sparkline_points") {
+            return pointCount >= 8 ? 4 : 3
+        }
+        if source.contains("flat_current") {
+            return 1
+        }
+        if source.contains("derived_change24h")
+            || source.contains("ticker_sparkline_derived")
+            || source.contains("retained_store_derived") {
+            return 2
+        }
+        if source.contains("ticker_sparkline"),
+           pointCount <= 6,
+           shapeQuality.directionChangeCount == 0,
+           shapeQuality.straightSegmentRatio >= 0.86 {
+            return 2
+        }
+        if source.contains("ticker_sparkline") {
+            return pointCount >= 8 ? 4 : 3
+        }
+        return 0
+    }
+
+    nonisolated static func isPromotedPointCount(_ pointCount: Int) -> Bool {
         pointCount >= promotedGraphPointCountThreshold
     }
 
-    static func pointCountBucket(_ pointCount: Int) -> Int {
+    nonisolated static func pointCountBucket(_ pointCount: Int) -> Int {
         switch pointCount {
         case ..<1:
             return 0
         case 1:
             return 1
+        case 2:
+            return 2
         case minimumRenderablePointCount...coarseUpperBoundPointCount:
             return 2
         case 9..<promotedGraphPointCountThreshold:
@@ -335,7 +375,7 @@ enum MarketSparklineRenderPolicy {
         }
     }
 
-    static func shapeQuality(points: [Double], pointCount: Int) -> MarketSparklineShapeQuality {
+    nonisolated static func shapeQuality(points: [Double], pointCount: Int) -> MarketSparklineShapeQuality {
         let finitePoints = points.filter(\.isFinite)
         guard finitePoints.isEmpty == false else {
             return MarketSparklineShapeQuality(
@@ -406,11 +446,11 @@ enum MarketSparklineRenderPolicy {
         )
     }
 
-    static func isFlatLookingLowInformation(points: [Double], pointCount: Int) -> Bool {
+    nonisolated static func isFlatLookingLowInformation(points: [Double], pointCount: Int) -> Bool {
         shapeQuality(points: points, pointCount: pointCount).isFlatLookingLowInformation
     }
 
-    static func isLowInformationFirstPaintCandidate(points: [Double], pointCount: Int) -> Bool {
+    nonisolated static func isLowInformationFirstPaintCandidate(points: [Double], pointCount: Int) -> Bool {
         pointCount <= 3 || isFlatLookingLowInformation(points: points, pointCount: pointCount)
     }
 }
@@ -418,16 +458,21 @@ enum MarketSparklineRenderPolicy {
 enum MarketSparklineDetailLevel: Int, Equatable {
     case none = 0
     case placeholder = 1
-    case retainedCoarse = 2
-    case liveCoarse = 3
-    case retainedDetailed = 4
-    case liveDetailed = 5
+    case derivedPreview = 2
+    case providerMini = 3
+    case refinedMini = 4
+    case selectedChart = 5
+    case retainedCoarse = 6
+    case liveCoarse = 7
+    case retainedDetailed = 8
+    case liveDetailed = 9
 
     nonisolated init(
         graphState: MarketRowGraphState,
         points: [Double],
         pointCount: Int,
-        sourceVersion: Int = 0
+        sourceVersion: Int = 0,
+        sourceName: String? = nil
     ) {
         guard MarketSparklineRenderPolicy.hasRenderableGraph(points: points, pointCount: pointCount) else {
             switch graphState {
@@ -437,6 +482,28 @@ enum MarketSparklineDetailLevel: Int, Equatable {
                 self = .placeholder
             }
             return
+        }
+
+        let shapeQuality = MarketSparklineRenderPolicy.shapeQuality(points: points, pointCount: pointCount)
+        switch MarketSparklineRenderPolicy.sourceQualityRank(
+            sourceName: sourceName,
+            pointCount: pointCount,
+            shapeQuality: shapeQuality
+        ) {
+        case 6:
+            self = .selectedChart
+            return
+        case 5:
+            self = .refinedMini
+            return
+        case 3...4:
+            self = .providerMini
+            return
+        case 1...2:
+            self = .derivedPreview
+            return
+        default:
+            break
         }
 
         let isDetailed = MarketSparklineRenderPolicy.hasHydratedGraph(
@@ -462,6 +529,14 @@ enum MarketSparklineDetailLevel: Int, Equatable {
             return "none"
         case .placeholder:
             return "placeholder"
+        case .derivedPreview:
+            return "derivedPreview"
+        case .providerMini:
+            return "providerMini"
+        case .refinedMini:
+            return "refinedMini"
+        case .selectedChart:
+            return "selectedChart"
         case .retainedCoarse:
             return "retainedCoarse"
         case .liveCoarse:
@@ -477,6 +552,12 @@ enum MarketSparklineDetailLevel: Int, Equatable {
         switch self {
         case .none, .placeholder:
             return 0
+        case .derivedPreview:
+            return 1
+        case .providerMini:
+            return 2
+        case .refinedMini, .selectedChart:
+            return 3
         case .retainedCoarse, .liveCoarse:
             return 1
         case .retainedDetailed, .liveDetailed:
@@ -519,6 +600,7 @@ struct MarketSparklineQuality: Equatable {
     let graphPathVersion: Int
     let renderVersion: Int
     let sourceVersion: Int
+    let sourceName: String?
     let shapeQuality: MarketSparklineShapeQuality
 
     nonisolated init(
@@ -529,6 +611,7 @@ struct MarketSparklineQuality: Equatable {
         graphPathVersion: Int,
         renderVersion: Int,
         sourceVersion: Int = 0,
+        sourceName: String? = nil,
         shapeQuality: MarketSparklineShapeQuality? = nil
     ) {
         self.detailLevel = detailLevel
@@ -539,6 +622,7 @@ struct MarketSparklineQuality: Equatable {
         self.graphPathVersion = graphPathVersion
         self.renderVersion = renderVersion
         self.sourceVersion = sourceVersion
+        self.sourceName = sourceName
         self.shapeQuality = shapeQuality ?? MarketSparklineRenderPolicy.shapeQuality(points: [], pointCount: pointCount)
     }
 
@@ -546,12 +630,15 @@ struct MarketSparklineQuality: Equatable {
         graphState: MarketRowGraphState,
         points: [Double],
         pointCount: Int,
-        sourceVersion: Int = 0
+        sourceVersion: Int = 0,
+        sourceName: String? = nil
     ) {
+        let shapeQuality = MarketSparklineRenderPolicy.shapeQuality(points: points, pointCount: pointCount)
         let detailLevel = MarketSparklineDetailLevel(
             graphState: graphState,
             points: points,
-            pointCount: pointCount
+            pointCount: pointCount,
+            sourceName: sourceName
         )
         let hasRenderableGraph = graphState.keepsVisibleGraph
             && MarketSparklineRenderPolicy.hasRenderableGraph(points: points, pointCount: pointCount)
@@ -573,7 +660,8 @@ struct MarketSparklineQuality: Equatable {
                 graphPathVersion: graphPathVersion
             ),
             sourceVersion: sourceVersion,
-            shapeQuality: MarketSparklineRenderPolicy.shapeQuality(points: points, pointCount: pointCount)
+            sourceName: sourceName,
+            shapeQuality: shapeQuality
         )
     }
 
@@ -583,8 +671,39 @@ struct MarketSparklineQuality: Equatable {
 
     nonisolated var isVeryLowCoarse: Bool {
         isUsableGraph
-            && detailLevel.isDetailed == false
+            && qualityRank <= 2
             && pointCount <= 3
+    }
+
+    nonisolated var qualityRank: Int {
+        guard isUsableGraph else {
+            return detailLevel == .placeholder ? 0 : 0
+        }
+        let rank = MarketSparklineRenderPolicy.sourceQualityRank(
+            sourceName: sourceName,
+            pointCount: pointCount,
+            shapeQuality: shapeQuality
+        )
+        return max(rank, detailLevel.pathDetailRank)
+    }
+
+    private nonisolated var normalizedSourceName: String {
+        (sourceName ?? "").lowercased()
+    }
+
+    private nonisolated var isDerivedPreviewSource: Bool {
+        let source = normalizedSourceName
+        return qualityRank <= 2
+            || source.contains("derived_change24h")
+            || source.contains("ticker_sparkline_derived")
+            || source.contains("retained_store_derived")
+            || source.contains("flat_current")
+    }
+
+    private nonisolated var isRefinedMiniSource: Bool {
+        let source = normalizedSourceName
+        return source.contains("sparkline_endpoint")
+            || source.contains("provider_sparkline")
     }
 
     nonisolated var isFlatLookingLowInformation: Bool {
@@ -604,10 +723,18 @@ struct MarketSparklineQuality: Equatable {
     nonisolated var visibleFirstPaintPriority: Int {
         let detailPriority: Int
         switch detailLevel {
+        case .selectedChart:
+            detailPriority = 600
+        case .refinedMini:
+            detailPriority = 500
         case .liveDetailed:
             detailPriority = 500
+        case .providerMini:
+            detailPriority = 350
         case .retainedDetailed:
             detailPriority = 400
+        case .derivedPreview:
+            detailPriority = 150
         case .liveCoarse:
             detailPriority = 300
         case .retainedCoarse:
@@ -644,6 +771,9 @@ struct MarketSparklineQuality: Equatable {
         }
         if detailLevel.pathDetailRank > existing.detailLevel.pathDetailRank {
             return "detail_upgrade"
+        }
+        if qualityRank > existing.qualityRank {
+            return "source_quality_upgrade"
         }
         if pointCount > existing.pointCount,
            detailLevel.pathDetailRank >= existing.detailLevel.pathDetailRank {
@@ -683,7 +813,8 @@ struct MarketSparklineQuality: Equatable {
            existing.pointCount == pointCount,
            existing.graphPathVersion == graphPathVersion,
            existing.renderVersion == renderVersion,
-           existing.hasRenderableGraph == hasRenderableGraph {
+           existing.hasRenderableGraph == hasRenderableGraph,
+           existing.qualityRank == qualityRank {
             return .reject("same_quality_skip")
         }
 
@@ -692,23 +823,47 @@ struct MarketSparklineQuality: Equatable {
         }
 
         if existing.detailLevel == .liveDetailed,
-           detailLevel != .liveDetailed {
+           detailLevel == .retainedDetailed {
             return .reject("quality_downgrade_blocked")
         }
 
-        if existing.detailLevel.pathDetailRank > detailLevel.pathDetailRank {
+        if existing.isDerivedPreviewSource,
+           isRefinedMiniSource,
+           isUsableGraph {
+            return .accept("upgrade_derived_to_refined")
+        }
+
+        if existing.pointCount == 6,
+           pointCount >= 12,
+           isUsableGraph,
+           qualityRank >= existing.qualityRank {
+            return .accept("upgrade_point_count")
+        }
+
+        if qualityRank > existing.qualityRank {
+            return .accept("upgrade_source_quality")
+        }
+
+        if existing.qualityRank >= 5,
+           qualityRank < existing.qualityRank {
+            return .reject("quality_downgrade_blocked")
+        }
+
+        if existing.qualityRank > qualityRank,
+           existing.isUsableGraph {
             return .reject("quality_downgrade_blocked")
         }
 
         if existing.pointCount > pointCount,
-           existing.detailLevel.pathDetailRank >= detailLevel.pathDetailRank,
+           existing.qualityRank >= qualityRank,
            existing.isUsableGraph {
             return .reject("quality_downgrade_blocked")
         }
 
         if existing.detailLevel == detailLevel,
            existing.graphState.preservationRank > graphState.preservationRank,
-           existing.pointCount >= pointCount {
+           existing.pointCount >= pointCount,
+           existing.qualityRank >= qualityRank {
             return .reject("quality_downgrade_blocked")
         }
 
@@ -775,7 +930,7 @@ enum MarketSparklineVisualState: Int, Equatable {
     case stale
     case unavailable
 
-    init(graphState: MarketRowGraphState) {
+    nonisolated init(graphState: MarketRowGraphState) {
         switch graphState {
         case .none:
             self = .none
@@ -792,7 +947,7 @@ enum MarketSparklineVisualState: Int, Equatable {
         }
     }
 
-    var keepsVisibleGraph: Bool {
+    nonisolated var keepsVisibleGraph: Bool {
         switch self {
         case .cached, .live, .stale:
             return true
@@ -1129,6 +1284,7 @@ struct MarketSparklineRenderPayload: Equatable {
     let renderToken: String
     let renderVersion: Int
     let sourceVersion: Int
+    let sourceName: String?
     let graphState: MarketRowGraphState
     let pointCount: Int
     let shapeQuality: MarketSparklineShapeQuality
@@ -1147,12 +1303,14 @@ struct MarketSparklineRenderPayload: Equatable {
         suppressesCoarseRetainedReuse: Bool = false,
         graphPathVersion: Int? = nil,
         renderVersion: Int? = nil,
-        sourceVersion: Int = 0
+        sourceVersion: Int = 0,
+        sourceName: String? = nil
     ) {
         let resolvedDetailLevel = MarketSparklineDetailLevel(
             graphState: graphState,
             points: points,
-            pointCount: pointCount
+            pointCount: pointCount,
+            sourceName: sourceName
         )
         let resolvedGraphRenderIdentity = graphRenderIdentity.contains(":detail=")
             ? graphRenderIdentity
@@ -1174,6 +1332,7 @@ struct MarketSparklineRenderPayload: Equatable {
             graphPathVersion: self.graphPathVersion
         )
         self.sourceVersion = sourceVersion
+        self.sourceName = sourceName
         self.graphState = graphState
         self.pointCount = pointCount
         self.shapeQuality = MarketSparklineRenderPolicy.shapeQuality(
@@ -1259,6 +1418,7 @@ struct MarketRowViewState: Identifiable, Equatable {
     let volumeText: String
     let sparkline: [Double]
     let sparklinePointCount: Int
+    let sparklineSource: String?
     let sparklineTimeframe: String
     let sparklinePayload: MarketSparklineRenderPayload
     let hasEnoughSparklineData: Bool
@@ -1297,7 +1457,12 @@ struct MarketRowViewState: Identifiable, Equatable {
     }
     nonisolated var hasPrice: Bool { !isPricePlaceholder }
     nonisolated var hasVolume: Bool { !isVolumePlaceholder }
+    nonisolated var sparklineValues: [Double] { sparkline }
+    nonisolated var sparklinePointItems: [SparklinePoint] {
+        sparkline.map { SparklinePoint(price: $0, timestamp: nil) }
+    }
     nonisolated var sparklinePoints: Int { sparklinePointCount }
+    nonisolated var graphPointCount: Int { sparklinePointCount }
     nonisolated var graphIdentity: String { sparklinePayload.graphRenderIdentity }
     nonisolated var graphPathVersion: Int { sparklinePayload.graphPathVersion }
     nonisolated var graphRenderVersion: Int { sparklinePayload.renderVersion }
@@ -1310,12 +1475,14 @@ struct MarketRowViewState: Identifiable, Equatable {
         selectedExchange: Exchange,
         exchange: Exchange,
         sourceExchange: Exchange,
+        quoteCurrency: MarketQuoteCurrency = .krw,
         coin: CoinInfo,
         priceText: String,
         changeText: String,
         volumeText: String,
         sparkline: [Double],
         sparklinePointCount: Int,
+        sparklineSource: String? = nil,
         sparklineTimeframe: String,
         hasEnoughSparklineData: Bool,
         chartPresentation: MarketRowChartPresentation,
@@ -1332,7 +1499,7 @@ struct MarketRowViewState: Identifiable, Equatable {
         suppressesCoarseRetainedReuse: Bool = false,
         sparklineSourceVersion: Int = 0
     ) {
-        let resolvedMarketIdentity = coin.marketIdentity(exchange: exchange)
+        let resolvedMarketIdentity = coin.marketIdentity(exchange: exchange, quoteCurrency: quoteCurrency)
         self.selectedExchange = selectedExchange
         self.exchange = exchange
         self.sourceExchange = sourceExchange
@@ -1343,12 +1510,14 @@ struct MarketRowViewState: Identifiable, Equatable {
         self.volumeText = volumeText
         self.sparkline = sparkline
         self.sparklinePointCount = sparklinePointCount
+        self.sparklineSource = sparklineSource
         self.sparklineTimeframe = sparklineTimeframe
         let bindingKey = "\(resolvedMarketIdentity.cacheKey):\(sparklineTimeframe)"
         let detailLevel = MarketSparklineDetailLevel(
             graphState: graphState,
             points: sparkline,
-            pointCount: sparklinePointCount
+            pointCount: sparklinePointCount,
+            sourceName: sparklineSource
         )
         let graphRenderIdentity = "\(bindingKey):detail=\(detailLevel.cacheComponent)"
         let graphPathVersion = Self.sparklinePathVersion(
@@ -1379,7 +1548,8 @@ struct MarketRowViewState: Identifiable, Equatable {
             suppressesCoarseRetainedReuse: suppressesCoarseRetainedReuse,
             graphPathVersion: graphPathVersion,
             renderVersion: renderVersion,
-            sourceVersion: sparklineSourceVersion
+            sourceVersion: sparklineSourceVersion,
+            sourceName: sparklineSource
         )
         self.hasEnoughSparklineData = hasEnoughSparklineData
         self.chartPresentation = chartPresentation
@@ -1399,18 +1569,21 @@ struct MarketRowViewState: Identifiable, Equatable {
         points: [Double],
         pointCount: Int,
         graphState: MarketRowGraphState,
+        sparklineSource: String? = nil,
         sourceVersion: Int? = nil
     ) -> MarketRowViewState {
         MarketRowViewState(
             selectedExchange: selectedExchange,
             exchange: exchange,
             sourceExchange: sourceExchange,
+            quoteCurrency: marketIdentity.quoteCurrency,
             coin: coin,
             priceText: priceText,
             changeText: changeText,
             volumeText: volumeText,
             sparkline: points,
             sparklinePointCount: pointCount,
+            sparklineSource: graphState.keepsVisibleGraph ? (sparklineSource ?? "sparkline_patch") : sparklineSource,
             sparklineTimeframe: sparklineTimeframe,
             hasEnoughSparklineData: MarketSparklineRenderPolicy.hasHydratedGraph(points: points, pointCount: pointCount),
             chartPresentation: graphState.chartPresentation,
@@ -1436,12 +1609,14 @@ struct MarketRowViewState: Identifiable, Equatable {
             selectedExchange: selectedExchange,
             exchange: exchange,
             sourceExchange: sourceExchange,
+            quoteCurrency: marketIdentity.quoteCurrency,
             coin: coin,
             priceText: priceText,
             changeText: changeText,
             volumeText: volumeText,
             sparkline: sparkline,
             sparklinePointCount: sparklinePointCount,
+            sparklineSource: sparklineSource,
             sparklineTimeframe: sparklineTimeframe,
             hasEnoughSparklineData: hasEnoughSparklineData,
             chartPresentation: chartPresentation,
@@ -1477,12 +1652,14 @@ struct MarketRowViewState: Identifiable, Equatable {
             selectedExchange: selectedExchange,
             exchange: exchange,
             sourceExchange: sourceExchange,
+            quoteCurrency: marketIdentity.quoteCurrency,
             coin: coin,
             priceText: priceText,
             changeText: changeText,
             volumeText: volumeText,
             sparkline: sparkline,
             sparklinePointCount: sparklinePointCount,
+            sparklineSource: sparklineSource,
             sparklineTimeframe: sparklineTimeframe,
             hasEnoughSparklineData: hasEnoughSparklineData,
             chartPresentation: graphState.chartPresentation,

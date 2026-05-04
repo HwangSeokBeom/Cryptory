@@ -25,7 +25,7 @@ struct ChartView: View {
                 .onAppear {
                     AppLogger.debug(
                         .lifecycle,
-                        "ChartView onAppear #\(instanceID) \(coin.marketIdentity(exchange: vm.exchange).logFields) interval=\(vm.chartPeriod)"
+                        "ChartView onAppear #\(instanceID) \(coin.marketIdentity(exchange: vm.exchange, quoteCurrency: vm.selectedQuoteCurrency).logFields) interval=\(vm.chartPeriod)"
                     )
                     vm.loadCoinDetailContent(symbol: coin.symbol)
                 }
@@ -48,6 +48,18 @@ struct ChartView: View {
             )
             .frame(width: 0, height: 0)
         )
+        .sheet(isPresented: $vm.isPriceAlertSheetPresented) {
+            PriceAlertSheet(
+                draft: $vm.priceAlertDraft,
+                isSaving: vm.isSavingPriceAlert,
+                message: vm.priceAlertLoadMessage,
+                onSave: vm.savePriceAlertDraft,
+                onDelete: vm.deleteActivePriceAlert
+            )
+            .presentationDetents([.fraction(0.72), .large])
+            .presentationDragIndicator(.visible)
+            .presentationBackground(Color.bg)
+        }
     }
 
     private var emptyState: some View {
@@ -86,7 +98,7 @@ struct ChartView: View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
                 SymbolImageView(
-                    marketIdentity: coin.marketIdentity(exchange: vm.exchange),
+                    marketIdentity: coin.marketIdentity(exchange: vm.exchange, quoteCurrency: vm.selectedQuoteCurrency),
                     symbol: coin.symbol,
                     canonicalSymbol: coin.canonicalSymbol,
                     imageURL: coin.iconURL,
@@ -94,7 +106,7 @@ struct ChartView: View {
                     localAssetName: coin.localAssetName,
                     symbolImageState: AssetImageClient.shared.renderState(
                         for: AssetImageRequestDescriptor(
-                            marketIdentity: coin.marketIdentity(exchange: vm.exchange),
+                            marketIdentity: coin.marketIdentity(exchange: vm.exchange, quoteCurrency: vm.selectedQuoteCurrency),
                             symbol: coin.symbol,
                             canonicalSymbol: coin.canonicalSymbol,
                             imageURL: coin.iconURL,
@@ -156,11 +168,11 @@ struct ChartView: View {
                 .accessibilityLabel(vm.favCoins.contains(coin.symbol) ? "관심 코인 해제" : "관심 코인 추가")
 
                 Button {
-                    vm.showNotification("가격 알림은 참고용 알림으로 준비 중입니다.", type: .success)
+                    vm.presentPriceAlertSheet()
                 } label: {
-                    Image(systemName: "bell.badge")
+                    Image(systemName: vm.activePriceAlert?.isActive == true ? "bell.badge.fill" : "bell.badge")
                         .font(.system(size: 16, weight: .semibold))
-                        .foregroundColor(.textMuted)
+                        .foregroundColor(vm.activePriceAlert?.isActive == true ? .accent : .textMuted)
                         .padding(8)
                         .background(
                             RoundedRectangle(cornerRadius: 8)
@@ -183,28 +195,37 @@ struct ChartView: View {
 
     private var detailTabBar: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 20) {
+            HStack(alignment: .bottom, spacing: 20) {
                 ForEach(CoinDetailTab.allCases) { tab in
                     Button {
                         vm.selectedCoinDetailTab = tab
                     } label: {
-                        VStack(spacing: 8) {
+                        VStack(spacing: 0) {
                             Text(tab.title)
                                 .font(.system(size: 15, weight: vm.selectedCoinDetailTab == tab ? .heavy : .bold))
                                 .foregroundColor(vm.selectedCoinDetailTab == tab ? .themeText : .textMuted)
                                 .lineLimit(1)
+                                .frame(height: 22, alignment: .center)
+                                .padding(.top, 11)
+                                .padding(.bottom, 10)
                             Rectangle()
                                 .fill(vm.selectedCoinDetailTab == tab ? Color.accent : Color.clear)
                                 .frame(height: 3)
+                                .clipShape(Capsule())
                         }
                         .frame(minWidth: 54)
+                        .frame(height: 46, alignment: .bottom)
+                        .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel("\(tab.title) 탭")
                 }
             }
             .padding(.horizontal, 16)
+            .frame(height: 54, alignment: .bottom)
         }
+        .frame(height: 54)
+        .clipped(antialiased: false)
         .overlay(
             Rectangle()
                 .frame(height: 1)
@@ -244,8 +265,13 @@ struct ChartView: View {
                 symbol: coin.symbol,
                 state: vm.coinCommunityState,
                 draft: $vm.communityDraft,
+                submitMessage: vm.communitySubmitMessage,
                 onFilter: { filter in
                     vm.loadCoinCommunity(symbol: coin.symbol, filter: filter, forceRefresh: true)
+                },
+                sortOrder: vm.communitySortOrder,
+                onSort: { sort, filter in
+                    vm.selectCommunitySort(sort, symbol: coin.symbol, filter: filter)
                 },
                 onSubmit: {
                     vm.submitCoinCommunityPost(symbol: coin.symbol)
@@ -253,32 +279,89 @@ struct ChartView: View {
                 onVote: { direction in
                     vm.voteCoinOpinion(symbol: coin.symbol, direction: direction)
                 },
+                onLike: { post in
+                    vm.toggleCommunityLike(symbol: coin.symbol, post: post)
+                },
+                onLoadComments: { postId in
+                    vm.loadCommunityComments(symbol: coin.symbol, postId: postId)
+                },
+                onSubmitComment: { postId, content in
+                    vm.submitCommunityComment(symbol: coin.symbol, postId: postId, content: content)
+                },
+                onFollow: { post in
+                    vm.toggleAuthorFollow(post: post)
+                },
+                onReportPost: { post, reason in
+                    vm.reportPost(post, reason: reason)
+                },
+                onBlockPostAuthor: { post in
+                    vm.blockAuthor(of: post)
+                },
+                onReportComment: { comment, reason in
+                    vm.reportComment(comment, reason: reason)
+                },
+                onBlockCommentAuthor: { comment in
+                    vm.blockAuthor(of: comment)
+                },
                 onRetry: {
                     vm.loadCoinCommunity(symbol: coin.symbol, filter: .all, forceRefresh: true)
                 },
                 isSubmitting: vm.isSubmittingCommunityPost,
-                isVoting: vm.isVotingCoinOpinion
+                isVoting: vm.isVotingCoinOpinion,
+                likeRequestIds: vm.communityLikeRequestIds,
+                followRequestUserIds: vm.communityFollowRequestUserIds,
+                commentStates: vm.communityCommentsByPostId,
+                commentSubmitIds: vm.communityCommentSubmitIds,
+                commentSortOrders: vm.commentSortOrdersByPostId,
+                onCommentSort: { postId, sort in
+                    vm.selectCommentSort(sort, symbol: coin.symbol, postId: postId)
+                }
+            )
+        case .news:
+            CoinNewsDetailView(
+                symbol: coin.symbol,
+                state: vm.coinNewsState,
+                feedViewState: vm.coinNewsFeedViewState,
+                selectedDate: vm.coinNewsSelectedDate,
+                sortOrder: vm.coinNewsSortOrder,
+                onSelectDate: { date in
+                    vm.selectCoinNewsDate(date, symbol: coin.symbol)
+                },
+                onSelectSort: { sort in
+                    vm.selectCoinNewsSort(sort, symbol: coin.symbol)
+                },
+                onRetry: {
+                    vm.loadCoinNews(symbol: coin.symbol, forceRefresh: true)
+                }
             )
         }
     }
 
     private func chartTabContent(for coin: CoinInfo) -> some View {
-        ScrollView {
-            VStack(spacing: 0) {
-                ScreenStatusBannerView(viewState: vm.chartStatusViewState)
-                    .padding(.horizontal, 16)
-                    .padding(.top, 12)
-                PeriodSelector(vm: vm) {
-                    isChartSettingsPresented = true
+        GeometryReader { proxy in
+            ScrollView {
+                VStack(spacing: 0) {
+                    ScreenStatusBannerView(viewState: vm.chartStatusViewState)
+                        .padding(.horizontal, 16)
+                        .padding(.top, 12)
+                    PeriodSelector(vm: vm) {
+                        isChartSettingsPresented = true
+                    }
+                    candleSection
+                    stats24H
+                    coinMarketDataSection(coin)
+                    orderbookSection
+                    tradesSection
+                    chartDisclaimer
                 }
-                candleSection
-                stats24H
-                coinMarketDataSection(coin)
-                orderbookSection
-                tradesSection
-                chartDisclaimer
+                .padding(.bottom, 188 + proxy.safeAreaInsets.bottom + 92)
             }
-            .padding(.bottom, 164)
+            .onAppear {
+                AppLogger.debug(
+                    .lifecycle,
+                    "[ChartLayoutOrder] screen=coin_detail selectedTab=chart order=tabs,timeframe,chart,auxiliaryData chartExists=true auxiliaryBelowChart=true"
+                )
+            }
         }
     }
     @ViewBuilder

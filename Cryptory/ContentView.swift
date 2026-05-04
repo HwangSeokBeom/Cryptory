@@ -147,6 +147,9 @@ struct ContentView: View {
             AppLogger.debug(.lifecycle, "ContentView onAppear #\(instanceID) tab=\(vm.activeTab.rawValue)")
             vm.onAppear()
         }
+        .task {
+            await LegalLinksConfigurationCenter.shared.refreshIfNeeded()
+        }
         .onDisappear {
             AppLogger.debug(.lifecycle, "ContentView onDisappear #\(instanceID) tab=\(vm.activeTab.rawValue)")
         }

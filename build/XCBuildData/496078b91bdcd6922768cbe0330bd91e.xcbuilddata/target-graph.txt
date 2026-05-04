@@ -1,4 +1,0 @@
-Target dependency graph (2 targets)
-Target 'CryptoryTests' in project 'Cryptory'
-➜ Explicit dependency on target 'Cryptory' in project 'Cryptory'
-Target 'Cryptory' in project 'Cryptory' (no dependencies)

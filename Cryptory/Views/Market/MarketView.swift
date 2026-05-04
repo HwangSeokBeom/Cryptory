@@ -44,6 +44,9 @@ struct MarketView: View {
             SearchBar(text: $vm.searchQuery)
             MarketSegmentedControl(selection: $vm.marketFilter)
                 .padding(.bottom, 10)
+            quoteSegmentedControl
+                .padding(.horizontal, 16)
+                .padding(.bottom, 10)
 
             ScreenStatusBannerView(viewState: vm.marketStatusViewState)
                 .padding(.horizontal, 16)
@@ -107,13 +110,14 @@ struct MarketView: View {
     }
 
     private var marketStyle: MarketExchangeStyle {
+        let quoteMarketName = "\(vm.selectedExchange.displayName) \(vm.selectedQuoteCurrency.marketDisplayName) 마켓"
         switch vm.selectedExchange {
         case .upbit:
             return MarketExchangeStyle(
-                title: "원화 마켓 빠른 보기",
+                title: "\(vm.selectedQuoteCurrency.marketDisplayName) 마켓 빠른 보기",
                 subtitle: "거래대금 상위 종목부터 즉시 반응하게 보여줍니다.",
                 representativeTitle: "대표 종목",
-                listTitle: "전체 원화 마켓",
+                listTitle: quoteMarketName,
                 volumeTitle: "거래대금",
                 accentStart: vm.selectedExchange.color.opacity(0.92),
                 accentEnd: vm.selectedExchange.color.opacity(0.58)
@@ -123,37 +127,37 @@ struct MarketView: View {
                 title: "실시간 주요 종목",
                 subtitle: "빗썸 체감에 맞춰 강한 변동 종목을 먼저 보여줍니다.",
                 representativeTitle: "주요 종목",
-                listTitle: "실시간 시세 리스트",
+                listTitle: quoteMarketName,
                 volumeTitle: "거래량",
                 accentStart: vm.selectedExchange.color.opacity(0.88),
                 accentEnd: Color(hex: "#F8C86A")
             )
         case .coinone:
             return MarketExchangeStyle(
-                title: "실시간 랭킹 보드",
+                title: "\(vm.selectedQuoteCurrency.marketDisplayName) 실시간 랭킹 보드",
                 subtitle: "대표 종목과 전체 리스트가 순차적으로 채워집니다.",
                 representativeTitle: "랭킹 보드",
-                listTitle: "코인원 시세",
+                listTitle: quoteMarketName,
                 volumeTitle: "거래량",
                 accentStart: vm.selectedExchange.color.opacity(0.9),
                 accentEnd: Color(hex: "#8DE4DB")
             )
         case .korbit:
             return MarketExchangeStyle(
-                title: "코빗 원화 시세",
+                title: "코빗 \(vm.selectedQuoteCurrency.marketDisplayName) 시세",
                 subtitle: "선택 직후 대표 종목부터 먼저 보여드리고 전체를 확장합니다.",
                 representativeTitle: "주요 페어",
-                listTitle: "코빗 전체 리스트",
+                listTitle: quoteMarketName,
                 volumeTitle: "거래량",
                 accentStart: vm.selectedExchange.color.opacity(0.9),
                 accentEnd: Color(hex: "#90B8EA")
             )
         case .binance:
             return MarketExchangeStyle(
-                title: "글로벌 마켓",
+                title: "글로벌 \(vm.selectedQuoteCurrency.rawValue) 마켓",
                 subtitle: "국내 김프 비교용 글로벌 기준가 흐름을 빠르게 확인합니다.",
                 representativeTitle: "대표 마켓",
-                listTitle: "글로벌 시세",
+                listTitle: quoteMarketName,
                 volumeTitle: "거래량",
                 accentStart: vm.selectedExchange.color.opacity(0.88),
                 accentEnd: Color(hex: "#F7D55B")
@@ -163,6 +167,32 @@ struct MarketView: View {
 
     private var displayConfiguration: MarketListDisplayConfiguration {
         vm.marketDisplayConfiguration
+    }
+
+    private var quoteSegmentedControl: some View {
+        HStack(spacing: 4) {
+            ForEach(vm.supportedQuoteCurrencies) { quote in
+                Button {
+                    vm.updateQuoteCurrency(quote, source: "market_quote_segment")
+                } label: {
+                    Text(quote.title)
+                        .font(.system(size: 12, weight: vm.selectedQuoteCurrency == quote ? .heavy : .semibold))
+                        .foregroundColor(vm.selectedQuoteCurrency == quote ? .bg : .textSecondary)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 9)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(vm.selectedQuoteCurrency == quote ? Color.accent : Color.bgSecondary)
+                        )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(3)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color.bgTertiary.opacity(0.85))
+        )
     }
 
     private var exchangeHero: some View {
@@ -268,12 +298,17 @@ struct MarketView: View {
             } else if case .failed(let message) = vm.marketState, vm.displayedMarketRows.isEmpty {
                 stateView(
                     title: "시세를 불러오지 못했어요",
-                    detail: message
+                    detail: message,
+                    retryAction: {
+                        Task {
+                            await vm.refreshMarketData(forceRefresh: true, reason: "market_error_retry")
+                        }
+                    }
                 )
             } else if case .empty = vm.marketState, vm.displayedMarketRows.isEmpty {
                 stateView(
-                    title: "노출할 거래쌍이 없어요",
-                    detail: "선택한 거래소에서 보여드릴 시세를 아직 준비하지 못했어요."
+                    title: "표시할 마켓 데이터가 없습니다.",
+                    detail: "\(vm.selectedExchange.displayName) · \(vm.selectedQuoteCurrency.rawValue)"
                 )
             } else if vm.marketFilter == .fav && vm.displayedMarketRows.isEmpty {
                 stateView(
@@ -377,7 +412,7 @@ struct MarketView: View {
         case .exchangeChanged, .loading:
             return "거래소 변경 직후 바로 준비 중"
         case .partial:
-            return "리스트와 sparkline 순차 반영 중"
+            return "리스트 순차 반영 중"
         case .hydrated:
             return "전체 리스트 반영 완료"
         }
@@ -559,7 +594,7 @@ struct MarketView: View {
         .redacted(reason: .placeholder)
     }
 
-    private func stateView(title: String, detail: String) -> some View {
+    private func stateView(title: String, detail: String, retryAction: (() -> Void)? = nil) -> some View {
         VStack(spacing: 12) {
             Spacer(minLength: 60)
             Text(title)
@@ -570,6 +605,20 @@ struct MarketView: View {
                 .foregroundColor(.textMuted)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 24)
+            if let retryAction {
+                Button(action: retryAction) {
+                    Text("다시 시도")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundColor(.bg)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 9)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(Color.accent)
+                        )
+                }
+                .buttonStyle(.plain)
+            }
             Spacer()
         }
         .frame(maxWidth: .infinity)

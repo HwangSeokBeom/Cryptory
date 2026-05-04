@@ -10,6 +10,9 @@ struct AuthSession: Codable, Equatable {
     let sessionID: String?
     let userID: String?
     let email: String?
+    let displayName: String?
+    let nickname: String?
+    let emailMasked: String?
 
     init(
         accessToken: String,
@@ -19,7 +22,10 @@ struct AuthSession: Codable, Equatable {
         refreshTokenExpiresAt: String? = nil,
         sessionID: String? = nil,
         userID: String?,
-        email: String?
+        email: String?,
+        displayName: String? = nil,
+        nickname: String? = nil,
+        emailMasked: String? = nil
     ) {
         self.accessToken = accessToken
         self.refreshToken = refreshToken
@@ -29,6 +35,9 @@ struct AuthSession: Codable, Equatable {
         self.sessionID = sessionID
         self.userID = userID
         self.email = email
+        self.displayName = displayName
+        self.nickname = nickname
+        self.emailMasked = emailMasked
     }
 
     var hasRefreshToken: Bool {
@@ -44,7 +53,10 @@ struct AuthSession: Codable, Equatable {
             refreshTokenExpiresAt: refreshTokenExpiresAt,
             sessionID: sessionID,
             userID: userID,
-            email: email
+            email: email,
+            displayName: displayName,
+            nickname: nickname,
+            emailMasked: emailMasked
         )
     }
 }
@@ -89,7 +101,10 @@ struct KeychainAuthSessionStore: AuthSessionStoring {
                 refreshTokenExpiresAt: metadata?.refreshTokenExpiresAt,
                 sessionID: metadata?.sessionID,
                 userID: metadata?.userID,
-                email: metadata?.email
+                email: metadata?.email,
+                displayName: metadata?.displayName,
+                nickname: metadata?.nickname,
+                emailMasked: metadata?.emailMasked
             )
         }
 
@@ -118,7 +133,10 @@ struct KeychainAuthSessionStore: AuthSessionStoring {
                 refreshTokenExpiresAt: session.refreshTokenExpiresAt,
                 sessionID: session.sessionID,
                 userID: session.userID,
-                email: session.email
+                email: session.email,
+                displayName: session.displayName,
+                nickname: session.nickname,
+                emailMasked: session.emailMasked
             )
         )
         delete(account: legacyAccount)
@@ -203,6 +221,9 @@ private struct AuthSessionMetadata: Codable, Equatable {
     let sessionID: String?
     let userID: String?
     let email: String?
+    let displayName: String?
+    let nickname: String?
+    let emailMasked: String?
 }
 
 private extension String {

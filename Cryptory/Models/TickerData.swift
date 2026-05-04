@@ -10,6 +10,11 @@ enum TickerDelivery: String, Equatable, Codable {
     case live
 }
 
+struct SparklinePoint: Codable, Equatable {
+    var price: Double
+    var timestamp: Date?
+}
+
 struct TickerData: Codable {
     var price: Double
     var change: Double
@@ -17,8 +22,11 @@ struct TickerData: Codable {
     var high24: Double
     var low24: Double
     var sparkline: [Double] = []
+    var sparklinePoints: [SparklinePoint] = []
     var sparklinePointCount: Int? = nil
     var hasServerSparkline: Bool = false
+    var sparklineSource: String? = nil
+    var previousPrice24h: Double? = nil
     var flash: FlashType? = nil
     var timestamp: Date? = nil
     var isStale: Bool = false

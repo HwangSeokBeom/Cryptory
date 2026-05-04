@@ -84,6 +84,22 @@ enum MarketFilter: String, CaseIterable {
     }
 }
 
+enum ContentSortOrder: String, CaseIterable, Equatable, Identifiable {
+    case latest
+    case oldest
+    case popular
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .latest: return "최신순"
+        case .oldest: return "오래된순"
+        case .popular: return "인기순"
+        }
+    }
+}
+
 enum OrderSide: String, Hashable {
     case buy
     case sell
@@ -249,6 +265,7 @@ private struct MarketPresentationSnapshot: Equatable {
 
 private struct MarketRequestContext: Equatable {
     let exchange: Exchange
+    let quoteCurrency: MarketQuoteCurrency
     let route: Tab
     let universeVersion: String
     let generation: Int
@@ -261,6 +278,7 @@ private struct ScheduledHydrationContext: Equatable {
 
 private enum SparklineLayerSource: Equatable {
     case tickerSnapshot
+    case sparklineEndpoint
     case candleSnapshot
     case stream
 }
@@ -280,7 +298,7 @@ private struct SparklineLayerSnapshot: Equatable {
             return .staleVisible
         }
         switch source {
-        case .candleSnapshot, .stream:
+        case .sparklineEndpoint, .candleSnapshot, .stream:
             return .liveVisible
         case .tickerSnapshot:
             return .cachedVisible
@@ -318,6 +336,7 @@ private struct StableSparklineDisplay: Equatable {
     let generation: Int
     let updatedAt: Date
     let sourceVersion: Int
+    let sourceName: String?
 
     nonisolated var hasRenderableGraph: Bool {
         graphState.keepsVisibleGraph
@@ -326,6 +345,7 @@ private struct StableSparklineDisplay: Equatable {
 }
 
 private enum SparklineDisplayResolutionSource: Equatable {
+    case ticker
     case snapshot
     case displayCache
     case rowState
@@ -335,6 +355,8 @@ private enum SparklineDisplayResolutionSource: Equatable {
 
     var logComponent: String {
         switch self {
+        case .ticker:
+            return "ticker_sparkline"
         case .snapshot:
             return "live_cache"
         case .displayCache:
@@ -357,11 +379,82 @@ private struct SparklineResolutionCandidate {
     let graphState: MarketRowGraphState
     let source: SparklineDisplayResolutionSource
     let sourceVersion: Int
+    let sourceName: String?
 }
 
 private struct SparklineResolutionSelection {
     let candidate: SparklineResolutionCandidate?
     let skippedDisplayCacheForNewerCandidate: Bool
+}
+
+private extension CoinCommunitySnapshot {
+    func replacingPost(_ id: String, with post: CoinCommunityPost) -> CoinCommunitySnapshot {
+        CoinCommunitySnapshot(
+            posts: posts.map { $0.id == id ? post : $0 },
+            vote: vote,
+            nextCursor: nextCursor
+        )
+    }
+}
+
+private extension CoinCommunityPost {
+    func replacingLike(isLiked: Bool, count: Int? = nil) -> CoinCommunityPost {
+        let nextCount = count ?? max(likeCount + (isLiked ? 1 : -1), 0)
+        return CoinCommunityPost(
+            id: id,
+            authorId: authorId,
+            authorName: authorName,
+            avatarURL: avatarURL,
+            createdAt: createdAt,
+            content: content,
+            symbol: symbol,
+            tags: tags,
+            likeCount: nextCount,
+            commentCount: commentCount,
+            isLiked: isLiked,
+            isFollowing: isFollowing,
+            isOwnPost: isOwnPost,
+            badge: badge
+        )
+    }
+
+    func replacingCommentCount(_ count: Int) -> CoinCommunityPost {
+        CoinCommunityPost(
+            id: id,
+            authorId: authorId,
+            authorName: authorName,
+            avatarURL: avatarURL,
+            createdAt: createdAt,
+            content: content,
+            symbol: symbol,
+            tags: tags,
+            likeCount: likeCount,
+            commentCount: count,
+            isLiked: isLiked,
+            isFollowing: isFollowing,
+            isOwnPost: isOwnPost,
+            badge: badge
+        )
+    }
+
+    func replacingFollow(isFollowing: Bool) -> CoinCommunityPost {
+        CoinCommunityPost(
+            id: id,
+            authorId: authorId,
+            authorName: authorName,
+            avatarURL: avatarURL,
+            createdAt: createdAt,
+            content: content,
+            symbol: symbol,
+            tags: tags,
+            likeCount: likeCount,
+            commentCount: commentCount,
+            isLiked: isLiked,
+            isFollowing: isFollowing,
+            isOwnPost: isOwnPost,
+            badge: badge
+        )
+    }
 }
 
 private struct MarketSparklinePatch {
@@ -534,6 +627,7 @@ private struct MarketRowReconfigureTrace {
 
 private struct MarketPresentationBuildInput {
     let exchange: Exchange
+    let quoteCurrency: MarketQuoteCurrency
     let generation: Int
     let assetImageClient: AssetImageClient
     let catalogCoins: [CoinInfo]
@@ -711,6 +805,7 @@ struct SignUpServerErrorState: Equatable {
 final class CryptoViewModel: ObservableObject {
     @Published private(set) var activeTab: Tab = .market
     @Published private(set) var selectedExchange: Exchange = .upbit
+    @Published private(set) var selectedQuoteCurrency: MarketQuoteCurrency = .krw
     @Published var selectedCoin: CoinInfo?
     @Published var showExchangeMenu = false
 
@@ -751,6 +846,23 @@ final class CryptoViewModel: ObservableObject {
     @Published private(set) var chartSettingsState: ChartSettingsState
     @Published private(set) var appliedChartSettingsState: ChartSettingsState
     @Published private(set) var comparedChartSeries: [ChartComparisonSeries] = []
+    @Published private(set) var activeChartRealtimeStatus: MarketRealtimeStatus = .disconnected
+    @Published var isPriceAlertSheetPresented = false
+    @Published private(set) var activePriceAlert: PriceAlert?
+    @Published var priceAlertDraft: PriceAlertDraft = PriceAlertDraft(
+        alertId: nil,
+        exchange: .upbit,
+        symbol: "BTC",
+        quoteCurrency: .krw,
+        currentPrice: 0,
+        condition: .above,
+        targetPriceText: "",
+        repeatPolicy: .once,
+        isActive: true,
+        warningMessage: nil
+    )
+    @Published private(set) var isSavingPriceAlert = false
+    @Published private(set) var priceAlertLoadMessage: String?
 
     @Published var orderSide: OrderSide = .buy
     @Published var orderType: OrderType = .limit
@@ -771,15 +883,39 @@ final class CryptoViewModel: ObservableObject {
     @Published private(set) var portfolioStatusViewState: ScreenStatusViewState = .idle
 
     @Published private(set) var newsState: Loadable<[CryptoNewsItem]> = .idle
+    @Published private(set) var coinNewsState: Loadable<[CryptoNewsItem]> = .idle
     @Published private(set) var marketTrendsState: Loadable<MarketTrendsSnapshot> = .idle
+    @Published private(set) var newsSelectedDate: Date = Date()
+    @Published private(set) var coinNewsSelectedDate: Date = Date()
+    @Published private(set) var newsSortOrder: ContentSortOrder = .latest
+    @Published private(set) var coinNewsSortOrder: ContentSortOrder = .latest
+    @Published private(set) var newsFeedViewState: NewsFeedViewState = .initial()
+    @Published private(set) var coinNewsFeedViewState: NewsFeedViewState = .initial(isCoinScoped: true)
+    @Published private(set) var marketTrendRange: MarketTrendRange = .d30
+    @Published private(set) var communitySortOrder: ContentSortOrder = .latest
+    @Published private(set) var commentSortOrdersByPostId: [String: ContentSortOrder] = [:]
     @Published private(set) var coinInfoState: Loadable<CoinDetailInfo> = .idle
     @Published private(set) var coinAnalysisState: Loadable<CoinAnalysisSnapshot> = .idle
     @Published private(set) var coinCommunityState: Loadable<CoinCommunitySnapshot> = .idle
     @Published var selectedCoinDetailTab: CoinDetailTab = .info
     @Published private(set) var selectedAnalysisTimeframe: CoinAnalysisTimeframe = .h1
     @Published var communityDraft = ""
+    @Published private(set) var communitySubmitMessage: String?
     @Published private(set) var isSubmittingCommunityPost = false
     @Published private(set) var isVotingCoinOpinion = false
+    @Published private(set) var isVotingMarketSentiment = false
+    @Published private(set) var communityLikeRequestIds: Set<String> = []
+    @Published private(set) var communityFollowRequestUserIds: Set<String> = []
+    @Published private(set) var blockedCommunityUserIds: Set<String> = []
+    @Published private(set) var communityModerationRequestIds: Set<String> = []
+    @Published private(set) var communityCommentsByPostId: [String: Loadable<[CoinCommunityComment]>] = [:]
+    @Published private(set) var communityCommentSubmitIds: Set<String> = []
+    @Published private(set) var marketSentimentMessage: String?
+
+    private var newsRequestID = UUID()
+    private var coinNewsRequestID = UUID()
+    private var communityRequestID = UUID()
+    private var commentRequestIDsByPostId: [String: UUID] = [:]
 
     @Published private(set) var selectedDomesticKimchiExchange: Exchange = .upbit
     @Published private(set) var kimchiPremiumState: Loadable<[KimchiPremiumCoinViewState]> = .idle
@@ -822,6 +958,7 @@ final class CryptoViewModel: ObservableObject {
     private let kimchiPremiumRepository: KimchiPremiumRepositoryProtocol
     private let exchangeConnectionsRepository: ExchangeConnectionsRepositoryProtocol
     private let publicContentRepository: PublicContentRepositoryProtocol
+    private let priceAlertRepository: PriceAlertRepositoryProtocol
     private let authService: AuthenticationServiceProtocol
     private let authSessionStore: AuthSessionStoring?
     private let googleSignInProvider: GoogleSignInProviding
@@ -849,7 +986,7 @@ final class CryptoViewModel: ObservableObject {
     private let tickerStaleInterval: TimeInterval = 4
     private let chartSnapshotStaleInterval: TimeInterval = 5
     private let sparklineCacheStaleInterval: TimeInterval = 60
-    private let sparklineSchedulerDebounceNanoseconds: UInt64 = 80_000_000
+    private let sparklineSchedulerDebounceNanoseconds: UInt64 = 350_000_000
     private let sparklineVisibleBatchSize = 8
     private let sparklineBackgroundBatchSize = 8
     private let sparklineRepresentativeLimit = 20
@@ -879,6 +1016,9 @@ final class CryptoViewModel: ObservableObject {
     private let kimchiVisibleHydrationDebounceNanoseconds: UInt64 = 120_000_000
     private let kimchiVisibleBatchSize = 12
     private let kimchiBackgroundBatchSize = 24
+    private let listCandleSparklineHydrationEnabled = false
+    private let listSparklineHydrationEnabled = true
+    private let automaticMarketCatalogHydrationEnabled = false
     private let kimchiRecentVisibleThrottleInterval: TimeInterval = 0.3
     private let kimchiBadgeReadyMinimumHold: TimeInterval = 1.2
     private let kimchiBadgeSyncMinimumHold: TimeInterval = 0.65
@@ -1062,6 +1202,7 @@ final class CryptoViewModel: ObservableObject {
         kimchiPremiumRepository: KimchiPremiumRepositoryProtocol? = nil,
         exchangeConnectionsRepository: ExchangeConnectionsRepositoryProtocol? = nil,
         publicContentRepository: PublicContentRepositoryProtocol? = nil,
+        priceAlertRepository: PriceAlertRepositoryProtocol? = nil,
         authService: AuthenticationServiceProtocol? = nil,
         authSessionStore: AuthSessionStoring? = nil,
         googleSignInProvider: GoogleSignInProviding? = nil,
@@ -1080,6 +1221,7 @@ final class CryptoViewModel: ObservableObject {
         self.kimchiPremiumRepository = kimchiPremiumRepository ?? LiveKimchiPremiumRepository()
         self.exchangeConnectionsRepository = exchangeConnectionsRepository ?? LiveExchangeConnectionsRepository()
         self.publicContentRepository = publicContentRepository ?? LivePublicContentRepository()
+        self.priceAlertRepository = priceAlertRepository ?? LivePriceAlertRepository()
         self.authService = authService ?? LiveAuthenticationService()
         self.authSessionStore = authSessionStore ?? Self.defaultAuthSessionStore()
         self.googleSignInProvider = googleSignInProvider ?? LiveGoogleSignInProvider.shared
@@ -1096,9 +1238,16 @@ final class CryptoViewModel: ObservableObject {
         AppLogger.debug(.auth, "[AuthFlowDebug] action=session_restore_started")
         if let restoredSession = self.authSessionStore?.loadSession() {
             self.authState = .authenticated(restoredSession)
+            PushNotificationService.shared.bindSession(restoredSession)
             AppLogger.debug(.auth, "[AuthFlowDebug] action=session_restore_success hasRefreshToken=\(restoredSession.hasRefreshToken)")
         } else {
+            PushNotificationService.shared.bindSession(nil)
             AppLogger.debug(.auth, "[AuthFlowDebug] action=session_restore_failed reason=no_saved_session")
+        }
+        NotificationRouter.shared.onPriceAlert = { [weak self] route in
+            Task { @MainActor in
+                self?.openPriceAlertRoute(route)
+            }
         }
 
         hydratePersistedMarketSnapshots()
@@ -1312,6 +1461,35 @@ final class CryptoViewModel: ObservableObject {
         return KeychainAuthSessionStore()
     }
 
+    private nonisolated static func supportedQuoteCurrencies(for exchange: Exchange) -> [MarketQuoteCurrency] {
+        switch exchange {
+        case .upbit:
+            return [.krw, .btc, .usdt]
+        case .bithumb:
+            return [.krw, .btc]
+        case .coinone, .korbit:
+            return [.krw]
+        case .binance:
+            return [.usdt, .btc, .eth]
+        }
+    }
+
+    private nonisolated static func defaultQuoteCurrency(for exchange: Exchange) -> MarketQuoteCurrency {
+        switch exchange {
+        case .binance:
+            return .usdt
+        case .upbit, .bithumb, .coinone, .korbit:
+            return .krw
+        }
+    }
+
+    private nonisolated static func quoteCurrency(
+        _ quoteCurrency: MarketQuoteCurrency,
+        isSupportedBy exchange: Exchange
+    ) -> Bool {
+        supportedQuoteCurrencies(for: exchange).contains(quoteCurrency)
+    }
+
     private static func loadMarketDisplayMode(from defaults: UserDefaults) -> MarketListDisplayMode {
         guard let savedValue = defaults.string(forKey: "market.display.mode"),
               let savedMode = MarketListDisplayMode(rawValue: savedValue) else {
@@ -1435,6 +1613,10 @@ final class CryptoViewModel: ObservableObject {
         displayedMarketRows.map(\.id)
     }
 
+    var supportedQuoteCurrencies: [MarketQuoteCurrency] {
+        Self.supportedQuoteCurrencies(for: selectedExchange)
+    }
+
     var representativeMarketRows: [MarketRowViewState] {
         representativeMarketRows(from: marketRowStates)
     }
@@ -1445,8 +1627,8 @@ final class CryptoViewModel: ObservableObject {
         }
 
         let marketIdentity = activeChartRequestKey?.marketIdentity
-            ?? selectedCoin?.marketIdentity(exchange: selectedExchange)
-            ?? MarketIdentity(exchange: selectedExchange, symbol: "-")
+            ?? selectedCoin?.marketIdentity(exchange: selectedExchange, quoteCurrency: selectedQuoteCurrency)
+            ?? MarketIdentity(exchange: selectedExchange, symbol: "-", quoteCurrency: selectedQuoteCurrency)
         var occurrencesByBaseKey: [String: Int] = [:]
 
         return trades.map { trade in
@@ -1545,7 +1727,7 @@ final class CryptoViewModel: ObservableObject {
     }
 
     private func marketIdentity(for coin: CoinInfo, exchange: Exchange) -> MarketIdentity {
-        coin.marketIdentity(exchange: exchange)
+        coin.marketIdentity(exchange: exchange, quoteCurrency: selectedQuoteCurrency)
     }
 
     private func resolvedMarketIdentity(
@@ -1555,14 +1737,14 @@ final class CryptoViewModel: ObservableObject {
         preferSelectedCoinIdentity: Bool = true
     ) -> MarketIdentity {
         if let marketId, marketId.isEmpty == false {
-            return MarketIdentity(exchange: exchange, marketId: marketId, symbol: symbol)
+            return MarketIdentity(exchange: exchange, marketId: marketId, symbol: symbol, quoteCurrency: selectedQuoteCurrency)
         }
 
         if preferSelectedCoinIdentity,
            let selectedCoin,
            selectedExchange == exchange,
            selectedCoin.symbol == symbol {
-            return selectedCoin.marketIdentity(exchange: exchange)
+            return selectedCoin.marketIdentity(exchange: exchange, quoteCurrency: selectedQuoteCurrency)
         }
 
         let candidates = (marketsByExchange[exchange] ?? [])
@@ -1587,11 +1769,11 @@ final class CryptoViewModel: ObservableObject {
             let leftScore = marketIdentityLookupScore(for: $0)
             let rightScore = marketIdentityLookupScore(for: $1)
             if leftScore == rightScore {
-                return $0.marketIdentity(exchange: exchange).cacheKey < $1.marketIdentity(exchange: exchange).cacheKey
+                return $0.marketIdentity(exchange: exchange, quoteCurrency: selectedQuoteCurrency).cacheKey < $1.marketIdentity(exchange: exchange, quoteCurrency: selectedQuoteCurrency).cacheKey
             }
             return leftScore < rightScore
         }) {
-            let resolved = bestCandidate.marketIdentity(exchange: exchange)
+            let resolved = bestCandidate.marketIdentity(exchange: exchange, quoteCurrency: selectedQuoteCurrency)
             if resolved.symbol != symbol || (marketId != nil && resolved.marketId != marketId) {
                 AppLogger.debug(
                     .network,
@@ -1601,7 +1783,7 @@ final class CryptoViewModel: ObservableObject {
             return resolved
         }
 
-        return MarketIdentity(exchange: exchange, symbol: symbol)
+        return MarketIdentity(exchange: exchange, symbol: symbol, quoteCurrency: selectedQuoteCurrency)
     }
 
     private func normalizedGraphSymbolCandidates(symbol: String, marketId: String?) -> Set<String> {
@@ -1664,7 +1846,7 @@ final class CryptoViewModel: ObservableObject {
             }
         }
 
-        let selectedIdentity = coin.marketIdentity(exchange: exchange)
+        let selectedIdentity = coin.marketIdentity(exchange: exchange, quoteCurrency: selectedQuoteCurrency)
         append(selectedIdentity.marketId != nil ? selectedIdentity : nil)
         append(
             marketPresentationSnapshotsByExchange[exchange]?.rows.first(where: {
@@ -1685,7 +1867,7 @@ final class CryptoViewModel: ObservableObject {
             )
         )
         append(selectedIdentity)
-        append(MarketIdentity(exchange: exchange, symbol: coin.symbol))
+        append(MarketIdentity(exchange: exchange, symbol: coin.symbol, quoteCurrency: selectedQuoteCurrency))
 
         return identities
     }
@@ -1795,7 +1977,7 @@ final class CryptoViewModel: ObservableObject {
         coin: CoinInfo,
         exchange: Exchange
     ) -> OrderHeaderPricePresentation {
-        let fallbackIdentity = MarketIdentity(exchange: exchange, symbol: coin.symbol)
+        let fallbackIdentity = MarketIdentity(exchange: exchange, symbol: coin.symbol, quoteCurrency: selectedQuoteCurrency)
 
         if let resolvedTicker = resolvedTickerForOrderHeader(coin: coin, exchange: exchange) {
             return OrderHeaderPricePresentation(
@@ -1857,7 +2039,7 @@ final class CryptoViewModel: ObservableObject {
             return
         }
 
-        let selectedIdentity = coin.marketIdentity(exchange: selectedExchange)
+        let selectedIdentity = coin.marketIdentity(exchange: selectedExchange, quoteCurrency: selectedQuoteCurrency)
         let canonicalIdentity = resolvedMarketIdentity(
             exchange: selectedExchange,
             symbol: coin.symbol,
@@ -1953,6 +2135,7 @@ final class CryptoViewModel: ObservableObject {
             graphPathVersion: row.graphPathVersion,
             renderVersion: row.graphRenderVersion,
             sourceVersion: row.sparklinePayload.sourceVersion,
+            sourceName: row.sparklineSource,
             shapeQuality: row.sparklinePayload.shapeQuality
         )
     }
@@ -1967,7 +2150,8 @@ final class CryptoViewModel: ObservableObject {
             graphState: graphState,
             points: snapshot.points,
             pointCount: snapshot.pointCount,
-            sourceVersion: sparklineSourceVersion(from: snapshot.fetchedAt)
+            sourceVersion: sparklineSourceVersion(from: snapshot.fetchedAt),
+            sourceName: snapshot.source == .sparklineEndpoint ? "sparkline_endpoint" : "candle_snapshot"
         )
     }
 
@@ -1978,7 +2162,8 @@ final class CryptoViewModel: ObservableObject {
             graphState: display.graphState,
             points: display.points,
             pointCount: display.pointCount,
-            sourceVersion: display.sourceVersion
+            sourceVersion: display.sourceVersion,
+            sourceName: display.sourceName
         )
     }
 
@@ -1992,6 +2177,10 @@ final class CryptoViewModel: ObservableObject {
         AppLogger.debug(
             category,
             "[GraphQualityDebug] \(marketIdentity.logFields) action=promote_or_reject oldDetail=\(existing?.detailLevel.cacheComponent ?? "none") newDetail=\(incoming.detailLevel.cacheComponent) oldPointCount=\(existing?.pointCount ?? 0) newPointCount=\(incoming.pointCount) accepted=\(decision.accepted) reason=\(decision.reason)"
+        )
+        AppLogger.debug(
+            category,
+            "[GraphQualityMerge] exchange=\(marketIdentity.exchange.rawValue) quoteCurrency=\(marketIdentity.quoteCurrency.rawValue) marketId=\(marketIdentity.marketId ?? marketIdentity.symbol) currentQuality=\(existing?.detailLevel.cacheComponent ?? "none") currentPointCount=\(existing?.pointCount ?? 0) incomingQuality=\(incoming.detailLevel.cacheComponent) incomingPointCount=\(incoming.pointCount) decision=\(decision.accepted ? "replace" : "reject")"
         )
     }
 
@@ -2048,12 +2237,12 @@ final class CryptoViewModel: ObservableObject {
 
         var bestByFallback = [MarketIdentity: (identity: MarketIdentity, score: Int)]()
         for coin in candidates {
-            let exactIdentity = coin.marketIdentity(exchange: exchange)
+            let exactIdentity = coin.marketIdentity(exchange: exchange, quoteCurrency: selectedQuoteCurrency)
             guard exactIdentity.marketId != nil else {
                 continue
             }
 
-            let fallbackIdentity = MarketIdentity(exchange: exchange, symbol: exactIdentity.symbol)
+            let fallbackIdentity = MarketIdentity(exchange: exchange, symbol: exactIdentity.symbol, quoteCurrency: selectedQuoteCurrency)
             guard fallbackIdentity != exactIdentity else {
                 continue
             }
@@ -2161,7 +2350,8 @@ final class CryptoViewModel: ObservableObject {
                 graphState: display.graphState,
                 generation: display.generation,
                 updatedAt: display.updatedAt,
-                sourceVersion: display.sourceVersion
+                sourceVersion: display.sourceVersion,
+                sourceName: display.sourceName
             )
             if let existing = remappedStableSparklineDisplaysByKey[targetKey] {
                 remappedStableSparklineDisplaysByKey[targetKey] = Self.preferredStableSparklineDisplay(
@@ -2702,7 +2892,7 @@ final class CryptoViewModel: ObservableObject {
         }
 
         if let selectedCoinIdentity = selectedExchange == exchange
-            ? selectedCoin?.marketIdentity(exchange: exchange)
+            ? selectedCoin?.marketIdentity(exchange: exchange, quoteCurrency: selectedQuoteCurrency)
             : nil {
             append(rows.first { $0.marketIdentity == selectedCoinIdentity })
         }
@@ -2726,7 +2916,12 @@ final class CryptoViewModel: ObservableObject {
         guard let row = marketPresentationSnapshotsByExchange[marketIdentity.exchange]?.rows.first(where: { $0.marketIdentity == marketIdentity }) else {
             return true
         }
-        return row.graphState != .liveVisible || row.sparklinePayload.detailLevel.isDetailed == false
+        let quality = Self.sparklineQuality(for: row)
+        return Self.needsRefinedRowSparkline(quality)
+    }
+
+    private nonisolated static func needsRefinedRowSparkline(_ quality: MarketSparklineQuality) -> Bool {
+        quality.isUsableGraph == false || quality.qualityRank <= 2
     }
 
     private func bestAvailableSparklineQuality(
@@ -2776,16 +2971,7 @@ final class CryptoViewModel: ObservableObject {
             return true
         }
 
-        if bestQuality.isUsableGraph == false {
-            return true
-        }
-        if bestQuality.detailLevel.isDetailed == false {
-            return true
-        }
-        if bestQuality.graphState != .liveVisible {
-            return true
-        }
-        if bestQuality.pointCount < MarketSparklineRenderPolicy.promotedGraphPointCountThreshold {
+        if Self.needsRefinedRowSparkline(bestQuality) {
             return true
         }
         if let snapshot = sparklineSnapshot(marketIdentity: marketIdentity) {
@@ -2836,6 +3022,13 @@ final class CryptoViewModel: ObservableObject {
         exchange: Exchange,
         reason: String
     ) {
+        guard listSparklineHydrationEnabled else {
+            AppLogger.debug(
+                .network,
+                "[GraphEnqueueDebug] \(marketIdentity.logFields) action=skip reason=list_sparkline_hydration_disabled"
+            )
+            return
+        }
         let now = Date()
         let generation = marketPresentationGeneration
         let key = sparklineCacheKey(marketIdentity: marketIdentity)
@@ -2903,7 +3096,7 @@ final class CryptoViewModel: ObservableObject {
             .map(\.marketIdentity)
         let representativeMarketIdentities = rows.prefix(marketRepresentativeRowLimit).map(\.marketIdentity)
         let selectedMarketIdentities = selectedExchange == exchange
-            ? [selectedCoin?.marketIdentity(exchange: exchange)].compactMap { $0 }
+            ? [selectedCoin?.marketIdentity(exchange: exchange, quoteCurrency: selectedQuoteCurrency)].compactMap { $0 }
             : []
 
         return Self.deduplicatedMarketIdentities(
@@ -2933,7 +3126,7 @@ final class CryptoViewModel: ObservableObject {
         if representativeMarketRows.contains(where: { $0.marketIdentity == marketIdentity }) {
             return true
         }
-        return selectedCoin?.marketIdentity(exchange: exchange) == marketIdentity
+        return selectedCoin?.marketIdentity(exchange: exchange, quoteCurrency: selectedQuoteCurrency) == marketIdentity
     }
 
     private func isActivelyScrollingMarketRows(
@@ -2951,7 +3144,7 @@ final class CryptoViewModel: ObservableObject {
         rows: [MarketRowViewState]
     ) -> [MarketIdentity] {
         let selectedMarketIdentities = selectedExchange == exchange
-            ? [selectedCoin?.marketIdentity(exchange: exchange)].compactMap { $0 }
+            ? [selectedCoin?.marketIdentity(exchange: exchange, quoteCurrency: selectedQuoteCurrency)].compactMap { $0 }
             : []
         let representativeMarketIdentities = rows.prefix(marketRepresentativeRowLimit).map(\.marketIdentity)
         let visibleMarketIdentities = visibleMarketIdentitiesByExchange[exchange] ?? []
@@ -3051,7 +3244,8 @@ final class CryptoViewModel: ObservableObject {
         let fallbackKey = chartRequestKey(
             marketIdentity: MarketIdentity(
                 exchange: context.exchange,
-                symbol: fallbackSymbol
+                symbol: fallbackSymbol,
+                quoteCurrency: context.marketIdentity.quoteCurrency
             ),
             interval: context.mappedInterval
         )
@@ -3195,7 +3389,7 @@ final class CryptoViewModel: ObservableObject {
         }
         let previous = chartPeriod
         chartPeriod = interval
-        let logFields = selectedCoin?.marketIdentity(exchange: selectedExchange).logFields
+        let logFields = selectedCoin?.marketIdentity(exchange: selectedExchange, quoteCurrency: selectedQuoteCurrency).logFields
             ?? "exchange=\(selectedExchange.rawValue) marketId=- symbol=-"
         AppLogger.debug(
             .route,
@@ -3261,7 +3455,7 @@ final class CryptoViewModel: ObservableObject {
             return
         }
 
-        let marketIdentity = coin.marketIdentity(exchange: selectedExchange)
+        let marketIdentity = coin.marketIdentity(exchange: selectedExchange, quoteCurrency: selectedQuoteCurrency)
         let key = chartResourceKey(exchange: selectedExchange, symbol: coin.symbol)
         if let ticker = currentTicker {
             headerSummaryState = .loaded(ticker)
@@ -3482,9 +3676,11 @@ final class CryptoViewModel: ObservableObject {
 
         let task = Task<CandleSnapshot, Error> { [marketRepository] in
             try await marketRepository.fetchCandles(
-                symbol: key.marketId ?? key.symbol,
+                symbol: key.symbol,
                 exchange: key.exchange,
-                interval: key.interval
+                quoteCurrency: key.marketIdentity.quoteCurrency,
+                interval: key.interval,
+                limit: 200
             )
         }
         candleFetchTasksByKey[key] = task
@@ -3506,14 +3702,15 @@ final class CryptoViewModel: ObservableObject {
         switch networkError {
         case .httpError(let statusCode, let rawMessage, let category):
             let normalizedMessage = rawMessage.lowercased()
-            return statusCode == 400
-                || statusCode == 404
-                || statusCode == 501
-                || statusCode == 503
-                || category == .maintenance
-                || normalizedMessage.contains("market_data_unsupported")
-                || normalizedMessage.contains("unsupported")
+            let declaresUnsupported = normalizedMessage.contains("market_data_unsupported")
+                || normalizedMessage.contains("chart_unsupported")
+                || normalizedMessage.contains("candle_unsupported")
+                || normalizedMessage.contains("unsupported market data")
+                || normalizedMessage.contains("unsupported symbol")
                 || normalizedMessage.contains("not supported")
+            return declaresUnsupported
+                && category != .maintenance
+                && [400, 404, 501].contains(statusCode)
         case .transportError, .invalidURL, .invalidResponse, .authenticationRequired, .parsingFailed:
             return false
         }
@@ -3745,7 +3942,15 @@ final class CryptoViewModel: ObservableObject {
             return
         }
         let previousExchange = selectedExchange
+        let previousQuote = selectedQuoteCurrency
         selectedExchange = exchange
+        if Self.quoteCurrency(selectedQuoteCurrency, isSupportedBy: exchange) == false {
+            selectedQuoteCurrency = Self.defaultQuoteCurrency(for: exchange)
+            AppLogger.debug(
+                .route,
+                "[MarketQuote] adjusted_for_exchange previous=\(previousQuote.rawValue) selected=\(selectedQuoteCurrency.rawValue) exchange=\(exchange.rawValue)"
+            )
+        }
         marketPresentationGeneration += 1
         marketHydrationTask?.cancel()
         marketImageHydrationTask?.cancel()
@@ -3764,6 +3969,8 @@ final class CryptoViewModel: ObservableObject {
         fullyHydratedMarketExchanges.remove(exchange)
         loadingSparklineMarketIdentitiesByExchange[previousExchange] = []
         loadingSparklineMarketIdentitiesByExchange[exchange] = []
+        visibleMarketIdentitiesByExchange[previousExchange] = []
+        visibleMarketIdentitiesByExchange[exchange] = []
         pendingSparklineHydrationReasonsByExchange.removeValue(forKey: previousExchange)
         pendingSparklineHydrationReasonsByExchange.removeValue(forKey: exchange)
         runningSparklineHydrationExchanges.remove(previousExchange)
@@ -3787,6 +3994,9 @@ final class CryptoViewModel: ObservableObject {
         marketStaleCallbackDropCountByExchange[exchange] = 0
         marketPlaceholderFinalBaselineByExchange[exchange] = currentPlaceholderFinalTotal()
         hasLoadedTickerSnapshotByExchange[exchange] = false
+        marketsByExchange[exchange] = nil
+        tickerSnapshotCoinsByExchange[exchange] = nil
+        marketPresentationSnapshotsByExchange[exchange] = nil
         AppLogger.debug(
             .lifecycle,
             "[ExchangeSwitch] started exchange=\(exchange.rawValue) previous=\(previousExchange.rawValue) source=\(source)"
@@ -3863,6 +4073,85 @@ final class CryptoViewModel: ObservableObject {
         }
     }
 
+    func updateQuoteCurrency(_ quoteCurrency: MarketQuoteCurrency, source: String = "user") {
+        guard Self.quoteCurrency(quoteCurrency, isSupportedBy: selectedExchange) else {
+            assignMarketState(.empty)
+            marketRowStates = []
+            marketTransitionMessage = "\(selectedExchange.displayName) \(quoteCurrency.rawValue) 마켓은 아직 지원되지 않아요"
+            AppLogger.debug(
+                .route,
+                "[MarketList] quote rejected exchange=\(selectedExchange.rawValue) quote=\(quoteCurrency.rawValue) source=\(source)"
+            )
+            AppLogger.debug(
+                .network,
+                "[MarketLoadingState] exchange=\(selectedExchange.rawValue) quoteCurrency=\(quoteCurrency.rawValue) from=loading to=unsupported reason=unsupported_quote"
+            )
+            return
+        }
+        guard selectedQuoteCurrency != quoteCurrency else {
+            AppLogger.debug(.route, "[MarketList] quote unchanged -> \(quoteCurrency.rawValue) source=\(source)")
+            return
+        }
+
+        let previousQuote = selectedQuoteCurrency
+        selectedQuoteCurrency = quoteCurrency
+        marketPresentationGeneration += 1
+        marketCatalogFetchTasks[selectedExchange]?.cancel()
+        tickerFetchTasks[selectedExchange]?.cancel()
+        marketCatalogFetchTasks[selectedExchange] = nil
+        tickerFetchTasks[selectedExchange] = nil
+        for key in Array(sparklineFetchTasksByKey.keys).filter({ $0.exchange == selectedExchange }) {
+            sparklineFetchTasksByKey[key]?.cancel()
+            sparklineFetchTasksByKey[key] = nil
+        }
+        for (key, task) in candleFetchTasksByKey where key.exchange == selectedExchange {
+            task.cancel()
+        }
+        candleFetchTasksByKey = candleFetchTasksByKey.filter { $0.key.exchange != selectedExchange }
+        lastMarketCatalogFetchedAtByExchange[selectedExchange] = nil
+        lastTickerFetchedAtByExchange[selectedExchange] = nil
+        hasLoadedTickerSnapshotByExchange[selectedExchange] = false
+        marketsByExchange[selectedExchange] = nil
+        tickerSnapshotCoinsByExchange[selectedExchange] = nil
+        marketPresentationSnapshotsByExchange[selectedExchange] = nil
+        activeMarketPresentationSnapshot = nil
+        visibleMarketIdentitiesByExchange[selectedExchange] = []
+        loadingSparklineMarketIdentitiesByExchange[selectedExchange] = []
+        pendingSparklineHydrationReasonsByExchange.removeValue(forKey: selectedExchange)
+        runningSparklineHydrationExchanges.remove(selectedExchange)
+        resetPendingMarketRowPatches(reason: "quote_changed")
+        beginMarketTransition(to: selectedExchange, from: selectedExchange, reason: "quote_changed")
+        beginChartBootstrapSession(reason: "quote_changed")
+        updatePublicSubscriptions(reason: "quote_changed")
+        AppLogger.debug(
+            .route,
+            "[MarketList] quote changed exchange=\(selectedExchange.rawValue) previous=\(previousQuote.rawValue) selected=\(quoteCurrency.rawValue) source=\(source)"
+        )
+
+        let refreshContext = beginRouteRefresh(reason: "quote_changed")
+        Task {
+            await runRouteRefreshIfCurrent(
+                refreshContext,
+                forceRefresh: true,
+                reason: "quote_changed"
+            )
+        }
+    }
+
+    private func openPriceAlertRoute(_ route: PushPriceAlertRoute) {
+        updateExchange(route.exchange, source: "push_price_alert")
+        if selectedQuoteCurrency != route.quoteCurrency {
+            selectedQuoteCurrency = route.quoteCurrency
+        }
+        selectedCoin = CoinCatalog.coin(symbol: route.symbol, exchange: route.exchange)
+        selectedCoinDetailTab = .chart
+        setActiveTab(.chart)
+        loadCoinDetailContent(symbol: route.symbol, forceRefresh: true)
+        Task {
+            await loadChartData(forceRefresh: true, reason: "push_price_alert")
+        }
+    }
+
     func updateSelectedDomesticKimchiExchange(_ exchange: Exchange, source: String = "user") {
         guard exchange.isDomestic, exchange.supportsKimchiPremium else {
             AppLogger.debug(.route, "[KimchiView] selectedDomesticExchange rejected -> \(exchange.rawValue) source=\(source)")
@@ -3898,6 +4187,103 @@ final class CryptoViewModel: ObservableObject {
         showNotification("보유 코인의 정보성 차트로 이동했어요.", type: .success)
     }
 
+    func presentPriceAlertSheet() {
+        guard let coin = selectedCoin else { return }
+        guard let session = authState.session else {
+            presentLogin(for: .portfolio)
+            return
+        }
+
+        priceAlertLoadMessage = "가격 알림을 불러오는 중입니다."
+        priceAlertDraft = PriceAlertDraft.make(
+            existing: activePriceAlert,
+            exchange: selectedExchange,
+            symbol: coin.symbol,
+            quoteCurrency: selectedQuoteCurrency,
+            currentPrice: currentPrice
+        )
+        isPriceAlertSheetPresented = true
+
+        let repository = priceAlertRepository
+        Task { @MainActor in
+            do {
+                let alerts = try await runAuthenticatedRequest(session: session) { session in
+                    try await repository.fetchPriceAlerts(
+                        session: session,
+                        exchange: self.selectedExchange,
+                        symbol: coin.symbol,
+                        quoteCurrency: self.selectedQuoteCurrency
+                    )
+                }
+                activePriceAlert = alerts.first(where: { $0.isActive }) ?? alerts.first
+                priceAlertDraft = PriceAlertDraft.make(
+                    existing: activePriceAlert,
+                    exchange: selectedExchange,
+                    symbol: coin.symbol,
+                    quoteCurrency: selectedQuoteCurrency,
+                    currentPrice: currentPrice
+                )
+                priceAlertLoadMessage = nil
+            } catch {
+                priceAlertLoadMessage = error.localizedDescription
+            }
+        }
+    }
+
+    func savePriceAlertDraft() {
+        guard let session = authState.session else {
+            presentLogin(for: .portfolio)
+            return
+        }
+        guard let targetPrice = priceAlertDraft.targetPrice, targetPrice > 0 else {
+            priceAlertLoadMessage = "목표 가격은 0보다 커야 합니다."
+            return
+        }
+
+        isSavingPriceAlert = true
+        let repository = priceAlertRepository
+        let draft = priceAlertDraft
+        Task { @MainActor in
+            defer { isSavingPriceAlert = false }
+            do {
+                let saved = try await runAuthenticatedRequest(session: session) { session in
+                    try await repository.savePriceAlert(session: session, draft: draft)
+                }
+                activePriceAlert = saved.isActive ? saved : nil
+                priceAlertDraft = PriceAlertDraft.make(
+                    existing: saved,
+                    exchange: saved.exchange,
+                    symbol: saved.symbol,
+                    quoteCurrency: saved.quoteCurrency,
+                    currentPrice: currentPrice
+                )
+                isPriceAlertSheetPresented = false
+                showNotification("가격 알림을 저장했습니다.", type: .success)
+            } catch {
+                priceAlertLoadMessage = error.localizedDescription
+            }
+        }
+    }
+
+    func deleteActivePriceAlert() {
+        guard let session = authState.session, let alertId = priceAlertDraft.alertId else { return }
+        isSavingPriceAlert = true
+        let repository = priceAlertRepository
+        Task { @MainActor in
+            defer { isSavingPriceAlert = false }
+            do {
+                try await runAuthenticatedRequest(session: session) { session in
+                    try await repository.deletePriceAlert(session: session, alertId: alertId)
+                }
+                activePriceAlert = nil
+                isPriceAlertSheetPresented = false
+                showNotification("가격 알림을 삭제했습니다.", type: .success)
+            } catch {
+                priceAlertLoadMessage = error.localizedDescription
+            }
+        }
+    }
+
     func loadNewsAndTrendsIfNeeded(forceRefresh: Bool = false) {
         if forceRefresh || newsState == .idle {
             loadNews(forceRefresh: forceRefresh)
@@ -3907,18 +4293,119 @@ final class CryptoViewModel: ObservableObject {
         }
     }
 
+    func selectNewsDate(_ date: Date) {
+        guard Self.kstCalendar.isDate(newsSelectedDate, inSameDayAs: date) == false else {
+            return
+        }
+        newsSelectedDate = date
+        newsFeedViewState = newsFeedViewState.preparing(date: date, sort: newsSortOrder, isCoinScoped: false)
+        loadNews(forceRefresh: true)
+    }
+
+    func selectNewsSort(_ sort: ContentSortOrder) {
+        guard newsSortOrder != sort else { return }
+        newsSortOrder = sort
+        newsState = .loading
+        newsFeedViewState = newsFeedViewState.preparing(date: newsSelectedDate, sort: sort, isCoinScoped: false)
+        loadNews(forceRefresh: true)
+    }
+
+    func selectCoinNewsDate(_ date: Date, symbol: String) {
+        guard Self.kstCalendar.isDate(coinNewsSelectedDate, inSameDayAs: date) == false else {
+            return
+        }
+        coinNewsSelectedDate = date
+        let context = coinNewsContext(for: symbol)
+        coinNewsFeedViewState = coinNewsFeedViewState.preparing(date: date, sort: coinNewsSortOrder, symbol: LivePublicContentRepository.normalizedSymbol(symbol), coinName: context.coinName, isCoinScoped: true)
+        loadCoinNews(symbol: symbol, forceRefresh: true)
+    }
+
+    func selectCoinNewsSort(_ sort: ContentSortOrder, symbol: String) {
+        guard coinNewsSortOrder != sort else { return }
+        coinNewsSortOrder = sort
+        coinNewsState = .loading
+        let context = coinNewsContext(for: symbol)
+        coinNewsFeedViewState = coinNewsFeedViewState.preparing(date: coinNewsSelectedDate, sort: sort, symbol: LivePublicContentRepository.normalizedSymbol(symbol), coinName: context.coinName, isCoinScoped: true)
+        loadCoinNews(symbol: symbol, forceRefresh: true)
+    }
+
+    func selectMarketTrendRange(_ range: MarketTrendRange) {
+        guard marketTrendRange != range else { return }
+        marketTrendRange = range
+        loadMarketTrends(forceRefresh: true)
+    }
+
     func loadNews(forceRefresh: Bool = false) {
         if newsState.isLoading && !forceRefresh {
             return
         }
         newsState = .loading
+        let requestID = UUID()
+        newsRequestID = requestID
+        let selectedDate = newsSelectedDate
+        let selectedSort = newsSortOrder
+        let requestDateString = LivePublicContentRepository.apiDateString(selectedDate)
+        newsFeedViewState = newsFeedViewState.preparing(date: selectedDate, sort: selectedSort, isCoinScoped: false)
+        AppLogger.debug(.network, "DEBUG [NewsDate] selectedLocalDate=\(requestDateString) requestDate=\(requestDateString) timezone=Asia/Seoul")
         let repository = publicContentRepository
         Task { @MainActor in
             do {
-                let snapshot = try await repository.fetchNews(category: nil, symbol: nil, cursor: nil, limit: 40)
+                let snapshot = try await repository.fetchNews(category: nil, symbol: nil, date: selectedDate, sort: selectedSort.rawValue, cursor: nil, limit: 40)
+                guard newsRequestID == requestID,
+                      newsSortOrder == selectedSort,
+                      Self.kstCalendar.isDate(newsSelectedDate, inSameDayAs: selectedDate) else {
+                    AppLogger.debug(.network, "[NewsAPI] ignored stale response date=\(requestDateString) sort=\(selectedSort.rawValue)")
+                    return
+                }
                 newsState = snapshot.items.isEmpty ? .empty : .loaded(snapshot.items)
+                newsFeedViewState = newsFeedViewState.resolved(
+                    items: snapshot.items,
+                    meta: snapshot.meta,
+                    emptyReason: Self.newsEmptyReason(meta: snapshot.meta, itemCount: snapshot.items.count, filteredCount: snapshot.items.count, isCoinScoped: false)
+                )
+                let externalCount = snapshot.items.filter { ($0.provider ?? $0.source).lowercased().contains("cryptory") == false }.count
+                AppLogger.debug(.network, "[MarketNewsRender] itemCount=\(snapshot.items.count) hasImages=\(snapshot.items.contains { $0.thumbnailURL != nil }) translatedCount=\(snapshot.items.filter { $0.renderLanguage == "ko" }.count) providerSummary=external:\(externalCount),fallback:\(snapshot.items.count - externalCount)")
             } catch {
+                guard newsRequestID == requestID else { return }
                 newsState = .failed(friendlyPublicContentErrorMessage(error, fallback: "뉴스를 불러오지 못했어요."))
+            }
+        }
+    }
+
+    func loadCoinNews(symbol: String, forceRefresh: Bool = false) {
+        if coinNewsState.isLoading && !forceRefresh {
+            return
+        }
+        let normalized = LivePublicContentRepository.normalizedSymbol(symbol)
+        coinNewsState = .loading
+        let requestID = UUID()
+        coinNewsRequestID = requestID
+        let selectedDate = coinNewsSelectedDate
+        let selectedSort = coinNewsSortOrder
+        let requestDateString = LivePublicContentRepository.apiDateString(selectedDate)
+        let context = coinNewsContext(for: normalized)
+        coinNewsFeedViewState = coinNewsFeedViewState.preparing(date: selectedDate, sort: selectedSort, symbol: normalized, coinName: context.coinName, isCoinScoped: true)
+        let repository = publicContentRepository
+        Task { @MainActor in
+            do {
+                let snapshot = try await repository.fetchCoinNews(symbol: normalized, context: context, date: selectedDate, sort: selectedSort.rawValue, cursor: nil, limit: 20)
+                guard coinNewsRequestID == requestID,
+                      coinNewsSortOrder == selectedSort,
+                      Self.kstCalendar.isDate(coinNewsSelectedDate, inSameDayAs: selectedDate) else {
+                    AppLogger.debug(.network, "[CoinNewsState] ignored stale response symbol=\(normalized) date=\(requestDateString) sort=\(selectedSort.rawValue)")
+                    return
+                }
+                coinNewsState = snapshot.items.isEmpty ? .empty : .loaded(snapshot.items)
+                coinNewsFeedViewState = coinNewsFeedViewState.resolved(
+                    items: snapshot.items,
+                    meta: snapshot.meta,
+                    emptyReason: Self.newsEmptyReason(meta: snapshot.meta, itemCount: snapshot.items.count, filteredCount: snapshot.items.count, isCoinScoped: true)
+                )
+                AppLogger.debug(.network, "[CoinNewsState] state=\(snapshot.items.isEmpty ? "loadedEmpty" : "loaded") symbol=\(normalized) itemCount=\(snapshot.items.count) updatedAt=\(snapshot.meta.fetchedAt.map(String.init(describing:)) ?? "nil")")
+            } catch {
+                guard coinNewsRequestID == requestID else { return }
+                coinNewsState = .failed(friendlyPublicContentErrorMessage(error, fallback: "\(normalized) 관련 뉴스를 불러오지 못했어요."))
+                AppLogger.debug(.network, "[CoinNewsState] state=error symbol=\(normalized) itemCount=0 updatedAt=nil error=\(error.localizedDescription)")
             }
         }
     }
@@ -3929,13 +4416,80 @@ final class CryptoViewModel: ObservableObject {
         }
         marketTrendsState = .loading
         let repository = publicContentRepository
+        let range = marketTrendRange
         Task { @MainActor in
             do {
-                marketTrendsState = .loaded(try await repository.fetchMarketTrends())
+                let trends = try await repository.fetchMarketTrends(range: range.rawValue, interval: "daily", currency: "KRW")
+                marketTrendsState = .loaded(trends)
+                AppLogger.debug(.network, "[NewsOverviewSectionState] summary=\(trends.summaryDescription?.isEmpty == false || trends.latestHeadline?.isEmpty == false) mood=\(trends.fearGreedIndex != nil) sentiment=\(trends.marketPoll != nil) topNews=\(trends.topNews.isEmpty == false)")
             } catch {
                 marketTrendsState = .failed(friendlyPublicContentErrorMessage(error, fallback: "시장 데이터를 불러오지 못했어요."))
             }
         }
+    }
+
+    private static var kstCalendar: Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Seoul") ?? .current
+        return calendar
+    }
+
+    private static func newsEmptyReason(meta: ResponseMeta, itemCount: Int, filteredCount: Int, isCoinScoped: Bool) -> String {
+        if let emptyReason = meta.emptyReason?.trimmedNonEmpty {
+            return emptyReason
+        }
+        if itemCount > 0 && filteredCount == 0 {
+            return isCoinScoped ? "no_related_news" : "relevance_filter_empty"
+        }
+        let message = (meta.partialFailureMessage ?? meta.warningMessage ?? "").lowercased()
+        if message.contains("limit") || message.contains("rate") {
+            return "provider_limit"
+        }
+        if message.contains("provider") || message.contains("source") {
+            return "provider_error"
+        }
+        if message.contains("cache") {
+            return "cache_empty"
+        }
+        return isCoinScoped ? "date_no_news" : "date_no_news"
+    }
+
+    private func coinNewsContext(for symbol: String) -> CoinNewsRequestContext {
+        let normalized = LivePublicContentRepository.normalizedSymbol(symbol)
+        let selectedMetadata = selectedCoin?.displayMetadata
+        let coinInfo = coinInfoState.value
+        let englishName = selectedCoin?.nameEn.trimmedNonEmpty
+        let displayName = selectedCoin?.name.trimmedNonEmpty
+        let detailName = coinInfo?.name?.trimmedNonEmpty
+        let coinName = [detailName, englishName, displayName]
+            .compactMap { $0 }
+            .first { $0.caseInsensitiveCompare(normalized) != .orderedSame }
+        let providerId = coinInfo?.providerId?.trimmedNonEmpty
+            ?? selectedMetadata?.normalizedMarketId?.lowercased()
+        let market = selectedMetadata?.quoteAsset?.trimmedNonEmpty
+            ?? selectedMetadata?.normalizedMarketId?
+                .split(separator: "-")
+                .first
+                .map(String.init)
+            ?? "KRW"
+        var keywords = [String]()
+        if let coinName {
+            keywords.append(coinName)
+            keywords.append("\(coinName) token")
+        }
+        keywords.append("\(normalized) token")
+        if let providerId {
+            keywords.append(providerId)
+        }
+        if normalized == "BIO" {
+            keywords.append(contentsOf: ["BIO Protocol", "BIO token", "DeSci", "bio.xyz"])
+        }
+        return CoinNewsRequestContext(
+            market: market,
+            coinName: coinName,
+            providerId: providerId,
+            keywords: keywords
+        )
     }
 
     func loadCoinDetailContent(symbol: String? = nil, forceRefresh: Bool = false) {
@@ -3946,6 +4500,7 @@ final class CryptoViewModel: ObservableObject {
         loadCoinInfo(symbol: symbol, forceRefresh: forceRefresh)
         loadCoinAnalysis(symbol: symbol, timeframe: selectedAnalysisTimeframe, forceRefresh: forceRefresh)
         loadCoinCommunity(symbol: symbol, filter: .all, forceRefresh: forceRefresh)
+        loadCoinNews(symbol: symbol, forceRefresh: forceRefresh)
     }
 
     func selectAnalysisTimeframe(_ timeframe: CoinAnalysisTimeframe) {
@@ -4002,70 +4557,743 @@ final class CryptoViewModel: ObservableObject {
             return
         }
         coinCommunityState = .loading
+        let requestID = UUID()
+        communityRequestID = requestID
+        let selectedSort = communitySortOrder
         let repository = publicContentRepository
         Task { @MainActor in
             do {
                 let snapshot = try await repository.fetchCoinCommunity(
                     symbol: symbol,
-                    sort: "latest",
+                    sort: selectedSort.rawValue,
                     filter: filter,
                     cursor: nil,
                     limit: 30
                 )
-                coinCommunityState = .loaded(snapshot)
+                guard communityRequestID == requestID, communitySortOrder == selectedSort else {
+                    AppLogger.debug(.network, "[Community] ignored stale response symbol=\(symbol) sort=\(selectedSort.rawValue)")
+                    return
+                }
+                await syncBlockedUsersIfNeeded()
+                let filtered = filterBlockedUsers(from: snapshot)
+                coinCommunityState = .loaded(filtered)
+                hydrateCommunityRelationshipsIfNeeded(posts: filtered.posts)
+                communitySubmitMessage = nil
             } catch {
+                guard communityRequestID == requestID else { return }
                 coinCommunityState = .failed(friendlyPublicContentErrorMessage(error, fallback: "커뮤니티를 불러오지 못했어요."))
             }
         }
     }
 
+    func selectCommunitySort(_ sort: ContentSortOrder, symbol: String, filter: CoinCommunityFilter) {
+        guard communitySortOrder != sort else { return }
+        communitySortOrder = sort
+        coinCommunityState = .loading
+        loadCoinCommunity(symbol: symbol, filter: filter, forceRefresh: true)
+    }
+
     func submitCoinCommunityPost(symbol: String) {
+        let normalized = LivePublicContentRepository.normalizedSymbol(symbol)
         let content = communityDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard content.isEmpty == false else {
-            showNotification("의견 내용을 입력해주세요.", type: .error)
+            setCommunityMutationMessage("의견 내용을 입력해주세요.", symbol: normalized, action: "submit", finalState: "validation_failed")
             return
         }
         guard content.count >= 2 else {
-            showNotification("의견은 2자 이상 입력해주세요.", type: .error)
+            setCommunityMutationMessage("의견은 2자 이상 입력해주세요.", symbol: normalized, action: "submit", finalState: "validation_failed")
             return
         }
         guard content.count <= 500 else {
-            showNotification("의견은 500자 이하로 입력해주세요.", type: .error)
+            setCommunityMutationMessage("의견은 500자 이하로 입력해주세요.", symbol: normalized, action: "submit", finalState: "validation_failed")
+            return
+        }
+        guard let session = authState.session else {
+            setCommunityMutationMessage("로그인이 필요합니다.", symbol: normalized, action: "submit", finalState: "login_required")
             return
         }
         guard isSubmittingCommunityPost == false else {
             return
         }
         isSubmittingCommunityPost = true
+        communitySubmitMessage = nil
         let repository = publicContentRepository
         Task { @MainActor in
             defer { isSubmittingCommunityPost = false }
             do {
-                _ = try await repository.createCoinCommunityPost(symbol: symbol, content: content)
+                let result = try await runAuthenticatedRequest(session: session) { session in
+                    try await repository.createCoinCommunityPost(symbol: normalized, content: content, session: session)
+                }
                 communityDraft = ""
-                loadCoinCommunity(symbol: symbol, filter: .all, forceRefresh: true)
+                communitySubmitMessage = nil
+                if let snapshot = result.snapshot {
+                    coinCommunityState = .loaded(filterBlockedUsers(from: snapshot))
+                } else if let post = result.post, case .loaded(let snapshot) = coinCommunityState {
+                    coinCommunityState = .loaded(
+                        CoinCommunitySnapshot(
+                            posts: [post] + snapshot.posts.filter { $0.id != post.id },
+                            vote: snapshot.vote,
+                            nextCursor: snapshot.nextCursor
+                        )
+                    )
+                } else {
+                    loadCoinCommunity(symbol: normalized, filter: .all, forceRefresh: true)
+                }
+                AppLogger.debug(.network, "[CommunityPost] success symbol=\(normalized) inputLength=\(content.count) itemId=\(result.post?.id ?? "nil") finalUIState=loaded")
             } catch {
-                showNotification(friendlyPublicContentErrorMessage(error, fallback: "의견을 남기지 못했어요."), type: .error)
+                let message = communityMutationErrorMessage(error, fallback: "의견을 남기지 못했어요.")
+                AppLogger.debug(.network, "[CommunityPost] failure symbol=\(normalized) inputLength=\(content.count) error=\(error.localizedDescription)")
+                setCommunityMutationMessage(message, symbol: normalized, action: "submit", finalState: communityMutationFinalState(error))
             }
         }
     }
 
+    func toggleCommunityLike(symbol: String, post: CoinCommunityPost) {
+        let normalized = LivePublicContentRepository.normalizedSymbol(symbol)
+        guard let session = authState.session else {
+            presentLoginForCommunity()
+            setCommunityMutationMessage("로그인이 필요합니다.", symbol: normalized, action: "like", finalState: "login_required")
+            return
+        }
+        guard communityLikeRequestIds.contains(post.id) == false else { return }
+        let previousState = coinCommunityState
+        let nextLiked = !post.isLiked
+        communityLikeRequestIds.insert(post.id)
+        if case .loaded(let snapshot) = coinCommunityState {
+            coinCommunityState = .loaded(
+                snapshot.replacingPost(
+                    post.id,
+                    with: post.replacingLike(isLiked: nextLiked)
+                )
+            )
+        }
+        AppLogger.debug(.network, "[CommunityLike] itemId=\(post.id) symbol=\(normalized) action=\(nextLiked ? "like" : "unlike") before=\(post.likeCount) optimistic=true status=dispatch")
+        let repository = publicContentRepository
+        Task { @MainActor in
+            defer { communityLikeRequestIds.remove(post.id) }
+            do {
+                let result = try await runAuthenticatedRequest(session: session) { session in
+                    try await repository.setCoinCommunityLike(symbol: normalized, itemId: post.id, isLiked: nextLiked, session: session)
+                }
+                if case .loaded(let snapshot) = coinCommunityState,
+                   let current = snapshot.posts.first(where: { $0.id == post.id }) {
+                    let reconciled = current.replacingLike(isLiked: result.isLiked, count: result.likeCount)
+                    coinCommunityState = .loaded(snapshot.replacingPost(post.id, with: reconciled))
+                }
+                AppLogger.debug(.network, "[CommunityLike] itemId=\(post.id) symbol=\(normalized) action=\(nextLiked ? "like" : "unlike") after=\(result.likeCount) status=success")
+            } catch {
+                coinCommunityState = previousState
+                let message = communityMutationErrorMessage(error, fallback: "좋아요를 반영하지 못했어요.")
+                setCommunityMutationMessage(message, symbol: normalized, action: "like", finalState: communityMutationFinalState(error))
+                AppLogger.debug(.network, "[CommunityLike] itemId=\(post.id) symbol=\(normalized) action=\(nextLiked ? "like" : "unlike") status=rollback error=\(error.localizedDescription)")
+            }
+        }
+    }
+
+    func loadCommunityComments(symbol: String, postId: String, forceRefresh: Bool = false) {
+        if communityCommentsByPostId[postId]?.isLoading == true && !forceRefresh {
+            return
+        }
+        communityCommentsByPostId[postId] = .loading
+        let normalized = LivePublicContentRepository.normalizedSymbol(symbol)
+        let repository = publicContentRepository
+        let session = authState.session
+        let selectedSort = commentSortOrdersByPostId[postId] ?? .latest
+        let requestID = UUID()
+        commentRequestIDsByPostId[postId] = requestID
+        Task { @MainActor in
+            do {
+                let snapshot = try await repository.fetchCoinCommunityComments(symbol: normalized, itemId: postId, sort: selectedSort.rawValue, session: session)
+                guard commentRequestIDsByPostId[postId] == requestID,
+                      (commentSortOrdersByPostId[postId] ?? .latest) == selectedSort else {
+                    AppLogger.debug(.network, "[CommunityComment] itemId=\(postId) ignored stale response sort=\(selectedSort.rawValue)")
+                    return
+                }
+                let comments = filterBlockedComments(snapshot.comments)
+                communityCommentsByPostId[postId] = comments.isEmpty ? .empty : .loaded(comments)
+                updateCommunityPostCommentCount(postId: postId, count: snapshot.commentCount)
+            } catch {
+                guard commentRequestIDsByPostId[postId] == requestID else { return }
+                communityCommentsByPostId[postId] = .failed(friendlyPublicContentErrorMessage(error, fallback: "댓글을 불러오지 못했어요."))
+                AppLogger.debug(.network, "[CommunityComment] itemId=\(postId) action=fetch status=failure error=\(error.localizedDescription)")
+            }
+        }
+    }
+
+    func selectCommentSort(_ sort: ContentSortOrder, symbol: String, postId: String) {
+        guard (commentSortOrdersByPostId[postId] ?? .latest) != sort else { return }
+        commentSortOrdersByPostId[postId] = sort
+        communityCommentsByPostId[postId] = .loading
+        loadCommunityComments(symbol: symbol, postId: postId, forceRefresh: true)
+    }
+
+    func submitCommunityComment(symbol: String, postId: String, content: String) {
+        let normalized = LivePublicContentRepository.normalizedSymbol(symbol)
+        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.isEmpty == false else {
+            setCommunityMutationMessage("댓글 내용을 입력해주세요.", symbol: normalized, action: "comment", finalState: "validation_failed")
+            return
+        }
+        guard let session = authState.session else {
+            presentLoginForCommunity()
+            setCommunityMutationMessage("로그인이 필요합니다.", symbol: normalized, action: "comment", finalState: "login_required")
+            return
+        }
+        guard communityCommentSubmitIds.contains(postId) == false else { return }
+        communityCommentSubmitIds.insert(postId)
+        let tempCommentId = "local-\(UUID().uuidString)"
+        let authorName = UserDisplayNamePolicy.resolve(
+            displayName: session.displayName,
+            nickname: session.nickname,
+            emailMasked: session.emailMasked,
+            email: session.email
+        ).primaryName
+        let optimisticComment = CoinCommunityComment(
+            id: tempCommentId,
+            authorId: session.userID,
+            content: trimmed,
+            authorName: authorName,
+            createdAt: Date(),
+            isOwnComment: true
+        )
+        let previousCommentState = communityCommentsByPostId[postId]
+        let previousCount = currentCommunityPostCommentCount(postId: postId)
+        applyOptimisticComment(optimisticComment, postId: postId)
+        let repository = publicContentRepository
+        Task { @MainActor in
+            defer { communityCommentSubmitIds.remove(postId) }
+            do {
+                let snapshot = try await runAuthenticatedRequest(session: session) { session in
+                    try await repository.createCoinCommunityComment(symbol: normalized, itemId: postId, content: trimmed, session: session)
+                }
+                let serverComments = filterBlockedComments(snapshot.comments).filter { $0.id != tempCommentId }
+                if serverComments.isEmpty {
+                    updateCommunityPostCommentCount(postId: postId, count: max(snapshot.commentCount, (previousCount ?? 0) + 1))
+                } else {
+                    let sorted = CoinCommunityCommentsSnapshot(
+                        comments: serverComments,
+                        commentCount: max(snapshot.commentCount, serverComments.count)
+                    ).sorted(sort: (commentSortOrdersByPostId[postId] ?? .latest).rawValue)
+                    communityCommentsByPostId[postId] = sorted.comments.isEmpty ? .empty : .loaded(sorted.comments)
+                    updateCommunityPostCommentCount(postId: postId, count: sorted.commentCount)
+                }
+                AppLogger.debug(.network, "[CommunityComment] itemId=\(postId) action=create status=success commentCount=\(snapshot.commentCount)")
+            } catch {
+                communityCommentsByPostId[postId] = previousCommentState ?? .empty
+                if let previousCount {
+                    updateCommunityPostCommentCount(postId: postId, count: previousCount)
+                }
+                let message = communityMutationErrorMessage(error, fallback: "댓글을 등록하지 못했어요.")
+                setCommunityMutationMessage(message, symbol: normalized, action: "comment", finalState: communityMutationFinalState(error))
+                AppLogger.debug(.network, "[CommunityComment] itemId=\(postId) action=create status=failure error=\(error.localizedDescription)")
+            }
+        }
+    }
+
+    func toggleAuthorFollow(post: CoinCommunityPost) {
+        guard let userId = post.authorId, userId.isEmpty == false, post.isOwnPost == false else {
+            return
+        }
+        guard let session = authState.session else {
+            presentLoginForCommunity()
+            showNotification("로그인이 필요합니다.", type: .error)
+            AppLogger.debug(.network, "[UserFollow] targetUserId=\(userId) action=\(post.isFollowing ? "unfollow" : "follow") status=login_required")
+            return
+        }
+        guard communityFollowRequestUserIds.contains(userId) == false else { return }
+        let previousState = coinCommunityState
+        let nextFollowing = !post.isFollowing
+        communityFollowRequestUserIds.insert(userId)
+        updateCommunityPostsByAuthor(userId: userId) { $0.replacingFollow(isFollowing: nextFollowing) }
+        let repository = publicContentRepository
+        Task { @MainActor in
+            defer { communityFollowRequestUserIds.remove(userId) }
+            do {
+                let result = try await runAuthenticatedRequest(session: session) { session in
+                    try await repository.setUserFollow(userId: userId, isFollowing: nextFollowing, session: session)
+                }
+                updateCommunityPostsByAuthor(userId: result.userId) { $0.replacingFollow(isFollowing: result.isFollowing) }
+                AppLogger.debug(.network, "[UserFollow] targetUserId=\(result.userId) action=\(nextFollowing ? "follow" : "unfollow") status=success")
+            } catch {
+                coinCommunityState = previousState
+                showNotification(communityMutationErrorMessage(error, fallback: "팔로우 상태를 반영하지 못했어요."), type: .error)
+                AppLogger.debug(.network, "[UserFollow] targetUserId=\(userId) action=\(nextFollowing ? "follow" : "unfollow") status=rollback error=\(error.localizedDescription)")
+            }
+        }
+    }
+
+    func reportPost(_ post: CoinCommunityPost, reason: CommunityReportReason) {
+        reportCommunityTarget(targetType: .post, targetId: post.id, reason: reason, authorIdToHide: post.authorId)
+    }
+
+    func reportComment(_ comment: CoinCommunityComment, reason: CommunityReportReason) {
+        reportCommunityTarget(targetType: .comment, targetId: comment.id, reason: reason, authorIdToHide: nil)
+    }
+
+    func blockAuthor(of post: CoinCommunityPost) {
+        guard let userId = post.authorId, post.isOwnPost == false else { return }
+        blockCommunityUser(userId: userId)
+    }
+
+    func blockAuthor(of comment: CoinCommunityComment) {
+        guard let userId = comment.authorId, comment.isOwnComment == false else { return }
+        blockCommunityUser(userId: userId)
+    }
+
     func voteCoinOpinion(symbol: String, direction: String) {
+        let normalized = LivePublicContentRepository.normalizedSymbol(symbol)
+        guard let session = authState.session else {
+            presentLoginForCommunity()
+            setCommunityMutationMessage("로그인이 필요합니다.", symbol: normalized, action: "vote", finalState: "login_required")
+            return
+        }
         guard isVotingCoinOpinion == false else {
             return
         }
         isVotingCoinOpinion = true
+        communitySubmitMessage = nil
+        let previousState = coinCommunityState
+        if case .loaded(let snapshot) = coinCommunityState {
+            coinCommunityState = .loaded(CoinCommunitySnapshot(posts: snapshot.posts, vote: optimisticVote(snapshot.vote, direction: direction), nextCursor: snapshot.nextCursor))
+            AppLogger.debug(.network, "[SentimentVote] scope=coin key=\(normalized) vote=\(direction) optimistic=true rollback=false")
+        }
         let repository = publicContentRepository
         Task { @MainActor in
             defer { isVotingCoinOpinion = false }
             do {
-                let vote = try await repository.voteCoin(symbol: symbol, direction: direction)
-                if case .loaded(let snapshot) = coinCommunityState {
+                let vote = try await runAuthenticatedRequest(session: session) { session in
+                    try await repository.voteCoin(symbol: normalized, direction: direction, session: session)
+                }
+                if case .loaded(let snapshot) = coinCommunityState, vote.hasServerCounts {
                     coinCommunityState = .loaded(CoinCommunitySnapshot(posts: snapshot.posts, vote: vote, nextCursor: snapshot.nextCursor))
+                    AppLogger.debug(.network, "[Community] vote success symbol=\(normalized) myVote=\(vote.myVote ?? "nil") finalUIState=loaded")
+                } else {
+                    loadCoinCommunity(symbol: normalized, filter: .all, forceRefresh: true)
+                    AppLogger.debug(.network, "[Community] vote success symbol=\(normalized) myVote=\(vote.myVote ?? "nil") finalUIState=refreshing")
                 }
             } catch {
-                showNotification(friendlyPublicContentErrorMessage(error, fallback: "의견 투표를 반영하지 못했어요."), type: .error)
+                let message = communityMutationErrorMessage(error, fallback: "의견 투표를 반영하지 못했어요.")
+                coinCommunityState = previousState
+                setCommunityMutationMessage(message, symbol: normalized, action: "vote", finalState: communityMutationFinalState(error))
+                AppLogger.debug(.network, "[SentimentVote] scope=coin key=\(normalized) vote=\(direction) optimistic=true rollback=true")
             }
+        }
+    }
+
+    func voteMarketSentiment(direction: String) {
+        guard let session = authState.session else {
+            marketSentimentMessage = "로그인이 필요합니다."
+            presentLoginForCommunity()
+            showNotification("로그인이 필요합니다.", type: .error)
+            AppLogger.debug(.network, "[SentimentAPI] scope=market key=global action=\(direction) status=login_required")
+            return
+        }
+        guard isVotingMarketSentiment == false else {
+            return
+        }
+        isVotingMarketSentiment = true
+        marketSentimentMessage = nil
+        let previousState = marketTrendsState
+        if case .loaded(let trends) = marketTrendsState {
+            let optimistic = optimisticMarketPoll(trends.marketPoll ?? .empty, direction: direction)
+            marketTrendsState = .loaded(replacingMarketPoll(in: trends, with: optimistic))
+            AppLogger.debug(.network, "[SentimentVote] scope=market key=global vote=\(direction) optimistic=true rollback=false")
+        }
+        let repository = publicContentRepository
+        Task { @MainActor in
+            defer { isVotingMarketSentiment = false }
+            do {
+                let poll = try await runAuthenticatedRequest(session: session) { session in
+                    try await repository.voteMarketSentiment(direction: direction, session: session)
+                }
+                if case .loaded(let trends) = marketTrendsState {
+                    marketTrendsState = .loaded(replacingMarketPoll(in: trends, with: poll))
+                } else {
+                    loadMarketTrends(forceRefresh: true)
+                }
+                AppLogger.debug(.network, "[SentimentState] participants=\(poll.totalCount) bullish=\(poll.bullishCount) bearish=\(poll.bearishCount) myVote=\(poll.myVote ?? "nil")")
+            } catch {
+                marketTrendsState = previousState
+                marketSentimentMessage = communityMutationErrorMessage(error, fallback: "시장 투표를 반영하지 못했어요.")
+                showNotification(marketSentimentMessage ?? "시장 투표를 반영하지 못했어요.", type: .error)
+                AppLogger.debug(.network, "[SentimentAPI] scope=market key=global action=\(direction) status=failure error=\(error.localizedDescription)")
+                AppLogger.debug(.network, "[MarketSentimentFailure] status=unknown code=unknown rawPreview=\(error.localizedDescription)")
+                AppLogger.debug(.network, "[SentimentVote] scope=market key=global vote=\(direction) optimistic=true rollback=true")
+            }
+        }
+    }
+
+    private func optimisticVote(_ vote: CoinVoteSnapshot, direction: String) -> CoinVoteSnapshot {
+        let normalizedDirection = direction == "bearish" ? "bearish" : "bullish"
+        let previous = vote.myVote
+        var bullish = vote.bullishCount
+        var bearish = vote.bearishCount
+        var total = vote.totalCount
+        if previous == nil {
+            total += 1
+        } else if previous == "bullish" {
+            bullish = max(bullish - 1, 0)
+        } else if previous == "bearish" {
+            bearish = max(bearish - 1, 0)
+        }
+        if normalizedDirection == "bullish" {
+            bullish += 1
+        } else {
+            bearish += 1
+        }
+        return CoinVoteSnapshot(
+            bullishCount: bullish,
+            bearishCount: bearish,
+            totalCount: total,
+            myVote: normalizedDirection,
+            scope: vote.scope ?? "coin",
+            key: vote.key,
+            source: vote.source,
+            updatedAt: vote.updatedAt,
+            hasServerCounts: true
+        )
+    }
+
+    private func optimisticMarketPoll(_ poll: MarketPollSnapshot, direction: String) -> MarketPollSnapshot {
+        let normalizedDirection = direction == "bearish" ? "bearish" : "bullish"
+        let previous = poll.myVote
+        var bullish = poll.bullishCount
+        var bearish = poll.bearishCount
+        var total = poll.totalCount
+        if previous == nil {
+            total += 1
+        } else if previous == "bullish" {
+            bullish = max(bullish - 1, 0)
+        } else if previous == "bearish" {
+            bearish = max(bearish - 1, 0)
+        }
+        if normalizedDirection == "bullish" {
+            bullish += 1
+        } else {
+            bearish += 1
+        }
+        return MarketPollSnapshot(
+            bullishCount: bullish,
+            bearishCount: bearish,
+            totalCount: total,
+            myVote: normalizedDirection,
+            scope: "market",
+            key: "global",
+            source: poll.source,
+            updatedAt: poll.updatedAt,
+            hasServerCounts: true
+        )
+    }
+
+    private func replacingMarketPoll(in trends: MarketTrendsSnapshot, with poll: MarketPollSnapshot) -> MarketTrendsSnapshot {
+        MarketTrendsSnapshot(
+            totalMarketCap: trends.totalMarketCap,
+            totalMarketCapChange24h: trends.totalMarketCapChange24h,
+            totalVolume24h: trends.totalVolume24h,
+            btcDominance: trends.btcDominance,
+            ethDominance: trends.ethDominance,
+            fearGreedIndex: trends.fearGreedIndex,
+            altcoinIndex: trends.altcoinIndex,
+            btcLongShortRatio: trends.btcLongShortRatio,
+            marketPoll: poll,
+            movers: trends.movers,
+            marketCapVolumeSeries: trends.marketCapVolumeSeries,
+            range: trends.range,
+            currency: trends.currency,
+            events: trends.events,
+            topNews: trends.topNews,
+            bitcoinHalvingCountdown: trends.bitcoinHalvingCountdown,
+            latestHeadline: trends.latestHeadline,
+            summaryDescription: trends.summaryDescription,
+            eventsEmptyReason: trends.eventsEmptyReason,
+            unavailableReasons: trends.unavailableReasons,
+            dataProvider: trends.dataProvider,
+            fallbackUsed: trends.fallbackUsed,
+            asOf: trends.asOf
+        )
+    }
+
+    private func updateCommunityPostCommentCount(postId: String, count: Int) {
+        guard case .loaded(let snapshot) = coinCommunityState,
+              let post = snapshot.posts.first(where: { $0.id == postId }) else {
+            return
+        }
+        coinCommunityState = .loaded(snapshot.replacingPost(postId, with: post.replacingCommentCount(count)))
+    }
+
+    private func currentCommunityPostCommentCount(postId: String) -> Int? {
+        guard case .loaded(let snapshot) = coinCommunityState,
+              let post = snapshot.posts.first(where: { $0.id == postId }) else {
+            return nil
+        }
+        return post.commentCount
+    }
+
+    private func applyOptimisticComment(_ comment: CoinCommunityComment, postId: String) {
+        let existing: [CoinCommunityComment]
+        if case .loaded(let comments) = communityCommentsByPostId[postId] {
+            existing = comments
+        } else {
+            existing = []
+        }
+        let next = CoinCommunityCommentsSnapshot(
+            comments: existing.filter { $0.id != comment.id } + [comment],
+            commentCount: existing.count + 1
+        ).sorted(sort: (commentSortOrdersByPostId[postId] ?? .latest).rawValue)
+        communityCommentsByPostId[postId] = .loaded(next.comments)
+        updateCommunityPostCommentCount(postId: postId, count: (currentCommunityPostCommentCount(postId: postId) ?? existing.count) + 1)
+        AppLogger.debug(.network, "[CommunityComment] itemId=\(postId) action=create optimistic=true sort=\((commentSortOrdersByPostId[postId] ?? .latest).rawValue)")
+    }
+
+    private func updateCommunityPostsByAuthor(userId: String, transform: (CoinCommunityPost) -> CoinCommunityPost) {
+        guard case .loaded(let snapshot) = coinCommunityState else {
+            return
+        }
+        coinCommunityState = .loaded(
+            CoinCommunitySnapshot(
+                posts: snapshot.posts.map { $0.authorId == userId ? transform($0) : $0 },
+                vote: snapshot.vote,
+                nextCursor: snapshot.nextCursor
+            )
+        )
+    }
+
+    private func syncBlockedUsersIfNeeded() async {
+        guard let session = authState.session else { return }
+        do {
+            let blocked = try await runAuthenticatedRequest(session: session) { [publicContentRepository] session in
+                try await publicContentRepository.fetchBlockedUsers(session: session)
+            }
+            blockedCommunityUserIds = Set(blocked.map(\.id))
+            AppLogger.debug(.network, "[CommunityBlock] action=sync count=\(blocked.count) status=success")
+        } catch {
+            AppLogger.debug(.network, "[CommunityBlock] action=sync status=failure error=\(error.localizedDescription)")
+        }
+    }
+
+    private func hydrateCommunityRelationshipsIfNeeded(posts: [CoinCommunityPost]) {
+        guard let session = authState.session else { return }
+        let targetUserIds = Array(Set(posts.compactMap(\.authorId))).prefix(20)
+        guard targetUserIds.isEmpty == false else { return }
+        let repository = publicContentRepository
+        Task { @MainActor in
+            for userId in targetUserIds {
+                do {
+                    let relationship = try await runAuthenticatedRequest(session: session) { session in
+                        try await repository.fetchUserRelationship(userId: userId, session: session)
+                    }
+                    if relationship.isBlocked {
+                        blockedCommunityUserIds.insert(relationship.userId)
+                        applyBlockedUserFilter()
+                    } else {
+                        updateCommunityPostsByAuthor(userId: relationship.userId) {
+                            $0.replacingFollow(isFollowing: relationship.isFollowing)
+                        }
+                    }
+                } catch {
+                    AppLogger.debug(.network, "[UserRelationship] targetUserId=\(userId) status=failure error=\(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
+    private func reportCommunityTarget(
+        targetType: CommunityReportTargetType,
+        targetId: String,
+        reason: CommunityReportReason,
+        authorIdToHide: String?
+    ) {
+        guard let session = authState.session else {
+            presentLoginForCommunity()
+            showNotification("로그인이 필요합니다.", type: .error)
+            return
+        }
+        let requestId = "report:\(targetType.rawValue):\(targetId)"
+        guard communityModerationRequestIds.contains(requestId) == false else { return }
+        communityModerationRequestIds.insert(requestId)
+        let repository = publicContentRepository
+        Task { @MainActor in
+            defer { communityModerationRequestIds.remove(requestId) }
+            do {
+                let result = try await runAuthenticatedRequest(session: session) { session in
+                    try await repository.reportCommunityTarget(
+                        targetType: targetType,
+                        targetId: targetId,
+                        reason: reason,
+                        description: nil,
+                        session: session
+                    )
+                }
+                if result.hidden {
+                    hideReportedTarget(targetType: targetType, targetId: targetId, authorId: authorIdToHide)
+                }
+                showNotification("신고가 접수되었습니다.", type: .success)
+            } catch {
+                showNotification(communityMutationErrorMessage(error, fallback: "신고를 접수하지 못했어요."), type: .error)
+                AppLogger.debug(.network, "[CommunityReport] targetType=\(targetType.rawValue) targetId=\(targetId) status=failure error=\(error.localizedDescription)")
+            }
+        }
+    }
+
+    private func blockCommunityUser(userId: String) {
+        guard let session = authState.session else {
+            presentLoginForCommunity()
+            showNotification("로그인이 필요합니다.", type: .error)
+            return
+        }
+        let requestId = "block:\(userId)"
+        guard communityModerationRequestIds.contains(requestId) == false else { return }
+        communityModerationRequestIds.insert(requestId)
+        let repository = publicContentRepository
+        Task { @MainActor in
+            defer { communityModerationRequestIds.remove(requestId) }
+            do {
+                let blocked = try await runAuthenticatedRequest(session: session) { session in
+                    try await repository.blockUser(userId: userId, session: session)
+                }
+                blockedCommunityUserIds.insert(blocked.id)
+                applyBlockedUserFilter()
+                showNotification("차단했습니다. 해당 사용자의 게시글과 댓글을 숨겼습니다.", type: .success)
+            } catch {
+                showNotification(communityMutationErrorMessage(error, fallback: "차단하지 못했어요."), type: .error)
+                AppLogger.debug(.network, "[CommunityBlock] targetUserId=\(userId) action=block status=failure error=\(error.localizedDescription)")
+            }
+        }
+    }
+
+    private func hideReportedTarget(targetType: CommunityReportTargetType, targetId: String, authorId: String?) {
+        switch targetType {
+        case .post:
+            guard case .loaded(let snapshot) = coinCommunityState else { return }
+            coinCommunityState = .loaded(
+                CoinCommunitySnapshot(
+                    posts: snapshot.posts.filter { $0.id != targetId },
+                    vote: snapshot.vote,
+                    nextCursor: snapshot.nextCursor
+                )
+            )
+        case .comment:
+            for (postId, state) in communityCommentsByPostId {
+                if case .loaded(let comments) = state {
+                    let filtered = comments.filter { $0.id != targetId }
+                    communityCommentsByPostId[postId] = filtered.isEmpty ? .empty : .loaded(filtered)
+                }
+            }
+        case .user:
+            if let authorId {
+                blockedCommunityUserIds.insert(authorId)
+                applyBlockedUserFilter()
+            }
+        case .news:
+            break
+        }
+    }
+
+    private func applyBlockedUserFilter() {
+        if case .loaded(let snapshot) = coinCommunityState {
+            coinCommunityState = .loaded(filterBlockedUsers(from: snapshot))
+        }
+        for (postId, state) in communityCommentsByPostId {
+            if case .loaded(let comments) = state {
+                let filtered = filterBlockedComments(comments)
+                communityCommentsByPostId[postId] = filtered.isEmpty ? .empty : .loaded(filtered)
+            }
+        }
+    }
+
+    private func filterBlockedUsers(from snapshot: CoinCommunitySnapshot) -> CoinCommunitySnapshot {
+        CoinCommunitySnapshot(
+            posts: snapshot.posts.filter { post in
+                guard let authorId = post.authorId else { return true }
+                return blockedCommunityUserIds.contains(authorId) == false
+            },
+            vote: snapshot.vote,
+            nextCursor: snapshot.nextCursor
+        )
+    }
+
+    private func filterBlockedComments(_ comments: [CoinCommunityComment]) -> [CoinCommunityComment] {
+        comments.filter { comment in
+            guard let authorId = comment.authorId else { return true }
+            return blockedCommunityUserIds.contains(authorId) == false
+        }
+    }
+
+    private func presentLoginForCommunity() {
+        loginErrorMessage = nil
+        authFlowMode = .login
+        isLoginPresented = true
+    }
+
+    private func setCommunityMutationMessage(
+        _ message: String,
+        symbol: String,
+        action: String,
+        finalState: String
+    ) {
+        communitySubmitMessage = message
+        showNotification(message, type: .error)
+        AppLogger.debug(.network, "[Community] \(action) failed symbol=\(symbol) mappedMessage=\(finalState) finalUIState=\(communityStateDebugLabel)")
+    }
+
+    private var communityStateDebugLabel: String {
+        switch coinCommunityState {
+        case .idle: return "idle"
+        case .loading: return "loading"
+        case .loaded(let snapshot): return snapshot.posts.isEmpty ? "loaded_empty" : "loaded_items"
+        case .empty: return "empty"
+        case .failed: return "failed_initial_load"
+        }
+    }
+
+    private func communityMutationErrorMessage(_ error: Error, fallback: String) -> String {
+        if isAuthSessionError(error) {
+            return "세션이 만료되었습니다. 다시 로그인해주세요."
+        }
+        if let networkError = error as? NetworkServiceError {
+            switch networkError {
+            case .httpError(let statusCode, let message, _):
+                if statusCode == 400 || statusCode == 422 {
+                    return message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "입력값을 다시 확인해주세요." : message
+                }
+            case .authenticationRequired:
+                return "로그인이 필요합니다."
+            case .transportError:
+                return "네트워크 상태를 확인한 뒤 다시 시도해주세요."
+            case .parsingFailed:
+                return fallback
+            case .invalidURL, .invalidResponse:
+                return "서버 요청을 처리하지 못했어요. 잠시 후 다시 시도해주세요."
+            }
+        }
+        return friendlyPublicContentErrorMessage(error, fallback: fallback)
+    }
+
+    private func communityMutationFinalState(_ error: Error) -> String {
+        if isAuthSessionError(error) {
+            return "sessionExpired"
+        }
+        if let networkError = error as? NetworkServiceError,
+           case .httpError(let statusCode, _, _) = networkError,
+           statusCode == 400 || statusCode == 422 {
+            return "validation_failed"
+        }
+        return "submit_error"
+    }
+
+    private func isAuthSessionError(_ error: Error) -> Bool {
+        guard let networkError = error as? NetworkServiceError else {
+            return false
+        }
+        switch networkError {
+        case .authenticationRequired:
+            return true
+        case .httpError(let statusCode, _, let category):
+            return statusCode == 401 || category == .authenticationFailed
+        case .transportError(_, let category):
+            return category == .authenticationFailed
+        case .invalidURL, .invalidResponse, .parsingFailed:
+            return false
         }
     }
 
@@ -4100,7 +5328,9 @@ final class CryptoViewModel: ObservableObject {
             dataProvider: "Market snapshot",
             metadataSource: nil,
             marketSource: "Market snapshot",
-            fallbackUsed: true
+            fallbackUsed: true,
+            descriptionRenderLanguage: "none",
+            descriptionFallbackNotice: nil
         )
     }
 
@@ -4218,90 +5448,11 @@ final class CryptoViewModel: ObservableObject {
             clearComparedChartSeries(reason: "\(reason)_empty_selection")
             return
         }
-
-        let signature = [
-            effectiveContext.marketIdentity.cacheKey,
-            effectiveContext.mappedInterval,
-            comparedSymbols.joined(separator: ",")
-        ].joined(separator: "|")
-
-        guard activeChartComparisonSignature != signature else {
-            return
-        }
-
-        activeChartComparisonSignature = signature
-        chartComparisonTask?.cancel()
-
-        chartComparisonTask = Task { @MainActor [weak self] in
-            guard let self else { return }
-
-            let palette = ["#F59E0B", "#34D399", "#60A5FA", "#F472B6", "#A78BFA"]
-            var nextSeries: [ChartComparisonSeries] = []
-
-            for (index, symbol) in comparedSymbols.enumerated() {
-                guard Task.isCancelled == false else { return }
-
-                let key = self.chartRequestKey(
-                    exchange: effectiveContext.exchange,
-                    symbol: symbol,
-                    interval: effectiveContext.mappedInterval
-                )
-                let response = await self.fetchCandleSnapshot(for: key)
-                guard Task.isCancelled == false else { return }
-
-                let candles: [CandleData]
-                switch response {
-                case .success(let snapshot):
-                    let prepared = self.prepareCandlesForLive(
-                        snapshot.candles,
-                        interval: effectiveContext.mappedInterval,
-                        seedPrice: self.pricesByMarketIdentity[key.marketIdentity]?.price
-                    )
-                    let fetchedAt = snapshot.meta.fetchedAt ?? Date()
-                    self.storeChartDetailCandleEntry(
-                        candles: prepared,
-                        meta: snapshot.meta,
-                        fetchedAt: fetchedAt,
-                        keys: [key],
-                        rememberSuccess: snapshot.meta.isChartAvailable != false
-                    )
-                    candles = prepared
-                case .failure:
-                    candles = self.lastSuccessfulCandles[key]?.candles
-                        ?? self.candleCacheByKey[key]?.candles
-                        ?? []
-                }
-
-                guard candles.isEmpty == false else {
-                    AppLogger.debug(
-                        .route,
-                        "[ChartSettings] compare_series_skipped symbol=\(symbol) reason=no_candles interval=\(effectiveContext.mappedInterval)"
-                    )
-                    continue
-                }
-
-                nextSeries.append(
-                    ChartComparisonSeries(
-                        symbol: symbol,
-                        name: self.chartComparisonDisplayName(for: symbol, exchange: effectiveContext.exchange),
-                        candles: candles,
-                        colorHex: palette[index % palette.count]
-                    )
-                )
-            }
-
-            guard self.activeChartComparisonSignature == signature,
-                  self.selectedExchange == effectiveContext.exchange,
-                  (self.selectedCoin?.symbol ?? effectiveContext.symbol) == currentSymbol else {
-                return
-            }
-
-            self.comparedChartSeries = nextSeries
-            AppLogger.debug(
-                .route,
-                "[ChartSettings] compare_series_synced reason=\(reason) interval=\(effectiveContext.mappedInterval) count=\(nextSeries.count)"
-            )
-        }
+        clearComparedChartSeries(reason: "\(reason)_selected_symbol_only_policy")
+        AppLogger.debug(
+            .network,
+            "[ChartREST] compare_series_skipped selectedOnly=true exchange=\(effectiveContext.exchange.rawValue) symbol=\(effectiveContext.symbol) comparedCount=\(comparedSymbols.count)"
+        )
     }
 
     private func chartComparisonDisplayName(for symbol: String, exchange: Exchange) -> String {
@@ -4316,9 +5467,16 @@ final class CryptoViewModel: ObservableObject {
         } else if activeMarketPresentationSnapshot?.exchange != selectedExchange || activeMarketPresentationSnapshot == nil {
             beginMarketTransition(to: selectedExchange, from: activeMarketPresentationSnapshot?.exchange, reason: reason)
         }
-        async let marketTask = loadMarkets(for: selectedExchange, forceRefresh: forceRefresh, reason: reason)
-        async let tickerTask = loadTickers(for: selectedExchange, forceRefresh: forceRefresh, reason: reason)
-        _ = await (marketTask, tickerTask)
+        await loadTickers(for: selectedExchange, forceRefresh: forceRefresh, reason: "\(reason)_tickers")
+        refreshMarketStateForSelectedExchange(reason: "\(reason)_tickers_loaded")
+        guard automaticMarketCatalogHydrationEnabled else {
+            AppLogger.debug(
+                .network,
+                "[MarketPipeline] exchange=\(selectedExchange.rawValue) quote=\(selectedQuoteCurrency.rawValue) phase=markets_hydration_skipped reason=ticker_first_policy trigger=\(reason)"
+            )
+            return
+        }
+        await loadMarkets(for: selectedExchange, forceRefresh: forceRefresh, reason: "\(reason)_markets")
         refreshMarketStateForSelectedExchange(reason: reason)
     }
 
@@ -4377,7 +5535,20 @@ final class CryptoViewModel: ObservableObject {
         )
         updateChartIntervalIfNeeded(mappedInterval, reason: reason)
 
-        let selectedMarketIdentity = coin.marketIdentity(exchange: exchange)
+        let selectedBaseSymbol = SymbolNormalization.canonicalAssetCode(
+            exchange: exchange,
+            rawSymbol: coin.symbol,
+            marketId: coin.marketId,
+            baseAsset: coin.displayMetadata?.baseAsset,
+            quoteAsset: coin.displayMetadata?.quoteAsset,
+            canonicalSymbol: coin.canonicalSymbol
+        )
+        let selectedMarketIdentity = MarketIdentity(
+            exchange: exchange,
+            marketId: Self.marketQuoteMatches(coin, quoteCurrency: selectedQuoteCurrency) ? coin.marketId : nil,
+            symbol: selectedBaseSymbol,
+            quoteCurrency: selectedQuoteCurrency
+        )
         let context = ChartRequestContext(
             marketIdentity: selectedMarketIdentity,
             requestedInterval: requestedInterval,
@@ -4982,6 +6153,7 @@ final class CryptoViewModel: ObservableObject {
 
     func logout() {
         let sessionToRevoke = authState.session
+        PushNotificationService.shared.cleanupForLogout(previousSession: sessionToRevoke)
         if let sessionToRevoke {
             let service = authService
             Task { @MainActor in
@@ -5099,6 +6271,7 @@ final class CryptoViewModel: ObservableObject {
 
     private func completeAuthentication(with session: AuthSession, source: String, method: String) async {
         authState = .authenticated(session)
+        PushNotificationService.shared.bindSession(session)
         authSessionStore?.saveSession(session)
         AppLogger.debug(
             .auth,
@@ -7285,12 +8458,22 @@ final class CryptoViewModel: ObservableObject {
                 self.publicWebSocketState = state
                 switch state {
                 case .connecting:
+                    self.activeChartRealtimeStatus = .connecting
                     AppLogger.debug(.websocket, "[PublicWS] connect start route=\(self.activeTab.rawValue) exchange=\(self.selectedExchange.rawValue)")
+                    if self.activeTab == .chart, let coin = self.selectedCoin {
+                        AppLogger.debug(.websocket, "[ChartWS] connect exchange=\(self.selectedExchange.rawValue) symbol=\(coin.symbol) quote=\(self.selectedQuoteCurrency.rawValue) timeframe=\(self.chartPeriod.uppercased())")
+                    }
                 case .connected:
+                    self.activeChartRealtimeStatus = .connected
                     AppLogger.debug(.websocket, "[PublicWS] connect success route=\(self.activeTab.rawValue) exchange=\(self.selectedExchange.rawValue)")
                 case .failed(let message):
+                    self.activeChartRealtimeStatus = .reconnecting
                     AppLogger.debug(.websocket, "[PublicWS] connect failure route=\(self.activeTab.rawValue) exchange=\(self.selectedExchange.rawValue) message=\(message)")
+                    if self.activeTab == .chart {
+                        AppLogger.debug(.websocket, "[ChartWS] reconnect exchange=\(self.selectedExchange.rawValue) quote=\(self.selectedQuoteCurrency.rawValue) timeframe=\(self.chartPeriod.uppercased())")
+                    }
                 case .disconnected:
+                    self.activeChartRealtimeStatus = .disconnected
                     break
                 }
                 self.updatePublicPollingIfNeeded()
@@ -7427,9 +8610,16 @@ final class CryptoViewModel: ObservableObject {
         if marketPresentationSnapshotsByExchange[selectedExchange] == nil {
             beginMarketTransition(to: selectedExchange, from: activeMarketPresentationSnapshot?.exchange, reason: reason)
         }
-        async let marketTask = loadMarkets(for: selectedExchange, forceRefresh: true, reason: "\(reason)_bootstrap_markets")
-        async let tickerTask = loadTickers(for: selectedExchange, forceRefresh: true, reason: "\(reason)_bootstrap_tickers")
-        _ = await (marketTask, tickerTask)
+        await loadTickers(for: selectedExchange, forceRefresh: true, reason: "\(reason)_bootstrap_tickers")
+        refreshMarketStateForSelectedExchange(reason: "\(reason)_bootstrap_tickers_loaded")
+        if automaticMarketCatalogHydrationEnabled {
+            await loadMarkets(for: selectedExchange, forceRefresh: true, reason: "\(reason)_bootstrap_markets")
+        } else {
+            AppLogger.debug(
+                .network,
+                "[MarketPipeline] exchange=\(selectedExchange.rawValue) quote=\(selectedQuoteCurrency.rawValue) phase=markets_hydration_skipped reason=ticker_first_policy trigger=\(reason)"
+            )
+        }
         ensureSelectedCoinForCurrentExchange()
         refreshMarketStateForSelectedExchange(reason: "\(reason)_bootstrap_refresh")
     }
@@ -7454,14 +8644,24 @@ final class CryptoViewModel: ObservableObject {
 
         AppLogger.debug(.network, "fetchMarkets start -> exchange=\(exchange.rawValue) reason=\(reason)")
         AppLogger.debug(.network, "[MarketSnapshot] request start kind=markets exchange=\(exchange.rawValue) reason=\(reason)")
+        let quoteCurrency = selectedQuoteCurrency
         let requestTask = Task {
-            try await marketRepository.fetchMarkets(exchange: exchange)
+            try await marketRepository.fetchMarkets(exchange: exchange, quoteCurrency: quoteCurrency)
         }
         marketCatalogFetchTasks[exchange] = requestTask
 
         do {
             let catalogSnapshot = try await requestTask.value
             marketCatalogFetchTasks[exchange] = nil
+            guard requestContext.exchange == selectedExchange,
+                  requestContext.quoteCurrency == selectedQuoteCurrency,
+                  requestContext.generation == marketPresentationGeneration else {
+                AppLogger.debug(
+                    .network,
+                    "[MarketPipeline] exchange=\(exchange.rawValue) quote=\(quoteCurrency.rawValue) generation=\(requestContext.generation) phase=drop_stale_response kind=markets"
+                )
+                return
+            }
             lastMarketCatalogFetchedAtByExchange[exchange] = Date()
             marketCatalogResponseCountsByExchange[exchange] = catalogSnapshot.markets.count
             marketCatalogMetaByExchange[exchange] = catalogSnapshot.meta
@@ -7527,19 +8727,53 @@ final class CryptoViewModel: ObservableObject {
 
         AppLogger.debug(.network, "fetchTickers start -> exchange=\(exchange.rawValue) reason=\(reason)")
         AppLogger.debug(.network, "[MarketSnapshot] request start kind=tickers exchange=\(exchange.rawValue) reason=\(reason)")
+        if forceRefresh || unsupportedSparklineMarketIdentitiesByExchange[exchange]?.isEmpty == false {
+            unsupportedSparklineMarketIdentitiesByExchange[exchange] = []
+            AppLogger.debug(
+                .network,
+                "[GraphRequestDebug] exchange=\(exchange.rawValue) quote=\(selectedQuoteCurrency.rawValue) action=graph_capability_cache_cleared reason=\(forceRefresh ? "force_refresh" : "ticker_refresh")"
+            )
+        }
         AppLogger.debug(
             .network,
             "[MarketPipeline] exchange=\(exchange.rawValue) generation=\(requestContext.generation) phase=base_refresh_start symbols=\(resolvedSymbols(for: exchange).count)"
         )
         let requestStartedAt = Date()
+        let quoteCurrency = selectedQuoteCurrency
+        AppLogger.debug(
+            .network,
+            "[MarketTickerRequest] exchange=\(exchange.rawValue) quoteCurrency=\(quoteCurrency.rawValue) url=/market/tickers?exchange=\(exchange.rawValue)&quoteCurrency=\(quoteCurrency.apiValue)&limit=100 requestGeneration=\(requestContext.generation)"
+        )
         let requestTask = Task {
-            try await marketRepository.fetchTickers(exchange: exchange)
+            try await marketRepository.fetchTickers(exchange: exchange, quoteCurrency: quoteCurrency)
         }
         tickerFetchTasks[exchange] = requestTask
 
         do {
             let tickerSnapshot = try await requestTask.value
             tickerFetchTasks[exchange] = nil
+            let accepted = requestContext.exchange == selectedExchange
+                && requestContext.quoteCurrency == selectedQuoteCurrency
+                && requestContext.generation == marketPresentationGeneration
+            if accepted == false {
+                let rejectReason: String
+                if requestContext.generation != marketPresentationGeneration {
+                    rejectReason = "stale_generation"
+                } else if requestContext.exchange != selectedExchange {
+                    rejectReason = "exchange_mismatch"
+                } else {
+                    rejectReason = "quote_mismatch"
+                }
+                AppLogger.debug(
+                    .network,
+                    "[MarketTickerResponse] exchange=\(exchange.rawValue) quoteCurrency=\(quoteCurrency.rawValue) itemCount=\(tickerSnapshot.tickers.count) firstMarketId=\(tickerSnapshot.coins.first?.marketId ?? "-") firstSymbol=\(tickerSnapshot.tickers.keys.sorted().first ?? "-") firstPrice=\(tickerSnapshot.tickers.values.first?.price ?? 0) requestGeneration=\(requestContext.generation) accepted=false rejectReason=\(rejectReason)"
+                )
+                return
+            }
+            AppLogger.debug(
+                .network,
+                "[MarketTickerResponse] exchange=\(exchange.rawValue) quoteCurrency=\(quoteCurrency.rawValue) itemCount=\(tickerSnapshot.tickers.count) firstMarketId=\(tickerSnapshot.coins.first?.marketId ?? "-") firstSymbol=\(tickerSnapshot.tickers.keys.sorted().first ?? "-") firstPrice=\(tickerSnapshot.tickers.values.first?.price ?? 0) requestGeneration=\(requestContext.generation) accepted=true rejectReason=-"
+            )
             lastTickerFetchedAtByExchange[exchange] = Date()
             marketTickerResponseCountsByExchange[exchange] = tickerSnapshot.tickers.count
             marketTickerMetaByExchange[exchange] = tickerSnapshot.meta
@@ -7587,11 +8821,19 @@ final class CryptoViewModel: ObservableObject {
                 }
             }
 
-            stageAndSwapMarketPresentationIfPossible(
+            let didStagePresentation = stageAndSwapMarketPresentationIfPossible(
                 for: exchange,
                 requestContext: requestContext,
                 reason: "\(reason)_tickers_loaded"
             )
+            if didStagePresentation == false,
+               selectedExchange == exchange,
+               selectedQuoteCurrency == quoteCurrency,
+               tickerSnapshot.tickers.isEmpty {
+                assignMarketState(.empty)
+                marketLoadState = SourceAwareLoadState(phase: .showingSnapshot, hasPartialFailure: false)
+                marketTransitionMessage = nil
+            }
             AppLogger.debug(
                 .network,
                 "[MarketPipeline] exchange=\(exchange.rawValue) generation=\(requestContext.generation) phase=base_refresh_success rows=\(tickerSnapshot.tickers.count) elapsedMs=\(Int(Date().timeIntervalSince(requestStartedAt) * 1000))"
@@ -7605,6 +8847,18 @@ final class CryptoViewModel: ObservableObject {
             AppLogger.debug(.network, "[MarketSnapshot] request failure kind=tickers exchange=\(exchange.rawValue) message=\(error.localizedDescription)")
             AppLogger.debug(.network, "Failed public ticker snapshot for \(exchange.rawValue): \(error.localizedDescription)")
             if selectedExchange == exchange {
+                if let networkError = error as? NetworkServiceError,
+                   case .httpError(let statusCode, _, _) = networkError,
+                   statusCode == 404 || statusCode == 501 {
+                    assignMarketState(.empty)
+                    marketTransitionMessage = "\(exchange.displayName) \(selectedQuoteCurrency.rawValue) 마켓은 아직 지원되지 않아요"
+                    AppLogger.debug(
+                        .network,
+                        "[MarketLoadingState] exchange=\(exchange.rawValue) quoteCurrency=\(selectedQuoteCurrency.rawValue) from=loading to=unsupported reason=http_\(statusCode)"
+                    )
+                } else {
+                    assignMarketState(.failed("데이터를 불러오지 못했어요. 잠시 후 다시 시도해주세요."))
+                }
                 refreshMarketStateForSelectedExchange()
             }
         }
@@ -7618,9 +8872,9 @@ final class CryptoViewModel: ObservableObject {
             if activeMarketPresentationSnapshot?.exchange != selectedExchange || activeMarketPresentationSnapshot == nil {
                 beginMarketTransition(to: selectedExchange, from: activeMarketPresentationSnapshot?.exchange, reason: reason)
             }
-            async let marketTask = loadMarkets(for: selectedExchange, forceRefresh: forceRefresh, reason: "\(reason)_market_markets")
-            async let tickerTask = loadTickers(for: selectedExchange, forceRefresh: forceRefresh, reason: "\(reason)_market_tickers")
-            _ = await (marketTask, tickerTask)
+            await loadTickers(for: selectedExchange, forceRefresh: forceRefresh, reason: "\(reason)_market_tickers")
+            refreshMarketStateForSelectedExchange(reason: "\(reason)_market_tickers_loaded")
+            await loadMarkets(for: selectedExchange, forceRefresh: forceRefresh, reason: "\(reason)_market_markets")
             refreshMarketStateForSelectedExchange(reason: "\(reason)_market_refresh")
         case .kimchi:
             if activeKimchiPresentationSnapshot?.exchange != currentKimchiDomesticExchange || activeKimchiPresentationSnapshot == nil {
@@ -8116,12 +9370,12 @@ final class CryptoViewModel: ObservableObject {
         let interval = sparklineInterval(for: marketIdentity)
         let key = SparklineCacheKey(marketIdentity: marketIdentity, interval: interval)
         let existingSnapshot = sparklineSnapshotsByKey[key]
-        let points = sparklinePointsForSnapshotSeed(
+        let points = Self.densifiedMiniSparkline(points: sparklinePointsForSnapshotSeed(
             tickerPoints: ticker.sparkline,
             pointCount: pointCount,
             source: source,
             existingSnapshot: existingSnapshot
-        )
+        ))
         let snapshot = SparklineLayerSnapshot(
             interval: interval,
             points: points,
@@ -8288,9 +9542,13 @@ final class CryptoViewModel: ObservableObject {
         stableSparklineDisplaysByKey[stableSparklineDisplayKey(marketIdentity: marketIdentity)]
     }
 
-    private func stableSparklineDisplaysByMarketIdentity(for exchange: Exchange) -> [MarketIdentity: StableSparklineDisplay] {
+    private func stableSparklineDisplaysByMarketIdentity(
+        for exchange: Exchange,
+        quoteCurrency: MarketQuoteCurrency
+    ) -> [MarketIdentity: StableSparklineDisplay] {
         var displays = [MarketIdentity: StableSparklineDisplay]()
-        for (key, value) in stableSparklineDisplaysByKey where key.exchange == exchange {
+        for (key, value) in stableSparklineDisplaysByKey
+        where key.exchange == exchange && key.marketIdentity.quoteCurrency == quoteCurrency {
             guard key.interval == sparklineInterval(for: key.marketIdentity) else {
                 continue
             }
@@ -8328,7 +9586,8 @@ final class CryptoViewModel: ObservableObject {
                 updatedAt: now,
                 sourceVersion: row.sparklinePayload.sourceVersion == 0
                     ? Self.sparklineSourceVersion(from: now)
-                    : row.sparklinePayload.sourceVersion
+                    : row.sparklinePayload.sourceVersion,
+                sourceName: row.sparklineSource
             )
         }
     }
@@ -8341,7 +9600,7 @@ final class CryptoViewModel: ObservableObject {
         let marketIdentities = Self.deduplicatedMarketIdentities(
             additionalMarketIdentities
                 + (marketPresentationSnapshotsByExchange[exchange]?.rows.map(\.marketIdentity) ?? [])
-                + (tickerSnapshotCoinsByExchange[exchange]?.map { $0.marketIdentity(exchange: exchange) } ?? [])
+                + (tickerSnapshotCoinsByExchange[exchange]?.map { $0.marketIdentity(exchange: exchange, quoteCurrency: selectedQuoteCurrency) } ?? [])
         )
         for marketIdentity in marketIdentities {
             if let snapshot = sparklineSnapshot(marketIdentity: marketIdentity) {
@@ -8493,6 +9752,13 @@ final class CryptoViewModel: ObservableObject {
         for exchange: Exchange,
         reason: String
     ) -> Bool {
+        guard listSparklineHydrationEnabled else {
+            AppLogger.debug(
+                .network,
+                "[GraphRequestDebug] exchange=\(exchange.rawValue) action=skip_priority_visible reason=list_sparkline_hydration_disabled trigger=\(reason)"
+            )
+            return false
+        }
         guard activeTab == .market, selectedExchange == exchange else {
             return false
         }
@@ -8532,6 +9798,10 @@ final class CryptoViewModel: ObservableObject {
         generation: Int,
         reason: String
     ) async {
+        guard listSparklineHydrationEnabled else {
+            AppLogger.debug(.network, "[GraphPipeline] exchange=\(exchange.rawValue) generation=\(generation) phase=priority_visible_skipped reason=list_sparkline_hydration_disabled trigger=\(reason)")
+            return
+        }
         guard shouldRunSparklineHydration(exchange: exchange, generation: generation) else {
             return
         }
@@ -8552,7 +9822,7 @@ final class CryptoViewModel: ObservableObject {
                 }
                 return shouldPrioritizeVisibleSparklineHydration(marketIdentity: marketIdentity)
                     && hasPotentialSparklineQualityGain(for: marketIdentity, now: now)
-                    && row.sparklinePayload.detailLevel.isDetailed == false
+                    && Self.needsRefinedRowSparkline(Self.sparklineQuality(for: row))
             }
             .prefix(sparklineVisibleBatchSize)
         )
@@ -8652,6 +9922,10 @@ final class CryptoViewModel: ObservableObject {
         generation: Int,
         reason: String
     ) async {
+        guard listSparklineHydrationEnabled else {
+            AppLogger.debug(.network, "[GraphPipeline] exchange=\(exchange.rawValue) generation=\(generation) phase=skipped reason=list_sparkline_hydration_disabled trigger=\(reason)")
+            return
+        }
         guard shouldRunSparklineHydration(exchange: exchange, generation: generation) else {
             return
         }
@@ -8659,30 +9933,27 @@ final class CryptoViewModel: ObservableObject {
             return
         }
 
-        let allMarketIdentities = snapshot.rows.map(\.marketIdentity)
         let rowsByMarketIdentity = Dictionary(uniqueKeysWithValues: snapshot.rows.map { ($0.marketIdentity, $0) })
         let visibleMarketIdentities = visibleMarketIdentitiesByExchange[exchange] ?? []
-        let selectedMarketIdentities = selectedExchange == exchange ? [selectedCoin?.marketIdentity(exchange: exchange)].compactMap { $0 } : []
-        let firstScreenMarketIdentities = snapshot.rows.prefix(sparklineRepresentativeLimit).map(\.marketIdentity)
-        let nearVisibleMarketIdentities = nearVisibleSparklineMarketIdentities(
-            rows: snapshot.rows,
-            visibleMarketIdentities: visibleMarketIdentities,
-            radius: 2
-        )
         let prioritizedMarketIdentities = Self.deduplicatedMarketIdentities(
-            selectedMarketIdentities
-                + visibleMarketIdentities
-                + nearVisibleMarketIdentities
-                + firstScreenMarketIdentities
-                + allMarketIdentities
+            priorityVisibleSparklineMarketIdentities(for: exchange, rows: snapshot.rows)
         )
-        let candidates = prioritizedMarketIdentities.filter {
-            shouldFetchSparkline(
+        let visibleOnlyCount = min(prioritizedMarketIdentities.count, sparklineRepresentativeLimit)
+        AppLogger.debug(
+            .network,
+            "[SparklinePipeline] request visibleOnly=true count=\(visibleOnlyCount) reason=upgrade_derived_preview"
+        )
+        let candidates = Array(prioritizedMarketIdentities.prefix(sparklineRepresentativeLimit)).filter {
+            if let row = rowsByMarketIdentity[$0] {
+                let quality = Self.sparklineQuality(for: row)
+                guard Self.needsRefinedRowSparkline(quality) else {
+                    return false
+                }
+            }
+            return shouldFetchSparkline(
                 marketIdentity: $0,
                 now: Date(),
-                allowVisibleBypass: visibleMarketIdentities.contains($0)
-                    || firstScreenMarketIdentities.contains($0)
-                    || nearVisibleMarketIdentities.contains($0)
+                allowVisibleBypass: isVisibleSparklineRedrawTarget($0, exchange: exchange)
             )
         }
 
@@ -8691,10 +9962,7 @@ final class CryptoViewModel: ObservableObject {
         }
 
         let cacheHits = Self.deduplicatedMarketIdentities(
-            selectedMarketIdentities
-                + visibleMarketIdentities
-                + nearVisibleMarketIdentities
-                + firstScreenMarketIdentities
+            Array(visibleMarketIdentities.prefix(sparklineRepresentativeLimit))
         ).filter {
             sparklineSnapshot(marketIdentity: $0) != nil
         }
@@ -8710,20 +9978,14 @@ final class CryptoViewModel: ObservableObject {
         }
 
         let visibleSet = Set(
-            Self.deduplicatedMarketIdentities(
-                selectedMarketIdentities
-                    + visibleMarketIdentities
-                    + nearVisibleMarketIdentities
-                    + firstScreenMarketIdentities
-            )
-            .prefix(sparklineRepresentativeLimit * 2)
+            prioritizedMarketIdentities.prefix(sparklineRepresentativeLimit)
         )
         let visiblePrioritySet = Set(
             visibleSet.filter { marketIdentity in
                 guard let row = rowsByMarketIdentity[marketIdentity] else {
                     return true
                 }
-                return row.graphState != .liveVisible || row.sparklinePayload.detailLevel.isDetailed == false
+                return Self.needsRefinedRowSparkline(Self.sparklineQuality(for: row))
             }
         )
         let isActivelyScrolling = isActivelyScrollingMarketRows(for: exchange, now: Date())
@@ -8733,9 +9995,7 @@ final class CryptoViewModel: ObservableObject {
                 return true
             }
             let quality = Self.sparklineQuality(for: row)
-            return quality.isUsableGraph == false
-                || quality.detailLevel.isDetailed == false
-                || quality.isVeryLowCoarse
+            return Self.needsRefinedRowSparkline(quality)
         }
         let deferredVisibleCandidates = orderedVisibleCandidates.filter { marketIdentity in
             immediateVisibleCandidates.contains(marketIdentity) == false
@@ -8789,76 +10049,17 @@ final class CryptoViewModel: ObservableObject {
             }
         }
 
-        guard shouldRunSparklineHydration(exchange: exchange, generation: generation) else {
-            return
-        }
-
-        let alreadyRequested = Set(visibleBatch + settledVisibleBatch)
-        let backgroundCandidates = candidates.filter { alreadyRequested.contains($0) == false }
-        guard backgroundCandidates.isEmpty == false else {
-            return
-        }
-        if visibleBatch.isEmpty == false {
-            try? await Task.sleep(for: .milliseconds(180))
-        }
-        if let lastVisibleAt = lastVisibleMarketRowAtByExchange[exchange],
-           Date().timeIntervalSince(lastVisibleAt) < 0.45 {
-            marketOffscreenDeferredGraphCountByExchange[exchange, default: 0] += backgroundCandidates.count
-            let signature = backgroundCandidates.prefix(12).map(\.cacheKey).joined(separator: ",")
-            if lastLoggedGraphDeferredSignatureByExchange[exchange] != signature {
-                lastLoggedGraphDeferredSignatureByExchange[exchange] = signature
-                AppLogger.debug(
-                    .network,
-                    "[GraphPipeline] exchange=\(exchange.rawValue) generation=\(generation) phase=deferred_offscreen markets=\(backgroundCandidates.prefix(10).map(\.cacheKey).joined(separator: ","))"
-                )
-            }
-            return
-        }
-
-        for (index, batch) in backgroundCandidates.chunked(into: sparklineBackgroundBatchSize).enumerated() {
-            guard shouldRunSparklineHydration(exchange: exchange, generation: generation) else {
-                return
-            }
-            try? await Task.sleep(for: .milliseconds(index == 0 ? 120 : 220))
-            guard !Task.isCancelled else {
-                return
-            }
-            if let lastVisibleAt = lastVisibleMarketRowAtByExchange[exchange],
-               Date().timeIntervalSince(lastVisibleAt) < 0.45 {
-                marketOffscreenDeferredGraphCountByExchange[exchange, default: 0] += backgroundCandidates.count
-                pendingSparklineHydrationReasonsByExchange[exchange] = "\(reason)_visible_preempted"
-                AppLogger.debug(
-                    .network,
-                    "[GraphPipeline] exchange=\(exchange.rawValue) generation=\(generation) phase=deferred_offscreen_preempted markets=\(backgroundCandidates.prefix(10).map(\.cacheKey).joined(separator: ","))"
-                )
-                return
-            }
-            MarketPerformanceDebugClient.shared.increment(.offscreenBatch)
-            let reservedBatch = reserveScheduledSparklineRequests(
-                marketIdentities: batch,
-                exchange: exchange,
-                generation: generation,
-                priority: .offscreen,
-                phase: "offscreen_batch"
-            )
-            guard reservedBatch.isEmpty == false else {
-                continue
-            }
-            await hydrateSparklineBatch(
-                marketIdentities: reservedBatch,
-                exchange: exchange,
-                generation: generation,
-                phase: "offscreen_batch",
-                batchIndex: index + 1,
-                reason: reason
-            )
-        }
+        _ = settledVisibleBatch
     }
 
     private func primeFirstPaintDetailedSparklinesIfPossible(
         for snapshot: MarketPresentationSnapshot,
         requestContext: MarketRequestContext
     ) async -> MarketPresentationSnapshot {
+        guard listCandleSparklineHydrationEnabled else {
+            AppLogger.debug(.network, "[GraphPipeline] exchange=\(snapshot.exchange.rawValue) generation=\(snapshot.generation) candleHydration=disabled sparklineHydration=\(listSparklineHydrationEnabled ? "enabled" : "disabled") visibleCount=\(visibleMarketIdentitiesByExchange[snapshot.exchange]?.count ?? 0)")
+            return snapshot
+        }
         guard activeTab == .market,
               selectedExchange == snapshot.exchange,
               snapshot.rows.isEmpty == false,
@@ -9060,17 +10261,6 @@ final class CryptoViewModel: ObservableObject {
         let key = sparklineCacheKey(marketIdentity: marketIdentity)
         let isVisibleTarget = allowVisibleBypass
             && isVisibleSparklineRedrawTarget(marketIdentity, exchange: marketIdentity.exchange)
-        if unsupportedSparklineMarketIdentitiesByExchange[marketIdentity.exchange]?.contains(marketIdentity) == true {
-            AppLogger.debug(
-                .network,
-                "[GraphRequestDebug] \(marketIdentity.logFields) action=graph_capability_cached supported=false"
-            )
-            AppLogger.debug(
-                .network,
-                "[GraphRequestDebug] \(marketIdentity.logFields) action=graph_request_skipped reason=runtime_unsupported_cached"
-            )
-            return false
-        }
         if let supportedIntervals = supportedIntervalsByExchangeAndMarketIdentity[marketIdentity.exchange]?[marketIdentity] {
             let isSupported = supportedIntervals.isEmpty == false
             if isSupported == false {
@@ -9239,6 +10429,12 @@ final class CryptoViewModel: ObservableObject {
 
         let startedAt = Date()
         let marketPreview = batchMarketIdentities.prefix(8).map(\.cacheKey).joined(separator: ",")
+        if phase == "visible_batch" || phase == "visible_refine_batch" || phase == "priority_visible_batch" {
+            AppLogger.debug(
+                .network,
+                "[VisibleSparklineRequest] exchange=\(exchange.rawValue) quoteCurrency=\(selectedQuoteCurrency.rawValue) symbols=\(batchMarketIdentities.map { $0.marketId ?? $0.symbol }.joined(separator: ",")) reason=\(reason)"
+            )
+        }
         if let batchIndex {
             AppLogger.debug(
                 .network,
@@ -9274,6 +10470,10 @@ final class CryptoViewModel: ObservableObject {
             case .success(let snapshot):
                 setSparklineSnapshot(snapshot, marketIdentity: result.marketIdentity)
                 unavailableSparklineMarketIdentitiesByExchange[exchange, default: []].remove(result.marketIdentity)
+                AppLogger.debug(
+                    .network,
+                    "[SparklinePipeline] patch marketId=\(result.marketIdentity.marketId ?? result.marketIdentity.symbol) pointCount=\(snapshot.pointCount)"
+                )
                 patches.append(
                     MarketSparklinePatch(
                         marketIdentity: result.marketIdentity,
@@ -9297,6 +10497,17 @@ final class CryptoViewModel: ObservableObject {
             }
         }
         let updatedRows = applySparklinePatches(patches, exchange: exchange, generation: generation)
+        if phase == "visible_batch" || phase == "visible_refine_batch" || phase == "priority_visible_batch" {
+            let renderableCount = patches.filter { patch in
+                patch.snapshot.map {
+                    MarketSparklineRenderPolicy.hasRenderableGraph(points: $0.points, pointCount: $0.pointCount)
+                } ?? false
+            }.count
+            AppLogger.debug(
+                .network,
+                "[SparklinePipeline] response renderable=\(renderableCount) refined=\(updatedRows) unavailable=\(failedMarketIdentities.count) elapsedMs=\(Int(Date().timeIntervalSince(startedAt) * 1000))"
+            )
+        }
         if phase == "offscreen_batch",
            activeTab == .market,
            selectedExchange == exchange,
@@ -9358,21 +10569,24 @@ final class CryptoViewModel: ObservableObject {
 
             lastSparklineRefreshAttemptAtByKey[key] = now
             let task = Task<SparklineLayerSnapshot, Error> { [marketRepository] in
-                let snapshot = try await marketRepository.fetchCandles(
-                    symbol: marketIdentity.marketId ?? marketIdentity.symbol,
+                let requestSymbol = marketIdentity.marketId ?? marketIdentity.symbol
+                let snapshot = try await marketRepository.fetchSparkline(
+                    symbol: requestSymbol,
                     exchange: exchange,
-                    interval: interval
+                    quoteCurrency: marketIdentity.quoteCurrency,
+                    interval: interval,
+                    limit: 60
                 )
-                let points = Self.sparklinePoints(from: snapshot.candles)
-                guard points.count >= 2 else {
-                    throw NetworkServiceError.parsingFailed("sparkline candle data is empty")
+                let points = Self.densifiedMiniSparkline(points: snapshot.points)
+                guard points.count >= MarketSparklineRenderPolicy.minimumRenderablePointCount else {
+                    throw NetworkServiceError.parsingFailed("sparkline data is empty")
                 }
                 return SparklineLayerSnapshot(
                     interval: interval,
                     points: points,
                     pointCount: points.count,
                     fetchedAt: snapshot.meta.fetchedAt ?? Date(),
-                    source: .candleSnapshot
+                    source: .sparklineEndpoint
                 )
             }
             sparklineFetchTasksByKey[key] = task
@@ -9407,9 +10621,13 @@ final class CryptoViewModel: ObservableObject {
             }
 
             for (marketIdentity, key, result) in chunkResults {
-                switch result {
-                case .success(let snapshot):
-                    sparklineFetchTasksByKey[key] = nil
+            switch result {
+            case .success(let snapshot):
+                AppLogger.debug(
+                    .network,
+                    "[VisibleSparklineResponse] exchange=\(exchange.rawValue) quoteCurrency=\(marketIdentity.quoteCurrency.rawValue) symbol=\(marketIdentity.symbol) marketId=\(marketIdentity.marketId ?? "-") quality=refinedMini source=sparkline_endpoint pointCount=\(snapshot.pointCount)"
+                )
+                sparklineFetchTasksByKey[key] = nil
                     sparklineFailureCooldownUntilByKey[key] = nil
                     unsupportedSparklineMarketIdentitiesByExchange[marketIdentity.exchange, default: []].remove(marketIdentity)
                     results.append((marketIdentity, .success(snapshot)))
@@ -9418,6 +10636,15 @@ final class CryptoViewModel: ObservableObject {
                     sparklineFailureCooldownUntilByKey[key] = Date().addingTimeInterval(sparklineFailureCooldownInterval)
                     if isUnsupportedSparklineError(error) {
                         unsupportedSparklineMarketIdentitiesByExchange[marketIdentity.exchange, default: []].insert(marketIdentity)
+                        AppLogger.debug(
+                            .network,
+                            "[GraphRequestDebug] \(marketIdentity.logFields) timeframe=\(key.interval) action=graph_request_failed retryable=false reason=server_declared_unsupported message=\(error.localizedDescription)"
+                        )
+                    } else {
+                        AppLogger.debug(
+                            .network,
+                            "[GraphRequestDebug] \(marketIdentity.logFields) timeframe=\(key.interval) action=graph_request_failed retryable=true reason=retryable_failure message=\(error.localizedDescription)"
+                        )
                     }
                     results.append((marketIdentity, .failure(error)))
                 }
@@ -9534,7 +10761,8 @@ final class CryptoViewModel: ObservableObject {
             graphState: graphState,
             generation: marketPresentationGeneration,
             updatedAt: updatedAt,
-            sourceVersion: sourceVersion
+            sourceVersion: sourceVersion,
+            sourceName: "retained_store"
         )
     }
 
@@ -9576,13 +10804,14 @@ final class CryptoViewModel: ObservableObject {
             $0.marketIdentity == marketIdentity
         })
         let coin = cachedRow?.coin
-            ?? marketsByExchange[exchange]?.first(where: { $0.marketIdentity(exchange: exchange) == marketIdentity })
-            ?? tickerSnapshotCoinsByExchange[exchange]?.first(where: { $0.marketIdentity(exchange: exchange) == marketIdentity })
+            ?? marketsByExchange[exchange]?.first(where: { $0.marketIdentity(exchange: exchange, quoteCurrency: marketIdentity.quoteCurrency) == marketIdentity })
+            ?? tickerSnapshotCoinsByExchange[exchange]?.first(where: { $0.marketIdentity(exchange: exchange, quoteCurrency: marketIdentity.quoteCurrency) == marketIdentity })
         guard let coin else {
             return nil
         }
 
         let resolution = Self.resolvedSparkline(
+            ticker: pricesByMarketIdentity[marketIdentity],
             snapshot: sparklineSnapshot(marketIdentity: marketIdentity),
             cachedRow: cachedRow,
             stableSparklineDisplay: stableSparklineDisplay(marketIdentity: marketIdentity),
@@ -9597,7 +10826,8 @@ final class CryptoViewModel: ObservableObject {
             graphState: resolution.graphState,
             points: resolution.points,
             pointCount: resolution.pointCount,
-            sourceVersion: resolution.sourceVersion
+            sourceVersion: resolution.sourceVersion,
+            sourceName: resolution.sourceName ?? resolution.source.logComponent
         )
         return SparklineResolutionDebugState(
             source: resolution.source.logComponent,
@@ -9738,8 +10968,10 @@ final class CryptoViewModel: ObservableObject {
         for incomingCandle in payload.candles {
             if let existingIndex = currentCandles.firstIndex(where: { $0.time == incomingCandle.time }) {
                 currentCandles[existingIndex] = incomingCandle
+                AppLogger.debug(.websocket, "[ChartWS] candle_update timestamp=\(incomingCandle.time) close=\(incomingCandle.close)")
             } else {
                 currentCandles.append(incomingCandle)
+                AppLogger.debug(.websocket, "[ChartWS] candle_append timestamp=\(incomingCandle.time) close=\(incomingCandle.close)")
             }
         }
 
@@ -9749,7 +10981,7 @@ final class CryptoViewModel: ObservableObject {
             symbol: payload.symbol,
             exchange: exchange
         )
-        let key = chartRequestKey(exchange: exchange, symbol: payload.symbol, interval: mappedInterval)
+        let key = chartRequestKey(marketIdentity: MarketIdentity(exchange: exchange, symbol: payload.symbol, quoteCurrency: selectedQuoteCurrency), interval: mappedInterval)
         let entry = CandleCacheEntry(
             key: key,
             candles: currentCandles,
@@ -9839,63 +11071,20 @@ final class CryptoViewModel: ObservableObject {
         }
 
         let interval = chartPeriod.lowercased()
-        var currentCandles = candlesState.value ?? []
-        let bucketStart = candleBucketStart(for: timestamp, interval: interval)
-        let volumeDelta = quantity > 0 ? max(Int(quantity.rounded()), 1) : 0
+        guard let merged = CandleAggregator.merge(
+            snapshot: candlesState.value ?? [],
+            price: price,
+            quantity: quantity,
+            timestamp: timestamp,
+            timeframe: interval
+        ) else { return }
 
-        if let lastIndex = currentCandles.indices.last {
-            let lastCandle = currentCandles[lastIndex]
-            let lastBucketStart = candleBucketStart(
-                for: Date(timeIntervalSince1970: TimeInterval(lastCandle.time)),
-                interval: interval
-            )
-
-            if lastBucketStart == bucketStart {
-                currentCandles[lastIndex] = CandleData(
-                    time: bucketStart,
-                    open: lastCandle.open,
-                    high: max(lastCandle.high, price),
-                    low: min(lastCandle.low, price),
-                    close: price,
-                    volume: lastCandle.volume + volumeDelta
-                )
-            } else if lastBucketStart < bucketStart {
-                currentCandles.append(
-                    CandleData(
-                        time: bucketStart,
-                        open: lastCandle.close,
-                        high: max(lastCandle.close, price),
-                        low: min(lastCandle.close, price),
-                        close: price,
-                        volume: volumeDelta
-                    )
-                )
-            } else if let existingIndex = currentCandles.firstIndex(where: { $0.time == bucketStart }) {
-                let existingCandle = currentCandles[existingIndex]
-                currentCandles[existingIndex] = CandleData(
-                    time: bucketStart,
-                    open: existingCandle.open,
-                    high: max(existingCandle.high, price),
-                    low: min(existingCandle.low, price),
-                    close: price,
-                    volume: existingCandle.volume + volumeDelta
-                )
-            }
-        } else {
-            currentCandles = [
-                CandleData(
-                    time: bucketStart,
-                    open: price,
-                    high: price,
-                    low: price,
-                    close: price,
-                    volume: volumeDelta
-                )
-            ]
+        let currentCandles = merged.candles
+        if let last = currentCandles.last {
+            AppLogger.debug(.websocket, "[ChartWS] \(merged.didAppend ? "candle_append" : "candle_update") timestamp=\(last.time) close=\(last.close)")
         }
-
-        currentCandles.sort { $0.time < $1.time }
-        let key = chartRequestKey(exchange: exchange, symbol: selectedCoin?.symbol ?? "-", interval: interval)
+        let identity = MarketIdentity(exchange: exchange, symbol: selectedCoin?.symbol ?? "-", quoteCurrency: selectedQuoteCurrency)
+        let key = chartRequestKey(marketIdentity: identity, interval: interval)
         let entry = CandleCacheEntry(
             key: key,
             candles: currentCandles,
@@ -10010,6 +11199,7 @@ final class CryptoViewModel: ObservableObject {
     }
 
     private func marketUniverseSnapshot(for exchange: Exchange) -> MarketUniverseSnapshot {
+        let quoteCurrency = selectedExchange == exchange ? selectedQuoteCurrency : Self.defaultQuoteCurrency(for: exchange)
         let catalogCoins = marketsByExchange[exchange] ?? []
         let tickerSnapshotCoins = tickerSnapshotCoinsByExchange[exchange] ?? []
         let cachedCoins = provisionalCoins(for: exchange)
@@ -10027,21 +11217,24 @@ final class CryptoViewModel: ObservableObject {
             source = .cachedSnapshot
         }
 
-        let tradableCoins = baseCoins.filter(\.isTradable)
+        let quoteMatchedBaseCoins = baseCoins.filter {
+            Self.marketQuoteMatches($0, quoteCurrency: quoteCurrency)
+        }
+        let tradableCoins = quoteMatchedBaseCoins.filter(\.isTradable)
         let isProvisional = source != .catalog
         let sortedTradableCoins = tradableCoins.sorted { leftCoin, rightCoin in
-            let leftIdentity = leftCoin.marketIdentity(exchange: exchange)
-            let rightIdentity = rightCoin.marketIdentity(exchange: exchange)
-            let leftVolume = pricesByMarketIdentity[leftIdentity]?.volume ?? 0
-            let rightVolume = pricesByMarketIdentity[rightIdentity]?.volume ?? 0
+            let leftIdentity = leftCoin.marketIdentity(exchange: exchange, quoteCurrency: quoteCurrency)
+            let rightIdentity = rightCoin.marketIdentity(exchange: exchange, quoteCurrency: quoteCurrency)
+            let leftVolume = Self.tickerData(for: leftIdentity, in: pricesByMarketIdentity)?.volume ?? 0
+            let rightVolume = Self.tickerData(for: rightIdentity, in: pricesByMarketIdentity)?.volume ?? 0
             if leftVolume == rightVolume {
                 return leftIdentity.cacheKey < rightIdentity.cacheKey
             }
             return leftVolume > rightVolume
         }
-        let tradableMarketIdentities = Set(sortedTradableCoins.map { $0.marketIdentity(exchange: exchange) })
-        let droppedSymbols = baseCoins
-            .map { $0.marketIdentity(exchange: exchange) }
+        let tradableMarketIdentities = Set(sortedTradableCoins.map { $0.marketIdentity(exchange: exchange, quoteCurrency: quoteCurrency) })
+        let droppedSymbols = quoteMatchedBaseCoins
+            .map { $0.marketIdentity(exchange: exchange, quoteCurrency: quoteCurrency) }
             .filter { tradableMarketIdentities.contains($0) == false }
             .map(\.cacheKey)
         let filteredSymbols = Self.deduplicatedMarketIdentities(
@@ -10050,17 +11243,17 @@ final class CryptoViewModel: ObservableObject {
         )
         .map(\.cacheKey)
         let pendingSymbols = sortedTradableCoins.compactMap { coin in
-            let marketIdentity = coin.marketIdentity(exchange: exchange)
+            let marketIdentity = coin.marketIdentity(exchange: exchange, quoteCurrency: quoteCurrency)
             return pricesByMarketIdentity[marketIdentity] == nil ? marketIdentity.cacheKey : nil
         }
         let symbolsHash = stableSymbolHash(
-            from: baseCoins.map {
-                let marketIdentity = $0.marketIdentity(exchange: exchange)
+            from: quoteMatchedBaseCoins.map {
+                let marketIdentity = $0.marketIdentity(exchange: exchange, quoteCurrency: quoteCurrency)
                 return "\(marketIdentity.cacheKey)|\($0.isTradable ? 1 : 0)|\($0.isKimchiComparable ? 1 : 0)"
             }
         )
 
-        let signature = "\(source.rawValue)|\(baseCoins.count)|\(sortedTradableCoins.count)|\(symbolsHash)"
+        let signature = "\(source.rawValue)|\(quoteCurrency.rawValue)|\(quoteMatchedBaseCoins.count)|\(sortedTradableCoins.count)|\(symbolsHash)"
         if lastLoggedMarketUniverseSignatureByExchange[exchange] != signature {
             lastLoggedMarketUniverseSignatureByExchange[exchange] = signature
             AppLogger.debug(
@@ -10072,9 +11265,9 @@ final class CryptoViewModel: ObservableObject {
         return MarketUniverseSnapshot(
             exchange: exchange,
             source: source,
-            serverCoins: baseCoins,
+            serverCoins: quoteMatchedBaseCoins,
             tradableCoins: sortedTradableCoins,
-            serverUniverseCount: baseCoins.count,
+            serverUniverseCount: quoteMatchedBaseCoins.count,
             tradableCount: sortedTradableCoins.count,
             droppedSymbols: droppedSymbols,
             filteredSymbols: filteredSymbols,
@@ -10176,17 +11369,23 @@ final class CryptoViewModel: ObservableObject {
         let referenceRows = referenceRows ?? marketPresentationSnapshotsByExchange[exchange]?.rows ?? []
         return MarketPresentationBuildInput(
             exchange: exchange,
+            quoteCurrency: selectedQuoteCurrency,
             generation: marketPresentationGeneration,
             assetImageClient: assetImageClient,
             catalogCoins: marketsByExchange[exchange] ?? [],
             tickerSnapshotCoins: tickerSnapshotCoinsByExchange[exchange] ?? [],
             cachedRows: referenceRows,
-            pricesByMarketIdentity: pricesByMarketIdentity.filter { $0.key.exchange == exchange },
+            pricesByMarketIdentity: pricesByMarketIdentity.filter {
+                $0.key.exchange == exchange && $0.key.quoteCurrency == selectedQuoteCurrency
+            },
             sparklineSnapshotsByMarketIdentity: sparklineSnapshotsByMarketIdentity(
                 for: exchange,
                 additionalMarketIdentities: referenceRows.map(\.marketIdentity)
             ),
-            stableSparklineDisplaysByMarketIdentity: stableSparklineDisplaysByMarketIdentity(for: exchange),
+            stableSparklineDisplaysByMarketIdentity: stableSparklineDisplaysByMarketIdentity(
+                for: exchange,
+                quoteCurrency: selectedQuoteCurrency
+            ),
             loadingSparklineMarketIdentities: loadingSparklineMarketIdentitiesByExchange[exchange] ?? [],
             unavailableSparklineMarketIdentities: unavailableSparklineMarketIdentitiesByExchange[exchange] ?? [],
             filteredMarketIdentities: filteredMarketIdentitiesByExchange[exchange] ?? [],
@@ -10195,12 +11394,13 @@ final class CryptoViewModel: ObservableObject {
                 for: exchange,
                 rows: referenceRows
             ),
-            selectedCoinIdentity: selectedExchange == exchange ? selectedCoin?.marketIdentity(exchange: exchange) : nil,
+            selectedCoinIdentity: selectedExchange == exchange ? selectedCoin?.marketIdentity(exchange: exchange, quoteCurrency: selectedQuoteCurrency) : nil,
             favoriteSymbols: favCoins,
             shouldLimitFirstPaint: fullyHydratedMarketExchanges.contains(exchange) == false
                 && marketFilter == .all
                 && normalizedSearch.isEmpty,
-            preservesVisibleOrderDuringHydration: marketFullHydrationPendingExchanges.contains(exchange),
+            preservesVisibleOrderDuringHydration: marketFullHydrationPendingExchanges.contains(exchange)
+                && pricesByMarketIdentity.contains(where: { $0.key.exchange == exchange }) == false,
             marketFirstPaintRowLimit: marketFirstPaintRowLimit,
             sparklineStaleInterval: sparklineCacheStaleInterval,
             now: Date(),
@@ -10208,6 +11408,25 @@ final class CryptoViewModel: ObservableObject {
             tickerMeta: marketTickerMetaByExchange[exchange] ?? .empty,
             overrideMeta: overrideMeta
         )
+    }
+
+    private nonisolated static func tickerData(
+        for marketIdentity: MarketIdentity,
+        in pricesByMarketIdentity: [MarketIdentity: TickerData]
+    ) -> TickerData? {
+        if let exactTicker = pricesByMarketIdentity[marketIdentity] {
+            return exactTicker
+        }
+
+        if let quoteMatchedTicker = pricesByMarketIdentity.first(where: { candidate, _ in
+            candidate.exchange == marketIdentity.exchange
+                && candidate.symbol == marketIdentity.symbol
+                && candidate.quoteCurrency == marketIdentity.quoteCurrency
+        })?.value {
+            return quoteMatchedTicker
+        }
+
+        return nil
     }
 
     private func prepareMarketPresentationSnapshot(
@@ -10242,17 +11461,22 @@ final class CryptoViewModel: ObservableObject {
                 localAssetName: row.localAssetName
             )
         }
-        let cachedCoinsByMarketIdentity = coinsByMarketIdentity(cachedCoins, exchange: input.exchange)
+        let cachedCoinsByMarketIdentity = coinsByMarketIdentity(
+            cachedCoins,
+            exchange: input.exchange,
+            quoteCurrency: input.quoteCurrency
+        )
         let tickerSnapshotCoinsByMarketIdentity = coinsByMarketIdentity(
             input.tickerSnapshotCoins,
-            exchange: input.exchange
+            exchange: input.exchange,
+            quoteCurrency: input.quoteCurrency
         )
 
         let baseCoins: [CoinInfo]
         let source: MarketUniverseSource
         if !input.catalogCoins.isEmpty {
             baseCoins = input.catalogCoins.map { coin in
-                let marketIdentity = coin.marketIdentity(exchange: input.exchange)
+                let marketIdentity = coin.marketIdentity(exchange: input.exchange, quoteCurrency: input.quoteCurrency)
                 let tickerMergedCoin = mergeCoinInfoPreservingImage(
                     primary: coin,
                     supplementary: tickerSnapshotCoinsByMarketIdentity[marketIdentity],
@@ -10267,7 +11491,7 @@ final class CryptoViewModel: ObservableObject {
             source = .catalog
         } else if !input.tickerSnapshotCoins.isEmpty {
             baseCoins = input.tickerSnapshotCoins.map { coin in
-                let marketIdentity = coin.marketIdentity(exchange: input.exchange)
+                let marketIdentity = coin.marketIdentity(exchange: input.exchange, quoteCurrency: input.quoteCurrency)
                 return mergeCoinInfoPreservingImage(
                     primary: coin,
                     supplementary: cachedCoinsByMarketIdentity[marketIdentity],
@@ -10280,20 +11504,23 @@ final class CryptoViewModel: ObservableObject {
             source = .cachedSnapshot
         }
 
-        let tradableCoins = baseCoins.filter(\.isTradable)
+        let quoteMatchedBaseCoins = baseCoins.filter {
+            marketQuoteMatches($0, quoteCurrency: input.quoteCurrency)
+        }
+        let tradableCoins = quoteMatchedBaseCoins.filter(\.isTradable)
         let sortedTradableCoins = tradableCoins.sorted { leftCoin, rightCoin in
-            let leftIdentity = leftCoin.marketIdentity(exchange: input.exchange)
-            let rightIdentity = rightCoin.marketIdentity(exchange: input.exchange)
-            let leftVolume = input.pricesByMarketIdentity[leftIdentity]?.volume ?? 0
-            let rightVolume = input.pricesByMarketIdentity[rightIdentity]?.volume ?? 0
+            let leftIdentity = leftCoin.marketIdentity(exchange: input.exchange, quoteCurrency: input.quoteCurrency)
+            let rightIdentity = rightCoin.marketIdentity(exchange: input.exchange, quoteCurrency: input.quoteCurrency)
+            let leftVolume = tickerData(for: leftIdentity, in: input.pricesByMarketIdentity)?.volume ?? 0
+            let rightVolume = tickerData(for: rightIdentity, in: input.pricesByMarketIdentity)?.volume ?? 0
             if leftVolume == rightVolume {
                 return leftIdentity.cacheKey < rightIdentity.cacheKey
             }
             return leftVolume > rightVolume
         }
-        let tradableMarketIdentities = Set(sortedTradableCoins.map { $0.marketIdentity(exchange: input.exchange) })
-        let droppedSymbols = baseCoins
-            .map { $0.marketIdentity(exchange: input.exchange) }
+        let tradableMarketIdentities = Set(sortedTradableCoins.map { $0.marketIdentity(exchange: input.exchange, quoteCurrency: input.quoteCurrency) })
+        let droppedSymbols = quoteMatchedBaseCoins
+            .map { $0.marketIdentity(exchange: input.exchange, quoteCurrency: input.quoteCurrency) }
             .filter { tradableMarketIdentities.contains($0) == false }
             .map(\.cacheKey)
         let filteredSymbols = Self.deduplicatedMarketIdentities(
@@ -10301,21 +11528,21 @@ final class CryptoViewModel: ObservableObject {
         )
         .map(\.cacheKey)
         let pendingSymbols = sortedTradableCoins.compactMap { coin in
-            let marketIdentity = coin.marketIdentity(exchange: input.exchange)
+            let marketIdentity = coin.marketIdentity(exchange: input.exchange, quoteCurrency: input.quoteCurrency)
             return input.pricesByMarketIdentity[marketIdentity] == nil ? marketIdentity.cacheKey : nil
         }
         let symbolsHash = Self.stableSymbolHash(
-            from: baseCoins.map {
-                let marketIdentity = $0.marketIdentity(exchange: input.exchange)
+            from: quoteMatchedBaseCoins.map {
+                let marketIdentity = $0.marketIdentity(exchange: input.exchange, quoteCurrency: input.quoteCurrency)
                 return "\(marketIdentity.cacheKey)|\($0.isTradable ? 1 : 0)|\($0.isKimchiComparable ? 1 : 0)"
             }
         )
         let universe = MarketUniverseSnapshot(
             exchange: input.exchange,
             source: source,
-            serverCoins: baseCoins,
+            serverCoins: quoteMatchedBaseCoins,
             tradableCoins: sortedTradableCoins,
-            serverUniverseCount: baseCoins.count,
+            serverUniverseCount: quoteMatchedBaseCoins.count,
             tradableCount: sortedTradableCoins.count,
             droppedSymbols: droppedSymbols,
             filteredSymbols: filteredSymbols,
@@ -10329,7 +11556,7 @@ final class CryptoViewModel: ObservableObject {
             presentationCoinIdentities = Array(
                 sortedTradableCoins
                     .prefix(input.marketFirstPaintRowLimit)
-                    .map { $0.marketIdentity(exchange: input.exchange) }
+                    .map { $0.marketIdentity(exchange: input.exchange, quoteCurrency: input.quoteCurrency) }
             )
         } else if input.preservesVisibleOrderDuringHydration, input.cachedRows.isEmpty == false {
             let existingPrefix = input.cachedRows
@@ -10337,29 +11564,34 @@ final class CryptoViewModel: ObservableObject {
                 .filter { tradableMarketIdentities.contains($0) }
             let existingPrefixSet = Set(existingPrefix)
             let remainingIdentities = sortedTradableCoins
-                .map { $0.marketIdentity(exchange: input.exchange) }
+                .map { $0.marketIdentity(exchange: input.exchange, quoteCurrency: input.quoteCurrency) }
                 .filter { existingPrefixSet.contains($0) == false }
             presentationCoinIdentities = Self.deduplicatedMarketIdentities(
                 existingPrefix + remainingIdentities
             )
         } else {
-            presentationCoinIdentities = sortedTradableCoins.map { $0.marketIdentity(exchange: input.exchange) }
+            presentationCoinIdentities = sortedTradableCoins.map { $0.marketIdentity(exchange: input.exchange, quoteCurrency: input.quoteCurrency) }
         }
 
-        let coinsByMarketIdentity = coinsByMarketIdentity(sortedTradableCoins, exchange: input.exchange)
+        let coinsByMarketIdentity = coinsByMarketIdentity(
+            sortedTradableCoins,
+            exchange: input.exchange,
+            quoteCurrency: input.quoteCurrency
+        )
         let priorityDetailedMarketIdentities = Set(
             Self.deduplicatedMarketIdentities(
                 input.visiblePriorityMarketIdentities
                     + Array(presentationCoinIdentities.prefix(input.marketFirstPaintRowLimit))
             )
         )
-        let rows = presentationCoinIdentities.compactMap { marketIdentity -> MarketRowViewState? in
+        let mappedRows = presentationCoinIdentities.compactMap { marketIdentity -> MarketRowViewState? in
             guard let coin = coinsByMarketIdentity[marketIdentity] else { return nil }
             return Self.makeMarketRowViewState(
                 for: coin,
                 exchange: input.exchange,
+                quoteCurrency: input.quoteCurrency,
                 assetImageClient: input.assetImageClient,
-                ticker: input.pricesByMarketIdentity[marketIdentity],
+                ticker: tickerData(for: marketIdentity, in: input.pricesByMarketIdentity),
                 cachedRow: cachedRowsByMarketIdentity[marketIdentity],
                 favoriteSymbols: input.favoriteSymbols,
                 sparklineSnapshot: input.sparklineSnapshotsByMarketIdentity[marketIdentity],
@@ -10371,6 +11603,7 @@ final class CryptoViewModel: ObservableObject {
                 now: input.now
             )
         }
+        let rows = deduplicatedMarketRows(mappedRows, exchange: input.exchange)
         let meta = Self.combineMetas(
             input.catalogMeta,
             input.tickerMeta,
@@ -10388,10 +11621,11 @@ final class CryptoViewModel: ObservableObject {
 
     private nonisolated static func coinsByMarketIdentity(
         _ coins: [CoinInfo],
-        exchange: Exchange
+        exchange: Exchange,
+        quoteCurrency: MarketQuoteCurrency
     ) -> [MarketIdentity: CoinInfo] {
         coins.reduce(into: [MarketIdentity: CoinInfo]()) { partialResult, coin in
-            let marketIdentity = coin.marketIdentity(exchange: exchange)
+            let marketIdentity = coin.marketIdentity(exchange: exchange, quoteCurrency: quoteCurrency)
             if let existing = partialResult[marketIdentity] {
                 partialResult[marketIdentity] = mergeCoinInfoPreservingImage(
                     primary: existing,
@@ -10460,6 +11694,7 @@ final class CryptoViewModel: ObservableObject {
             points: existing.sparkline,
             pointCount: existing.sparklinePointCount,
             graphState: existing.graphState,
+            sparklineSource: existing.sparklineSource,
             sourceVersion: existing.sparklinePayload.sourceVersion
         )
     }
@@ -10498,6 +11733,28 @@ final class CryptoViewModel: ObservableObject {
         return incoming
     }
 
+    private nonisolated static func deduplicatedMarketRows(
+        _ rows: [MarketRowViewState],
+        exchange: Exchange
+    ) -> [MarketRowViewState] {
+        var rowsByID = [String: MarketRowViewState]()
+        var orderedIDs = [String]()
+        for row in rows {
+            let id = row.id
+            if let existing = rowsByID[id] {
+                rowsByID[id] = preferredMarketRow(existing: existing, incoming: row)
+                AppLogger.debug(
+                    .network,
+                    "[MarketRowIdentity] duplicate_id exchange=\(exchange.rawValue) id=\(id) existing=\(existing.marketLogFields) incoming=\(row.marketLogFields) reason=market_identity_collision action=merged"
+                )
+            } else {
+                rowsByID[id] = row
+                orderedIDs.append(id)
+            }
+        }
+        return orderedIDs.compactMap { rowsByID[$0] }
+    }
+
     private nonisolated static func mergeCoinInfoPreservingImage(
         primary: CoinInfo,
         supplementary: CoinInfo?,
@@ -10523,6 +11780,7 @@ final class CryptoViewModel: ObservableObject {
     private nonisolated static func makeMarketRowViewState(
         for coin: CoinInfo,
         exchange: Exchange,
+        quoteCurrency: MarketQuoteCurrency,
         assetImageClient: AssetImageClient,
         ticker: TickerData?,
         cachedRow: MarketRowViewState?,
@@ -10535,16 +11793,18 @@ final class CryptoViewModel: ObservableObject {
         sparklineStaleInterval: TimeInterval,
         now: Date
     ) -> MarketRowViewState {
-        let marketIdentity = coin.marketIdentity(exchange: exchange)
+        let marketIdentity = coin.marketIdentity(exchange: exchange, quoteCurrency: quoteCurrency)
         let cachedPriceText = cachedRow?.priceText ?? "—"
         let cachedChangeText = cachedRow?.changeText ?? "—"
         let cachedVolumeText = cachedRow?.volumeText ?? "—"
-        let priceText = ticker.map { PriceFormatter.formatPrice($0.price) } ?? cachedPriceText
+        let displayQuoteCurrency = MarketQuoteCurrency(rawValue: coin.displayMetadata?.quoteAsset ?? "") ?? cachedRow?.marketIdentity.quoteCurrency ?? quoteCurrency
+        let priceText = ticker.map { PriceFormatter.formatMarketPrice($0.price, quoteCurrency: displayQuoteCurrency) } ?? cachedPriceText
         let changeText = ticker.map { formatMarketChange($0.change) } ?? cachedChangeText
         let volumeText = ticker.map { PriceFormatter.formatVolume($0.volume) } ?? cachedVolumeText
         let hasResolvedTicker = ticker != nil || cachedRow != nil
 
         let graphResolution = resolvedSparkline(
+            ticker: ticker,
             snapshot: sparklineSnapshot,
             cachedRow: cachedRow,
             stableSparklineDisplay: stableSparklineDisplay,
@@ -10599,7 +11859,7 @@ final class CryptoViewModel: ObservableObject {
                     .network,
                     "[GraphScrollDebug] \(marketIdentity.logFields) action=restore_visible_graph source=row_state"
                 )
-            case .snapshot, .unavailable, .placeholder, .none:
+            case .ticker, .snapshot, .unavailable, .placeholder, .none:
                 break
             }
         }
@@ -10610,12 +11870,14 @@ final class CryptoViewModel: ObservableObject {
             selectedExchange: exchange,
             exchange: exchange,
             sourceExchange: sourceExchange,
+            quoteCurrency: quoteCurrency,
             coin: coin,
             priceText: priceText,
             changeText: changeText,
             volumeText: volumeText,
             sparkline: sparkline,
             sparklinePointCount: sparklinePointCount,
+            sparklineSource: graphResolution.sourceName,
             sparklineTimeframe: sparklineTimeframe,
             hasEnoughSparklineData: hasEnoughSparklineData,
             chartPresentation: chartPresentation,
@@ -10650,7 +11912,74 @@ final class CryptoViewModel: ObservableObject {
         return .pending
     }
 
+    private nonisolated static func tickerFirstPaintSparkline(
+        from ticker: TickerData
+    ) -> (points: [Double], source: String)? {
+        let serverPointItems = ticker.sparklinePoints
+            .map(\.price)
+            .filter { $0.isFinite && $0 > 0 }
+        if serverPointItems.count >= 2 {
+            return (
+                densifiedMiniSparkline(points: serverPointItems),
+                ticker.sparklineSource ?? "ticker_sparkline_points"
+            )
+        }
+
+        let serverPoints = ticker.sparkline.filter { $0.isFinite && $0 > 0 }
+        if serverPoints.count >= 2 {
+            return (
+                densifiedMiniSparkline(points: serverPoints),
+                ticker.sparklineSource ?? "ticker_sparkline"
+            )
+        }
+
+        guard ticker.price.isFinite, ticker.price > 0 else {
+            return nil
+        }
+
+        if let previousPrice = ticker.previousPrice24h,
+           previousPrice.isFinite,
+           previousPrice > 0 {
+            return (
+                densifiedMiniSparkline(points: [previousPrice, ticker.price]),
+                "derived_change24h"
+            )
+        }
+
+        let change = ticker.change
+        guard change.isFinite, abs(1 + change / 100) > 0.000_001 else {
+            return nil
+        }
+        let previousPrice = ticker.price / (1 + change / 100)
+        guard previousPrice.isFinite, previousPrice > 0 else {
+            return nil
+        }
+        return (
+            densifiedMiniSparkline(points: [previousPrice, ticker.price]),
+            "derived_change24h"
+        )
+    }
+
+    private nonisolated static func densifiedMiniSparkline(points: [Double]) -> [Double] {
+        let finitePoints = points.filter { $0.isFinite && $0 > 0 }
+        guard finitePoints.count >= 2 else {
+            return finitePoints
+        }
+        guard finitePoints.count == 2 else {
+            return finitePoints
+        }
+
+        let start = finitePoints.first ?? 0
+        let end = finitePoints.last ?? start
+        let count = 6
+        return (0..<count).map { index in
+            let progress = Double(index) / Double(count - 1)
+            return start + (end - start) * progress
+        }
+    }
+
     private nonisolated static func resolvedSparkline(
+        ticker: TickerData?,
         snapshot: SparklineLayerSnapshot?,
         cachedRow: MarketRowViewState?,
         stableSparklineDisplay: StableSparklineDisplay?,
@@ -10660,7 +11989,21 @@ final class CryptoViewModel: ObservableObject {
         staleInterval: TimeInterval,
         now: Date,
         hasResolvedBaseData: Bool
-    ) -> (points: [Double], pointCount: Int, graphState: MarketRowGraphState, source: SparklineDisplayResolutionSource, sourceVersion: Int) {
+    ) -> (points: [Double], pointCount: Int, graphState: MarketRowGraphState, source: SparklineDisplayResolutionSource, sourceVersion: Int, sourceName: String?) {
+        let tickerCandidate: SparklineResolutionCandidate?
+        if let ticker, let tickerSparkline = tickerFirstPaintSparkline(from: ticker) {
+            tickerCandidate = SparklineResolutionCandidate(
+                points: tickerSparkline.points,
+                pointCount: tickerSparkline.points.count,
+                graphState: .liveVisible,
+                source: .ticker,
+                sourceVersion: sparklineSourceVersion(from: ticker.timestamp ?? now),
+                sourceName: tickerSparkline.source
+            )
+        } else {
+            tickerCandidate = nil
+        }
+
         let snapshotCandidate: SparklineResolutionCandidate?
 
         if let snapshot {
@@ -10669,7 +12012,8 @@ final class CryptoViewModel: ObservableObject {
                 pointCount: snapshot.pointCount,
                 graphState: snapshot.graphState(staleInterval: staleInterval, now: now),
                 source: .snapshot,
-                sourceVersion: sparklineSourceVersion(from: snapshot.fetchedAt)
+                sourceVersion: sparklineSourceVersion(from: snapshot.fetchedAt),
+                sourceName: snapshot.source == .sparklineEndpoint ? "sparkline_endpoint" : "candle_snapshot"
             )
         } else {
             snapshotCandidate = nil
@@ -10693,7 +12037,8 @@ final class CryptoViewModel: ObservableObject {
                 pointCount: stableSparklineDisplay.pointCount,
                 graphState: retainedState,
                 source: .displayCache,
-                sourceVersion: stableSparklineDisplay.sourceVersion
+                sourceVersion: stableSparklineDisplay.sourceVersion,
+                sourceName: stableSparklineDisplay.sourceName ?? "retained_store"
             )
         } else {
             displayCacheCandidate = nil
@@ -10727,7 +12072,8 @@ final class CryptoViewModel: ObservableObject {
                 pointCount: cachedRow.sparklinePointCount,
                 graphState: retainedState,
                 source: .rowState,
-                sourceVersion: cachedRow.sparklinePayload.sourceVersion
+                sourceVersion: cachedRow.sparklinePayload.sourceVersion,
+                sourceName: cachedRow.sparklineSource
             )
         } else {
             rowStateCandidate = nil
@@ -10747,13 +12093,14 @@ final class CryptoViewModel: ObservableObject {
         let resolutionSelection: SparklineResolutionSelection
         if preferDetailedVisibleGraph {
             resolutionSelection = preferredVisibleSparklineResolutionCandidate(
+                ticker: tickerCandidate,
                 snapshot: snapshotCandidate,
                 rowState: rowStateCandidate,
                 displayCache: displayCacheCandidate
             )
         } else {
             var preferredCandidate: SparklineResolutionCandidate?
-            for candidate in [snapshotCandidate, displayCacheCandidate, rowStateCandidate].compactMap({ $0 }) {
+            for candidate in [tickerCandidate, snapshotCandidate, displayCacheCandidate, rowStateCandidate].compactMap({ $0 }) {
                 preferredCandidate = preferredSparklineResolutionCandidate(
                     existing: preferredCandidate,
                     incoming: candidate
@@ -10770,7 +12117,8 @@ final class CryptoViewModel: ObservableObject {
                 graphState: preferredCandidate.graphState,
                 points: preferredCandidate.points,
                 pointCount: preferredCandidate.pointCount,
-                sourceVersion: preferredCandidate.sourceVersion
+                sourceVersion: preferredCandidate.sourceVersion,
+                sourceName: preferredCandidate.sourceName ?? preferredCandidate.source.logComponent
             )
             if preferDetailedVisibleGraph {
                 AppLogger.debug(
@@ -10803,7 +12151,7 @@ final class CryptoViewModel: ObservableObject {
                hasRetainedUsableGraph == false {
                 let holdReason = preferredQuality.isFlatLookingLowInformation
                     ? "flat_looking_low_information"
-                    : "awaiting_visible_refine"
+                    : "chart_refine_pending"
                 AppLogger.debug(
                     .network,
                     "[GraphHoldDebug] \(graphLogFields) action=first_paint_low_information_allowed detailLevel=\(preferredQuality.detailLevel.cacheComponent) pointCount=\(preferredCandidate.pointCount)"
@@ -10835,19 +12183,20 @@ final class CryptoViewModel: ObservableObject {
                 preferredCandidate.pointCount,
                 preferredCandidate.graphState,
                 preferredCandidate.source,
-                preferredCandidate.sourceVersion
+                preferredCandidate.sourceVersion,
+                preferredCandidate.sourceName
             )
         }
 
         switch cachedRow?.graphState {
         case .some(.unavailable):
-            return ([], 0, .unavailable, .unavailable, 0)
+            return ([], 0, .unavailable, .unavailable, 0, nil)
         case .some(.none), .some(.placeholder), .some(.cachedVisible), .some(.liveVisible), .some(.staleVisible), nil:
             break
         }
 
         if isUnavailable {
-            return ([], 0, .unavailable, .unavailable, 0)
+            return ([], 0, .unavailable, .unavailable, 0, nil)
         }
 
         if preferDetailedVisibleGraph,
@@ -10855,17 +12204,9 @@ final class CryptoViewModel: ObservableObject {
            hasResolvedBaseData {
             AppLogger.debug(
                 .network,
-                "[GraphVisibleDebug] \(graphLogFields) action=visible_first_paint_deferred_reason reason=awaiting_visible_refine"
+                "[GraphVisibleDebug] \(graphLogFields) action=visible_first_paint_placeholder reason=awaiting_chart_refine tickerReady=true"
             )
-            AppLogger.debug(
-                .network,
-                "[GraphHoldDebug] \(graphLogFields) action=first_paint_held detailLevel=none pointCount=0"
-            )
-            AppLogger.debug(
-                .network,
-                "[GraphEligibilityDebug] \(graphLogFields) action=skip reason=awaiting_visible_refine detailLevel=none pointCount=0"
-            )
-            return ([], 0, .placeholder, .placeholder, 0)
+            return ([], 0, .placeholder, .placeholder, 0, nil)
         }
 
         return (
@@ -10873,7 +12214,8 @@ final class CryptoViewModel: ObservableObject {
             0,
             hasResolvedBaseData ? .placeholder : .none,
             hasResolvedBaseData ? .placeholder : .none,
-            0
+            0,
+            nil
         )
     }
 
@@ -10889,13 +12231,15 @@ final class CryptoViewModel: ObservableObject {
             graphState: existing.graphState,
             points: existing.points,
             pointCount: existing.pointCount,
-            sourceVersion: existing.sourceVersion
+            sourceVersion: existing.sourceVersion,
+            sourceName: existing.sourceName ?? existing.source.logComponent
         )
         let incomingQuality = MarketSparklineQuality(
             graphState: incoming.graphState,
             points: incoming.points,
             pointCount: incoming.pointCount,
-            sourceVersion: incoming.sourceVersion
+            sourceVersion: incoming.sourceVersion,
+            sourceName: incoming.sourceName ?? incoming.source.logComponent
         )
         let decision = incomingQuality.promotionDecision(over: existingQuality)
         let displayCacheFallbackOverrideBlocked = incoming.source == .displayCache
@@ -10923,12 +12267,13 @@ final class CryptoViewModel: ObservableObject {
     }
 
     private nonisolated static func preferredVisibleSparklineResolutionCandidate(
+        ticker: SparklineResolutionCandidate?,
         snapshot: SparklineResolutionCandidate?,
         rowState: SparklineResolutionCandidate?,
         displayCache: SparklineResolutionCandidate?
     ) -> SparklineResolutionSelection {
         var preferredCandidate: SparklineResolutionCandidate?
-        for candidate in [snapshot, rowState].compactMap({ $0 }) {
+        for candidate in [ticker, snapshot, rowState].compactMap({ $0 }) {
             preferredCandidate = preferredVisibleSparklineResolutionCandidate(
                 existing: preferredCandidate,
                 incoming: candidate
@@ -10942,13 +12287,15 @@ final class CryptoViewModel: ObservableObject {
                     graphState: preferredWithoutDisplayCache.graphState,
                     points: preferredWithoutDisplayCache.points,
                     pointCount: preferredWithoutDisplayCache.pointCount,
-                    sourceVersion: preferredWithoutDisplayCache.sourceVersion
+                    sourceVersion: preferredWithoutDisplayCache.sourceVersion,
+                    sourceName: preferredWithoutDisplayCache.sourceName ?? preferredWithoutDisplayCache.source.logComponent
                 )
                 let displayQuality = MarketSparklineQuality(
                     graphState: displayCache.graphState,
                     points: displayCache.points,
                     pointCount: displayCache.pointCount,
-                    sourceVersion: displayCache.sourceVersion
+                    sourceVersion: displayCache.sourceVersion,
+                    sourceName: displayCache.sourceName ?? displayCache.source.logComponent
                 )
                 if preferredQuality.isUsableGraph,
                    preferredQuality.detailLevel.pathDetailRank >= displayQuality.detailLevel.pathDetailRank {
@@ -10984,13 +12331,15 @@ final class CryptoViewModel: ObservableObject {
             graphState: existing.graphState,
             points: existing.points,
             pointCount: existing.pointCount,
-            sourceVersion: existing.sourceVersion
+            sourceVersion: existing.sourceVersion,
+            sourceName: existing.sourceName ?? existing.source.logComponent
         )
         let incomingQuality = MarketSparklineQuality(
             graphState: incoming.graphState,
             points: incoming.points,
             pointCount: incoming.pointCount,
-            sourceVersion: incoming.sourceVersion
+            sourceVersion: incoming.sourceVersion,
+            sourceName: incoming.sourceName ?? incoming.source.logComponent
         )
         let decision = incomingQuality.promotionDecision(over: existingQuality)
         if decision.accepted {
@@ -11041,6 +12390,8 @@ final class CryptoViewModel: ObservableObject {
         _ source: SparklineDisplayResolutionSource
     ) -> Int {
         switch source {
+        case .ticker:
+            return 4
         case .displayCache:
             return 3
         case .rowState:
@@ -11056,6 +12407,8 @@ final class CryptoViewModel: ObservableObject {
         _ source: SparklineDisplayResolutionSource
     ) -> Int {
         switch source {
+        case .ticker:
+            return 4
         case .snapshot:
             return 3
         case .rowState:
@@ -11671,48 +13024,12 @@ final class CryptoViewModel: ObservableObject {
         exchange: Exchange,
         generation: Int
     ) -> Bool {
-        guard shouldBypassFirstPaintHold(reason: patchReason) == false,
-              previousQuality.isUsableGraph == false,
-              hasRetainedVisibleGraph == false,
-              nextQuality.isUsableGraph,
-              nextQuality.isMinimumVisualQualityForFirstPaint == false,
-              nextQuality.isLowInformationFirstPaintCandidate,
-              isVisibleSparklineRedrawTarget(marketIdentity, exchange: exchange) == false,
-              hasVisibleSparklineRefineIntent(for: marketIdentity, generation: generation) else {
-            return false
-        }
-
-        let key = stableSparklineDisplayKey(marketIdentity: marketIdentity)
-        let now = Date()
-        let startedAt = sparklineFirstPaintHoldStartedAtByKey[key] ?? now
-        sparklineFirstPaintHoldStartedAtByKey[key] = startedAt
-        let elapsed = now.timeIntervalSince(startedAt)
-        guard elapsed < sparklineFirstPaintHoldInterval else {
-            sparklineFirstPaintHoldStartedAtByKey.removeValue(forKey: key)
-            sparklineFirstPaintHoldFallbackTasksByKey[key]?.cancel()
-            sparklineFirstPaintHoldFallbackTasksByKey.removeValue(forKey: key)
-            AppLogger.debug(
-                .network,
-                "[GraphHoldDebug] \(marketIdentity.logFields) action=hold_timeout_fallback_painted detailLevel=\(nextQuality.detailLevel.cacheComponent) pointCount=\(nextQuality.pointCount)"
-            )
-            return false
-        }
-
-        scheduleFirstPaintHoldFallback(
-            marketIdentity: marketIdentity,
-            exchange: exchange,
-            generation: generation,
-            delay: sparklineFirstPaintHoldInterval - elapsed
-        )
+        _ = (previousQuality, hasRetainedVisibleGraph, patchReason, exchange, generation)
         AppLogger.debug(
             .network,
-            "[GraphHoldDebug] \(marketIdentity.logFields) action=first_paint_held detailLevel=\(nextQuality.detailLevel.cacheComponent) pointCount=\(nextQuality.pointCount)"
+            "[GraphEligibilityDebug] \(marketIdentity.logFields) action=allow reason=first_paint_hold_disabled detailLevel=\(nextQuality.detailLevel.cacheComponent) pointCount=\(nextQuality.pointCount)"
         )
-        AppLogger.debug(
-            .network,
-            "[GraphEligibilityDebug] \(marketIdentity.logFields) action=skip reason=\(nextQuality.isFlatLookingLowInformation ? "flat_looking_low_information" : "awaiting_visible_refine") detailLevel=\(nextQuality.detailLevel.cacheComponent) pointCount=\(nextQuality.pointCount)"
-        )
-        return true
+        return false
     }
 
     private func visibleSparklineRedrawReason(
@@ -11914,6 +13231,7 @@ final class CryptoViewModel: ObservableObject {
         let nextPoints: [Double]
         let nextPointCount: Int
         let nextSourceVersion: Int
+        let nextSourceName: String?
 
         if let snapshot = patch.snapshot {
             let snapshotHasRenderableGraph = MarketSparklineRenderPolicy.hasRenderableGraph(
@@ -11936,6 +13254,7 @@ final class CryptoViewModel: ObservableObject {
             nextPoints = snapshot.points
             nextPointCount = snapshot.pointCount
             nextSourceVersion = Self.sparklineSourceVersion(from: snapshot.fetchedAt)
+            nextSourceName = snapshot.source == .sparklineEndpoint ? "sparkline_endpoint" : "candle_snapshot"
         } else if hasRetainedVisibleGraph {
             switch patch.graphState {
             case .liveVisible:
@@ -11954,6 +13273,7 @@ final class CryptoViewModel: ObservableObject {
             nextPoints = retainedPoints
             nextPointCount = retainedPointCount
             nextSourceVersion = retainedDisplay?.sourceVersion ?? previousRow.sparklinePayload.sourceVersion
+            nextSourceName = retainedDisplay?.sourceName ?? previousRow.sparklineSource
         } else {
             switch patch.graphState {
             case .unavailable:
@@ -11961,17 +13281,21 @@ final class CryptoViewModel: ObservableObject {
                 nextPoints = []
                 nextPointCount = 0
                 nextSourceVersion = 0
+                nextSourceName = nil
             case .cachedVisible, .liveVisible, .staleVisible:
                 nextGraphState = patch.graphState
                 nextPoints = patch.snapshot?.points ?? previousRow.sparkline
                 nextPointCount = patch.snapshot?.pointCount ?? previousRow.sparklinePointCount
                 nextSourceVersion = patch.snapshot.map { Self.sparklineSourceVersion(from: $0.fetchedAt) }
                     ?? previousRow.sparklinePayload.sourceVersion
+                nextSourceName = patch.snapshot.map { $0.source == .sparklineEndpoint ? "sparkline_endpoint" : "candle_snapshot" }
+                    ?? previousRow.sparklineSource
             case .none, .placeholder:
                 nextGraphState = previousRow.hasPrice || previousRow.hasVolume ? .placeholder : .none
                 nextPoints = []
                 nextPointCount = 0
                 nextSourceVersion = 0
+                nextSourceName = nil
             }
         }
 
@@ -11980,7 +13304,8 @@ final class CryptoViewModel: ObservableObject {
             graphState: nextGraphState,
             points: nextPoints,
             pointCount: nextPointCount,
-            sourceVersion: nextSourceVersion
+            sourceVersion: nextSourceVersion,
+            sourceName: nextSourceName
         )
         if shouldHoldLowInformationFirstPaintPatch(
             marketIdentity: patch.marketIdentity,
@@ -12004,6 +13329,7 @@ final class CryptoViewModel: ObservableObject {
             points: nextPoints,
             pointCount: nextPointCount,
             graphState: nextGraphState,
+            sparklineSource: nextSourceName,
             sourceVersion: nextSourceVersion
         )
         let visibleRedrawReason = visibleSparklineRedrawReason(
@@ -12097,6 +13423,10 @@ final class CryptoViewModel: ObservableObject {
             .network,
             "[GraphPipeline] \(patch.marketIdentity.logFields) generation=\(generation) phase=row_patch state=\(nextGraphState) reason=\(patch.reason) scope=graph_subview_payload"
         )
+        AppLogger.debug(
+            .network,
+            "[MarketRows] graph_patch marketId=\(patch.marketIdentity.marketId ?? patch.marketIdentity.symbol) patchKind=graph_only oldSource=\(previousRow.sparklineSource ?? "-") newSource=\(nextSourceName ?? "-") oldPointCount=\(previousRow.sparklinePointCount) newPointCount=\(nextPointCount) accepted=true"
+        )
         clearSparklineNoImprovement(for: patch.marketIdentity)
         if sparklineFirstPaintHoldStartedAtByKey[stableSparklineDisplayKey(marketIdentity: patch.marketIdentity)] != nil,
            nextQuality.isMinimumVisualQualityForFirstPaint {
@@ -12151,9 +13481,21 @@ final class CryptoViewModel: ObservableObject {
     }
 
     private func filteredMarketRows(from rows: [MarketRowViewState]) -> [MarketRowViewState] {
+        let quoteFilteredRows = rows.filter { row in
+            let matches = row.exchange == selectedExchange
+                && row.marketIdentity.quoteCurrency == selectedQuoteCurrency
+                && Self.marketQuoteMatches(row.coin, quoteCurrency: selectedQuoteCurrency)
+            if matches == false {
+                AppLogger.debug(
+                    .network,
+                    "[MarketRender] exchange=\(selectedExchange.rawValue) quoteCurrency=\(selectedQuoteCurrency.rawValue) droppedRow=\(row.marketIdentity.cacheKey) reason=quote_or_exchange_mismatch"
+                )
+            }
+            return matches
+        }
         let filteredByFavorite = marketFilter == .fav
-            ? rows.filter(\.isFavorite)
-            : rows
+            ? quoteFilteredRows.filter(\.isFavorite)
+            : quoteFilteredRows
 
         guard !searchQuery.isEmpty else {
             return filteredByFavorite
@@ -12167,12 +13509,41 @@ final class CryptoViewModel: ObservableObject {
         }
     }
 
+    private nonisolated static func marketQuoteMatches(_ coin: CoinInfo, quoteCurrency: MarketQuoteCurrency) -> Bool {
+        let quote = quoteCurrency.rawValue
+        let baseAsset = coin.displayMetadata?.baseAsset?.uppercased()
+        let canonicalSymbol = coin.canonicalSymbol.uppercased()
+        if baseAsset == quote || canonicalSymbol == quote {
+            return false
+        }
+        if let quoteAsset = coin.displayMetadata?.quoteAsset?.uppercased(),
+           quoteAsset.isEmpty == false {
+            return quoteAsset == quote
+        }
+        guard let marketId = coin.marketId?.uppercased() else {
+            return quoteCurrency == .krw
+        }
+        if marketId == quote {
+            return false
+        }
+        let separators = CharacterSet(charactersIn: "-_/:")
+        if marketId.rangeOfCharacter(from: separators) != nil {
+            let components = marketId.components(separatedBy: separators).filter { !$0.isEmpty }
+            let knownQuotes = Set(MarketQuoteCurrency.allCases.map(\.rawValue))
+            if let first = components.first, knownQuotes.contains(first) {
+                return first == quote
+            }
+            return components.last == quote
+        }
+        return marketId.hasPrefix(quote) || marketId.hasSuffix(quote)
+    }
+
     private func makeMarketRowViewState(
         for coin: CoinInfo,
         exchange: Exchange,
         cachedRow: MarketRowViewState?
     ) -> MarketRowViewState {
-        let marketIdentity = coin.marketIdentity(exchange: exchange)
+        let marketIdentity = coin.marketIdentity(exchange: exchange, quoteCurrency: selectedQuoteCurrency)
         let priorityVisibleMarketIdentities = Set(
             priorityVisibleSparklineMarketIdentities(
                 for: exchange,
@@ -12182,8 +13553,9 @@ final class CryptoViewModel: ObservableObject {
         return Self.makeMarketRowViewState(
             for: coin,
             exchange: exchange,
+            quoteCurrency: selectedQuoteCurrency,
             assetImageClient: assetImageClient,
-            ticker: pricesByMarketIdentity[marketIdentity]
+            ticker: Self.tickerData(for: marketIdentity, in: pricesByMarketIdentity)
                 ?? pricesByMarketIdentity[resolvedMarketIdentity(exchange: exchange, symbol: coin.symbol)],
             cachedRow: cachedRow,
             favoriteSymbols: favCoins,
@@ -12219,15 +13591,16 @@ final class CryptoViewModel: ObservableObject {
         let priorityDetailedMarketIdentities = Set(
             presentationCoins
                 .prefix(marketFirstPaintRowLimit)
-                .map { $0.marketIdentity(exchange: exchange) }
+                .map { $0.marketIdentity(exchange: exchange, quoteCurrency: selectedQuoteCurrency) }
         )
-        let rows = presentationCoins.map { coin in
-            let marketIdentity = coin.marketIdentity(exchange: exchange)
+        let mappedRows = presentationCoins.map { coin in
+            let marketIdentity = coin.marketIdentity(exchange: exchange, quoteCurrency: selectedQuoteCurrency)
             return Self.makeMarketRowViewState(
                 for: coin,
                 exchange: exchange,
+                quoteCurrency: selectedQuoteCurrency,
                 assetImageClient: assetImageClient,
-                ticker: pricesByMarketIdentity[marketIdentity]
+                ticker: Self.tickerData(for: marketIdentity, in: pricesByMarketIdentity)
                     ?? pricesByMarketIdentity[resolvedMarketIdentity(exchange: exchange, symbol: coin.symbol)],
                 cachedRow: cachedRowsByMarketIdentity[marketIdentity],
                 favoriteSymbols: favCoins,
@@ -12240,6 +13613,7 @@ final class CryptoViewModel: ObservableObject {
                 now: Date()
             )
         }
+        let rows = Self.deduplicatedMarketRows(mappedRows, exchange: exchange)
         let meta = combineMetas([
             marketCatalogMetaByExchange[exchange] ?? .empty,
             marketTickerMetaByExchange[exchange] ?? .empty,
@@ -12579,6 +13953,17 @@ final class CryptoViewModel: ObservableObject {
         )
         ensureSelectedCoinIfPossible(for: snapshot.exchange)
         logMarketScreenCounts(reason: reason, rows: snapshot.rows)
+        let firstRows = snapshot.rows.prefix(6)
+            .map { "\($0.symbol)/\($0.marketIdentity.quoteCurrency.rawValue)" }
+            .joined(separator: ",")
+        let hasMismatchedQuote = snapshot.rows.contains {
+            $0.marketIdentity.quoteCurrency != selectedQuoteCurrency
+                || Self.marketQuoteMatches($0.coin, quoteCurrency: selectedQuoteCurrency) == false
+        }
+        AppLogger.debug(
+            .network,
+            "[MarketRender] exchange=\(snapshot.exchange.rawValue) quoteCurrency=\(selectedQuoteCurrency.rawValue) title=\(snapshot.exchange.displayName) \(selectedQuoteCurrency.marketDisplayName) 마켓 rowCount=\(snapshot.rows.count) firstRows=\(firstRows) hasMismatchedQuote=\(hasMismatchedQuote)"
+        )
         logAssetImageCoverageSummary(reason: reason)
         logRepresentativeGraphSummary(snapshot: snapshot, reason: reason)
         AppLogger.debug(
@@ -13064,7 +14449,7 @@ final class CryptoViewModel: ObservableObject {
                     : "no_usable_graph"
                 AppLogger.debug(
                     .network,
-                    "[GraphFirstPaintDebug] \(row.marketLogFields) action=paint reason=\(firstPaintReason) source=\(graphLogSource(for: row)) graphState=\(row.graphState)"
+                    "[GraphFirstPaintDebug] \(row.marketLogFields) action=paint reason=\(firstPaintReason) source=\(graphLogSource(for: row)) detailLevel=\(row.sparklinePayload.detailLevel.cacheComponent) pointCount=\(row.sparklinePointCount) graphState=\(row.graphState)"
                 )
                 AppLogger.debug(
                     .network,
@@ -13093,6 +14478,9 @@ final class CryptoViewModel: ObservableObject {
     }
 
     private func graphLogSource(for row: MarketRowViewState) -> String {
+        if let source = row.sparklineSource, row.graphState.keepsVisibleGraph {
+            return source
+        }
         switch row.graphState {
         case .liveVisible:
             return "live"
@@ -13229,6 +14617,7 @@ final class CryptoViewModel: ObservableObject {
     private func makeMarketRequestContext(for exchange: Exchange) -> MarketRequestContext {
         MarketRequestContext(
             exchange: exchange,
+            quoteCurrency: selectedQuoteCurrency,
             route: activeTab,
             universeVersion: marketUniverseVersion(for: exchange),
             generation: marketPresentationGeneration
@@ -13249,6 +14638,7 @@ final class CryptoViewModel: ObservableObject {
         responseUniverseVersion: String
     ) -> Bool {
         guard requestContext.exchange == selectedExchange else { return false }
+        guard requestContext.quoteCurrency == selectedQuoteCurrency else { return false }
         guard requestContext.generation == marketPresentationGeneration else { return false }
         guard requestContext.route == activeTab else { return false }
         return responseUniverseVersion.isEmpty == false || requestContext.universeVersion == responseUniverseVersion
@@ -13898,9 +15288,9 @@ final class CryptoViewModel: ObservableObject {
         }
 
         if let selectedCoin {
-            let selectedMarketIdentity = selectedCoin.marketIdentity(exchange: exchange)
+            let selectedMarketIdentity = selectedCoin.marketIdentity(exchange: exchange, quoteCurrency: selectedQuoteCurrency)
             let supportedCoin = supportedCoins.first {
-                $0.marketIdentity(exchange: exchange) == selectedMarketIdentity
+                $0.marketIdentity(exchange: exchange, quoteCurrency: selectedQuoteCurrency) == selectedMarketIdentity
             } ?? supportedCoins.first(where: { $0.symbol == selectedCoin.symbol })
             if let supportedCoin {
                 let mergedCoin = selectedCoin.merged(with: supportedCoin)
@@ -13986,7 +15376,7 @@ final class CryptoViewModel: ObservableObject {
         }
 
         let visibleRows = displayedMarketRows
-            .filter { $0.exchange == exchange }
+            .filter { $0.exchange == exchange && $0.marketIdentity.quoteCurrency == selectedQuoteCurrency }
             .prefix(limit)
             .map(\.marketIdentity)
 
@@ -13994,12 +15384,15 @@ final class CryptoViewModel: ObservableObject {
             return Self.deduplicatedMarketIdentities(Array(visibleRows))
         }
 
-        if let cachedRows = marketPresentationSnapshotsByExchange[exchange]?.rows, !cachedRows.isEmpty {
+        let cachedRows = marketPresentationSnapshotsByExchange[exchange]?.rows.filter {
+            $0.marketIdentity.quoteCurrency == selectedQuoteCurrency
+        } ?? []
+        if !cachedRows.isEmpty {
             return Self.deduplicatedMarketIdentities(Array(cachedRows.prefix(limit).map(\.marketIdentity)))
         }
 
         let snapshotMarketIdentities = (tickerSnapshotCoinsByExchange[exchange] ?? [])
-            .map { $0.marketIdentity(exchange: exchange) }
+            .map { $0.marketIdentity(exchange: exchange, quoteCurrency: selectedQuoteCurrency) }
         if !snapshotMarketIdentities.isEmpty {
             return Array(Self.deduplicatedMarketIdentities(snapshotMarketIdentities).prefix(limit))
         }
@@ -14012,18 +15405,10 @@ final class CryptoViewModel: ObservableObject {
 
         switch activeTab {
         case .market:
-            targetMarketStreamingMarketIdentities(for: selectedExchange).forEach { marketIdentity in
-                subscriptions.insert(
-                    PublicMarketSubscription(
-                        channel: .ticker,
-                        marketIdentity: marketIdentity
-                    )
-                )
-            }
+            break
         case .trade, .chart:
-            let marketIdentities = selectedCoin.map { [$0.marketIdentity(exchange: selectedExchange)] }
-                ?? targetMarketStreamingMarketIdentities(for: selectedExchange, limit: 8)
-            marketIdentities.forEach { marketIdentity in
+            if let selectedCoin {
+                let marketIdentity = selectedCoin.marketIdentity(exchange: selectedExchange, quoteCurrency: selectedQuoteCurrency)
                 subscriptions.insert(
                     PublicMarketSubscription(
                         channel: .ticker,
@@ -14036,7 +15421,7 @@ final class CryptoViewModel: ObservableObject {
         }
 
         if activeTab == .chart, let selectedCoin, chartSecondarySubscriptionsEnabled {
-            let selectedMarketIdentity = selectedCoin.marketIdentity(exchange: exchange)
+            let selectedMarketIdentity = selectedCoin.marketIdentity(exchange: exchange, quoteCurrency: selectedQuoteCurrency)
             let mappedInterval = resolvedChartInterval(
                 requestedInterval: chartPeriod,
                 symbol: selectedMarketIdentity.symbol,
@@ -14060,6 +15445,10 @@ final class CryptoViewModel: ObservableObject {
                     marketIdentity: selectedMarketIdentity,
                     interval: mappedInterval
                 )
+            )
+            AppLogger.debug(
+                .websocket,
+                "[MarketSocket] subscribe selectedOnly=true channel=market.candle symbol=\(selectedMarketIdentity.symbol) quote=\(selectedMarketIdentity.quoteCurrency.rawValue)"
             )
         }
 
@@ -14752,6 +16141,27 @@ final class CryptoViewModel: ObservableObject {
         if shouldSkipEquivalentStateUpdate(current: marketState, next: nextState) {
             return
         }
+        AppLogger.debug(
+            .network,
+            "[MarketState] transition \(describeMarketState(marketState)) -> \(describeMarketState(nextState)) rows=\(marketRowStates.count)"
+        )
+        let toState: String
+        switch nextState {
+        case .idle:
+            toState = "idle"
+        case .loading:
+            toState = "loading"
+        case .loaded:
+            toState = "loaded"
+        case .empty:
+            toState = "empty"
+        case .failed:
+            toState = "failed"
+        }
+        AppLogger.debug(
+            .network,
+            "[MarketLoadingState] exchange=\(selectedExchange.rawValue) quoteCurrency=\(selectedQuoteCurrency.rawValue) from=\(describeMarketState(marketState)) to=\(toState) reason=assign_market_state"
+        )
         marketState = nextState
     }
 
@@ -15481,6 +16891,21 @@ final class CryptoViewModel: ObservableObject {
             ?? "연결이 잠시 불안정해 최신 정보를 다시 확인하고 있어요."
     }
 
+    private func describeMarketState(_ state: Loadable<[CoinInfo]>) -> String {
+        switch state {
+        case .idle:
+            return "idle"
+        case .loading:
+            return "loading"
+        case .loaded(let rows):
+            return "loaded rows=\(rows.count)"
+        case .empty:
+            return "empty"
+        case .failed:
+            return "failed"
+        }
+    }
+
     private func describe(_ state: Loadable<[KimchiPremiumCoinViewState]>) -> String {
         switch state {
         case .idle:
@@ -15557,7 +16982,7 @@ final class CryptoViewModel: ObservableObject {
             return CandleIntervalCatalog.defaultOptions.map(\.value)
         }
 
-        let marketIdentity = selectedCoin.marketIdentity(exchange: selectedExchange)
+        let marketIdentity = selectedCoin.marketIdentity(exchange: selectedExchange, quoteCurrency: selectedQuoteCurrency)
         return supportedIntervalsByExchangeAndMarketIdentity[selectedExchange]?[marketIdentity]
             ?? CandleIntervalCatalog.defaultOptions.map(\.value)
     }
@@ -15620,8 +17045,10 @@ final class CryptoViewModel: ObservableObject {
     }
 
     private func hasAnyTickerData(for exchange: Exchange) -> Bool {
-        prices.contains { element in
-            element.value[exchange.rawValue] != nil
+        pricesByMarketIdentity.contains { key, ticker in
+            key.exchange == exchange
+                && key.quoteCurrency == selectedQuoteCurrency
+                && ticker.price.isFinite
         }
     }
 

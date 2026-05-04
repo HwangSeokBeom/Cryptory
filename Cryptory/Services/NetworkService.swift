@@ -81,6 +81,12 @@ struct ResponseMeta: Equatable, Codable {
     let isStale: Bool
     let warningMessage: String?
     let partialFailureMessage: String?
+    let source: String?
+    let cacheHit: Bool?
+    let emptyReason: String?
+    let providerStatus: String?
+    let latestFallbackDate: Date?
+    let availableDates: [Date]?
     let isChartAvailable: Bool?
     let isOrderBookAvailable: Bool?
     let isTradesAvailable: Bool?
@@ -91,6 +97,12 @@ struct ResponseMeta: Equatable, Codable {
         isStale: Bool,
         warningMessage: String?,
         partialFailureMessage: String?,
+        source: String? = nil,
+        cacheHit: Bool? = nil,
+        emptyReason: String? = nil,
+        providerStatus: String? = nil,
+        latestFallbackDate: Date? = nil,
+        availableDates: [Date]? = nil,
         isChartAvailable: Bool? = nil,
         isOrderBookAvailable: Bool? = nil,
         isTradesAvailable: Bool? = nil,
@@ -100,6 +112,12 @@ struct ResponseMeta: Equatable, Codable {
         self.isStale = isStale
         self.warningMessage = warningMessage
         self.partialFailureMessage = partialFailureMessage
+        self.source = source
+        self.cacheHit = cacheHit
+        self.emptyReason = emptyReason
+        self.providerStatus = providerStatus
+        self.latestFallbackDate = latestFallbackDate
+        self.availableDates = availableDates
         self.isChartAvailable = isChartAvailable
         self.isOrderBookAvailable = isOrderBookAvailable
         self.isTradesAvailable = isTradesAvailable
@@ -602,6 +620,16 @@ struct CandleSnapshot {
     let meta: ResponseMeta
 }
 
+struct MarketSparklineSnapshot {
+    let exchange: Exchange
+    let symbol: String
+    let interval: String
+    let points: [Double]
+    let pointCount: Int
+    let source: String?
+    let meta: ResponseMeta
+}
+
 struct OrderRecordsSnapshot {
     let exchange: Exchange
     let orders: [OrderRecord]
@@ -707,6 +735,7 @@ struct APIConfiguration {
     let marketOrderbookPath: String
     let marketTradesPath: String
     let marketCandlesPath: String
+    let marketSparklinePath: String
     let tradingChancePath: String
     let tradingOrdersPath: String
     let tradingOpenOrdersPath: String
@@ -715,6 +744,8 @@ struct APIConfiguration {
     let portfolioHistoryPath: String
     let kimchiPremiumPath: String
     let exchangeConnectionsPath: String
+    let pushFCMTokenPath: String
+    let priceAlertsPath: String
     let exchangeConnectionsCreateEnabled: Bool
     let exchangeConnectionsUpdateEnabled: Bool
     let exchangeConnectionsDeleteEnabled: Bool
@@ -733,6 +764,7 @@ struct APIConfiguration {
         marketOrderbookPath: String,
         marketTradesPath: String,
         marketCandlesPath: String,
+        marketSparklinePath: String = "/market/sparkline",
         tradingChancePath: String,
         tradingOrdersPath: String,
         tradingOpenOrdersPath: String,
@@ -741,6 +773,8 @@ struct APIConfiguration {
         portfolioHistoryPath: String,
         kimchiPremiumPath: String,
         exchangeConnectionsPath: String,
+        pushFCMTokenPath: String = "/push/fcm-token",
+        priceAlertsPath: String = "/alerts/price",
         exchangeConnectionsCreateEnabled: Bool,
         exchangeConnectionsUpdateEnabled: Bool,
         exchangeConnectionsDeleteEnabled: Bool
@@ -758,6 +792,7 @@ struct APIConfiguration {
         self.marketOrderbookPath = marketOrderbookPath
         self.marketTradesPath = marketTradesPath
         self.marketCandlesPath = marketCandlesPath
+        self.marketSparklinePath = marketSparklinePath
         self.tradingChancePath = tradingChancePath
         self.tradingOrdersPath = tradingOrdersPath
         self.tradingOpenOrdersPath = tradingOpenOrdersPath
@@ -766,6 +801,8 @@ struct APIConfiguration {
         self.portfolioHistoryPath = portfolioHistoryPath
         self.kimchiPremiumPath = kimchiPremiumPath
         self.exchangeConnectionsPath = exchangeConnectionsPath
+        self.pushFCMTokenPath = pushFCMTokenPath
+        self.priceAlertsPath = priceAlertsPath
         self.exchangeConnectionsCreateEnabled = exchangeConnectionsCreateEnabled
         self.exchangeConnectionsUpdateEnabled = exchangeConnectionsUpdateEnabled
         self.exchangeConnectionsDeleteEnabled = exchangeConnectionsDeleteEnabled
@@ -773,6 +810,10 @@ struct APIConfiguration {
 
     func exchangeConnectionPath(id: String) -> String {
         "\(exchangeConnectionsPath)/\(id)"
+    }
+
+    func priceAlertPath(id: String) -> String {
+        "\(priceAlertsPath)/\(id)"
     }
 
     func tradingOrderDetailPath(exchange: Exchange, orderID: String) -> String {
@@ -809,6 +850,7 @@ struct APIConfiguration {
             marketOrderbookPath: environment["CRYPTORY_MARKET_ORDERBOOK_PATH"] ?? "/market/orderbook",
             marketTradesPath: environment["CRYPTORY_MARKET_TRADES_PATH"] ?? "/market/trades",
             marketCandlesPath: environment["CRYPTORY_MARKET_CANDLES_PATH"] ?? "/market/candles",
+            marketSparklinePath: environment["CRYPTORY_MARKET_SPARKLINE_PATH"] ?? "/market/sparkline",
             tradingChancePath: environment["CRYPTORY_TRADING_CHANCE_PATH"] ?? "/trading/chance",
             tradingOrdersPath: environment["CRYPTORY_TRADING_ORDERS_PATH"] ?? "/trading/orders",
             tradingOpenOrdersPath: environment["CRYPTORY_TRADING_OPEN_ORDERS_PATH"] ?? "/trading/open-orders",
@@ -817,6 +859,8 @@ struct APIConfiguration {
             portfolioHistoryPath: environment["CRYPTORY_PORTFOLIO_HISTORY_PATH"] ?? "/portfolio/history",
             kimchiPremiumPath: environment["CRYPTORY_KIMCHI_PREMIUM_PATH"] ?? "/kimchi-premium",
             exchangeConnectionsPath: environment["CRYPTORY_EXCHANGE_CONNECTIONS_PATH"] ?? "/exchange-connections",
+            pushFCMTokenPath: environment["CRYPTORY_PUSH_FCM_TOKEN_PATH"] ?? "/push/fcm-token",
+            priceAlertsPath: environment["CRYPTORY_PRICE_ALERTS_PATH"] ?? "/alerts/price",
             exchangeConnectionsCreateEnabled: environment["CRYPTORY_EXCHANGE_CONNECTION_CREATE_ENABLED"] != "0",
             exchangeConnectionsUpdateEnabled: environment["CRYPTORY_EXCHANGE_CONNECTION_UPDATE_ENABLED"] != "0",
             exchangeConnectionsDeleteEnabled: environment["CRYPTORY_EXCHANGE_CONNECTION_DELETE_ENABLED"] != "0"
@@ -874,10 +918,32 @@ protocol MarketRepositoryProtocol {
     var marketCandlesEndpointPath: String { get }
 
     func fetchMarkets(exchange: Exchange) async throws -> MarketCatalogSnapshot
+    func fetchMarkets(exchange: Exchange, quoteCurrency: MarketQuoteCurrency) async throws -> MarketCatalogSnapshot
     func fetchTickers(exchange: Exchange) async throws -> MarketTickerSnapshot
+    func fetchTickers(exchange: Exchange, quoteCurrency: MarketQuoteCurrency) async throws -> MarketTickerSnapshot
     func fetchOrderbook(symbol: String, exchange: Exchange) async throws -> OrderbookSnapshot
     func fetchTrades(symbol: String, exchange: Exchange) async throws -> PublicTradesSnapshot
     func fetchCandles(symbol: String, exchange: Exchange, interval: String) async throws -> CandleSnapshot
+    func fetchCandles(symbol: String, exchange: Exchange, quoteCurrency: MarketQuoteCurrency, interval: String, limit: Int) async throws -> CandleSnapshot
+    func fetchSparkline(symbol: String, exchange: Exchange, quoteCurrency: MarketQuoteCurrency, interval: String, limit: Int) async throws -> MarketSparklineSnapshot
+}
+
+extension MarketRepositoryProtocol {
+    func fetchMarkets(exchange: Exchange, quoteCurrency: MarketQuoteCurrency) async throws -> MarketCatalogSnapshot {
+        try await fetchMarkets(exchange: exchange)
+    }
+
+    func fetchTickers(exchange: Exchange, quoteCurrency: MarketQuoteCurrency) async throws -> MarketTickerSnapshot {
+        try await fetchTickers(exchange: exchange)
+    }
+
+    func fetchCandles(symbol: String, exchange: Exchange, quoteCurrency: MarketQuoteCurrency, interval: String, limit: Int) async throws -> CandleSnapshot {
+        try await fetchCandles(symbol: symbol, exchange: exchange, interval: interval)
+    }
+
+    func fetchSparkline(symbol: String, exchange: Exchange, quoteCurrency: MarketQuoteCurrency, interval: String, limit: Int) async throws -> MarketSparklineSnapshot {
+        throw NetworkServiceError.httpError(404, "sparkline endpoint is unavailable", .maintenance)
+    }
 }
 
 protocol TradingRepositoryProtocol {
@@ -940,6 +1006,7 @@ final class APIClient {
         var request = URLRequest(url: url)
         request.httpMethod = method
         request.setValue("application/json", forHTTPHeaderField: "Accept")
+        applyConfiguredCommonHeaders(to: &request)
 
         if let body {
             request.httpBody = try JSONSerialization.data(withJSONObject: body)
@@ -959,6 +1026,31 @@ final class APIClient {
         }
 
         return request
+    }
+
+    private func applyConfiguredCommonHeaders(to request: inout URLRequest) {
+        let environment = ProcessInfo.processInfo.environment
+        let bundle = Bundle.main.infoDictionary ?? [:]
+        func configuredValue(_ keys: [String]) -> String? {
+            for key in keys {
+                if let value = environment[key]?.trimmedNonEmpty {
+                    return value
+                }
+                if let value = bundle[key] as? String,
+                   let trimmed = value.trimmedNonEmpty,
+                   trimmed.hasPrefix("$(") == false {
+                    return trimmed
+                }
+            }
+            return nil
+        }
+
+        if let sesacKey = configuredValue(["SESAC_KEY", "SESAC_API_KEY", "CRYPTORY_SESAC_KEY", "CRYPTORY_SESAC_API_KEY"]) {
+            request.setValue(sesacKey, forHTTPHeaderField: "SeSACKey")
+        }
+        if let apiKey = configuredValue(["API_KEY", "CRYPTORY_API_KEY", "PUBLIC_API_KEY", "CRYPTORY_PUBLIC_API_KEY"]) {
+            request.setValue(apiKey, forHTTPHeaderField: "X-API-Key")
+        }
     }
 
     func requestJSON(
@@ -1040,19 +1132,37 @@ final class APIClient {
         endpoint: String,
         canonical: Bool,
         decodeTarget: String,
-        normalizedSymbol: String? = nil
+        normalizedSymbol: String? = nil,
+        accessRequirement: RequestAccessRequirement = .publicAccess,
+        accessToken: String? = nil
     ) async throws -> Any {
         let request = try makeRequest(
             path: path,
             method: method,
             queryItems: queryItems,
             body: body,
-            accessRequirement: .publicAccess
+            accessRequirement: accessRequirement,
+            accessToken: accessToken
         )
+        let hasAuthorization = request.value(forHTTPHeaderField: "Authorization")?.isEmpty == false
+        let hasAPIKey = request.value(forHTTPHeaderField: "X-API-Key")?.isEmpty == false
+        let hasSeSACKey = request.value(forHTTPHeaderField: "SeSACKey")?.isEmpty == false
         AppLogger.debug(
             .network,
-            "[PublicContentAPI] request endpoint=\(endpoint) method=\(method) canonical=\(canonical) url=\(request.url?.absoluteString ?? path)\(normalizedSymbol.map { " symbol=\($0)" } ?? "") decodeTarget=\(decodeTarget)"
+            "[PublicContentAPI] request endpoint=\(endpoint) method=\(method) canonical=\(canonical) url=\(request.url?.absoluteString ?? path)\(normalizedSymbol.map { " symbol=\($0)" } ?? "") hasAuthorization=\(hasAuthorization) hasAPIKey=\(hasAPIKey) hasSeSACKey=\(hasSeSACKey) accessTokenMasked=\(maskedAccessToken(accessToken)) decodeTarget=\(decodeTarget)"
         )
+        if endpoint.lowercased().contains("community") {
+            AppLogger.debug(
+                .network,
+                "[CommunityAPI] request method=\(method) path=\(path) symbol=\(normalizedSymbol ?? "nil") hasAuth=\(hasAuthorization)"
+            )
+        }
+        if endpoint.lowercased().contains("vote") || endpoint.lowercased().contains("sentiment") {
+            AppLogger.debug(
+                .network,
+                "[SentimentAPI] scope=\(normalizedSymbol == nil ? "market" : "coin") key=\(normalizedSymbol ?? "global") action=\(method) status=dispatch"
+            )
+        }
 
         let data: Data
         let response: URLResponse
@@ -1076,13 +1186,45 @@ final class APIClient {
             .replacingOccurrences(of: "\n", with: " ")
             .replacingOccurrences(of: "\r", with: " ")
             ?? "<non-utf8 body>"
+        let envelopeCode = responseEnvelopeCode(from: data)
+        let bodyShape = jsonBodyShape(from: data)
+        let envelopeKeys = jsonEnvelopeKeys(from: data)
+        let itemCount = jsonItemCount(from: data)
         AppLogger.debug(
             .network,
-            "[PublicContentAPI] response endpoint=\(endpoint) status=\(httpResponse.statusCode) bodyPrefix=\(bodyPrefix)"
+            "[PublicContentAPI] response endpoint=\(endpoint) method=\(method) statusCode=\(httpResponse.statusCode) successEnvelope=\(envelopeKeys.hasSuccess) dataKey=\(envelopeKeys.hasData) code=\(envelopeCode ?? "nil") bodyShape=\(bodyShape) rawPreview=\(bodyPrefix)"
         )
+        AppLogger.debug(
+            .network,
+            "[APIResponse] method=\(method) endpoint=\(path) status=\(httpResponse.statusCode) hasEnvelope=\(envelopeKeys.hasSuccess) hasData=\(envelopeKeys.hasData)"
+        )
+        if endpoint == "translate" {
+            AppLogger.debug(
+                .network,
+                "[TranslationResponse] symbol=\(normalizedSymbol ?? "nil") status=\(httpResponse.statusCode) hasTranslatedText=\(bodyPrefix.contains("translatedText") || bodyPrefix.contains("translated_text")) provider=\(envelopeCode ?? "unknown") cached=false"
+            )
+        }
+        if endpoint.lowercased().contains("community") {
+            AppLogger.debug(
+                .network,
+                "[CommunityAPI] response status=\(httpResponse.statusCode) symbol=\(normalizedSymbol ?? "nil") bodyShape=\(bodyShape) itemCount=\(itemCount.map(String.init) ?? "nil")"
+            )
+        }
+        if endpoint.lowercased().contains("vote") || endpoint.lowercased().contains("sentiment") {
+            AppLogger.debug(
+                .network,
+                "[SentimentAPI] scope=\(normalizedSymbol == nil ? "market" : "coin") key=\(normalizedSymbol ?? "global") action=\(method) status=\(httpResponse.statusCode)"
+            )
+        }
 
         guard (200...299).contains(httpResponse.statusCode) else {
             let parsedError = parseServerError(from: data, statusCode: httpResponse.statusCode)
+            if endpoint == "translate" {
+                AppLogger.debug(
+                    .network,
+                    "[TranslationFailure] symbol=\(normalizedSymbol ?? "nil") status=\(httpResponse.statusCode) code=\(parsedError.mappedCode) message=\(parsedError.message) rawPreview=\(bodyPrefix)"
+                )
+            }
             throw NetworkServiceError.httpError(httpResponse.statusCode, parsedError.message, parsedError.category)
         }
 
@@ -1097,6 +1239,10 @@ final class APIClient {
                 .network,
                 "[PublicContentAPI] decode failed endpoint=\(endpoint) target=\(decodeTarget) path=$ error=\(error)"
             )
+            AppLogger.debug(
+                .network,
+                "[APIDecodeFailure] endpoint=\(path) status=\(httpResponse.statusCode) codingPath=$ rawPreview=\(bodyPrefix)"
+            )
             throw NetworkServiceError.parsingFailed("서버 응답 형식을 해석하지 못했어요.")
         }
     }
@@ -1105,6 +1251,73 @@ final class APIClient {
         let trimmedBase = basePath.hasSuffix("/") ? String(basePath.dropLast()) : basePath
         let normalizedEndpoint = endpointPath.hasPrefix("/") ? endpointPath : "/\(endpointPath)"
         return "\(trimmedBase)\(normalizedEndpoint)"
+    }
+
+    private func maskedAccessToken(_ token: String?) -> String {
+        guard let token = token?.trimmingCharacters(in: .whitespacesAndNewlines),
+              token.isEmpty == false else {
+            return "exists=false"
+        }
+        return "exists=true length=\(token.count)"
+    }
+
+    private func responseEnvelopeCode(from data: Data) -> String? {
+        guard data.isEmpty == false,
+              let json = try? JSONSerialization.jsonObject(with: data) as? JSONObject else {
+            return nil
+        }
+        let directData = json["data"] as? JSONObject
+        let directError = json["error"] as? JSONObject
+        let nestedDataError = directData?["error"] as? JSONObject
+        return [json, directData, directError, nestedDataError]
+            .compactMap { $0?.string(["code", "errorCode", "error_code", "type", "error_type"]) }
+            .first
+    }
+
+    private func jsonBodyShape(from data: Data) -> String {
+        guard data.isEmpty == false,
+              let json = try? JSONSerialization.jsonObject(with: data) as? JSONObject else {
+            return data.isEmpty ? "empty" : "nonObject"
+        }
+        let root = json.keys.sorted().joined(separator: ",")
+        if let dataObject = json["data"] as? JSONObject {
+            return "root{\(root)} data{\(dataObject.keys.sorted().joined(separator: ","))}"
+        }
+        if let dataArray = json["data"] as? [Any] {
+            return "root{\(root)} data[array:\(dataArray.count)]"
+        }
+        return "root{\(root)}"
+    }
+
+    private func jsonEnvelopeKeys(from data: Data) -> (hasSuccess: Bool, hasData: Bool) {
+        guard data.isEmpty == false,
+              let json = try? JSONSerialization.jsonObject(with: data) as? JSONObject else {
+            return (false, false)
+        }
+        return (json.keys.contains("success"), json.keys.contains("data"))
+    }
+
+    private func jsonItemCount(from data: Data) -> Int? {
+        guard data.isEmpty == false,
+              let json = try? JSONSerialization.jsonObject(with: data) as? JSONObject else {
+            return nil
+        }
+        let payload = json["data"] ?? json
+        if let array = payload as? [Any] {
+            return array.count
+        }
+        guard let dictionary = payload as? JSONObject else {
+            return nil
+        }
+        if let explicit = dictionary.int(["itemCount", "item_count", "count", "totalCount", "total_count"]) {
+            return explicit
+        }
+        for key in ["items", "posts", "news", "rows", "results", "list"] {
+            if let array = dictionary[key] as? [Any] {
+                return array.count
+            }
+        }
+        return nil
     }
 
     private func parseServerError(from data: Data, statusCode: Int) -> ServerErrorDetails {
@@ -1395,7 +1608,10 @@ final class LiveAuthenticationService: AuthenticationServiceProtocol {
             refreshTokenExpiresAt: dictionary.string(["refreshTokenExpiresAt", "refresh_token_expires_at"]),
             sessionID: dictionary.string(["sessionId", "sessionID", "session_id"]),
             userID: dictionary.string(["userId", "user_id", "id"]) ?? user?.string(["userId", "user_id", "id"]),
-            email: dictionary.string(["email"]) ?? user?.string(["email"]) ?? fallbackEmail
+            email: dictionary.string(["email"]) ?? user?.string(["email"]) ?? fallbackEmail,
+            displayName: dictionary.string(["displayName", "display_name", "name"]) ?? user?.string(["displayName", "display_name", "name"]),
+            nickname: dictionary.string(["nickname"]) ?? user?.string(["nickname"]),
+            emailMasked: dictionary.string(["emailMasked", "email_masked", "maskedEmail", "masked_email"]) ?? user?.string(["emailMasked", "email_masked", "maskedEmail", "masked_email"])
         )
     }
 }
@@ -1412,9 +1628,17 @@ final class LiveMarketRepository: MarketRepositoryProtocol {
     }
 
     func fetchMarkets(exchange: Exchange) async throws -> MarketCatalogSnapshot {
+        try await fetchMarkets(exchange: exchange, quoteCurrency: .krw)
+    }
+
+    func fetchMarkets(exchange: Exchange, quoteCurrency: MarketQuoteCurrency) async throws -> MarketCatalogSnapshot {
+        AppLogger.debug(.network, "[MarketList] request exchange=\(exchange.rawValue) quote=\(quoteCurrency.rawValue)")
         let json = try await client.requestJSON(
             path: client.configuration.marketMarketsPath,
-            queryItems: [URLQueryItem(name: "exchange", value: exchange.rawValue)],
+            queryItems: [
+                URLQueryItem(name: "exchange", value: exchange.rawValue),
+                URLQueryItem(name: "quoteCurrency", value: quoteCurrency.apiValue)
+            ],
             accessRequirement: .publicAccess
         )
 
@@ -1443,9 +1667,11 @@ final class LiveMarketRepository: MarketRepositoryProtocol {
         let resolvedUniverse = resolveMarketUniverse(
             parsedCoins: markets,
             payload: payload,
-            exchange: exchange
+            exchange: exchange,
+            quoteCurrency: quoteCurrency
         )
 
+        AppLogger.debug(.network, "[MarketList] response count=\(resolvedUniverse.coins.count)")
         return MarketCatalogSnapshot(
             exchange: exchange,
             markets: resolvedUniverse.coins,
@@ -1456,9 +1682,24 @@ final class LiveMarketRepository: MarketRepositoryProtocol {
     }
 
     func fetchTickers(exchange: Exchange) async throws -> MarketTickerSnapshot {
+        try await fetchTickers(exchange: exchange, quoteCurrency: .krw)
+    }
+
+    func fetchTickers(exchange: Exchange, quoteCurrency: MarketQuoteCurrency) async throws -> MarketTickerSnapshot {
+        let queryItems = [
+            URLQueryItem(name: "exchange", value: exchange.rawValue),
+            URLQueryItem(name: "quoteCurrency", value: quoteCurrency.apiValue),
+            URLQueryItem(name: "limit", value: "100")
+        ]
+        let requestURL = (try? client.makeRequest(
+            path: client.configuration.marketTickersPath,
+            queryItems: queryItems,
+            accessRequirement: .publicAccess
+        ).url?.absoluteString) ?? client.configuration.marketTickersPath
+        AppLogger.debug(.network, "[MarketTickerREST] request url=\(requestURL) exchange=\(exchange.rawValue) quote=\(quoteCurrency.rawValue) limit=100")
         let json = try await client.requestJSON(
             path: client.configuration.marketTickersPath,
-            queryItems: [URLQueryItem(name: "exchange", value: exchange.rawValue)],
+            queryItems: queryItems,
             accessRequirement: .publicAccess
         )
 
@@ -1472,34 +1713,50 @@ final class LiveMarketRepository: MarketRepositoryProtocol {
         var tickers: [String: TickerData] = [:]
         var coins: [CoinInfo] = []
         var seenSymbols = Set<String>()
+        var receivedCount = 0
+        var mappedCount = 0
+        var droppedReasons: [String: Int] = [:]
+
+        func recordDrop(_ reason: String) {
+            droppedReasons[reason, default: 0] += 1
+        }
+
+        func ingestTickerItem(_ dictionary: JSONObject) {
+            receivedCount += 1
+            guard let dto = MarketTickerDTO(dictionary: dictionary, exchange: exchange, selectedQuoteCurrency: quoteCurrency) else {
+                recordDrop("missing_symbol")
+                return
+            }
+            guard marketQuoteMatches(dto.coinInfo, quoteCurrency: quoteCurrency) else {
+                recordDrop("quote_mismatch")
+                return
+            }
+            mappedCount += 1
+            if let ticker = dto.entity(meta: container.meta) {
+                tickers[dto.symbol] = ticker
+            } else {
+                recordDrop("missing_price_partial_row")
+            }
+            if seenSymbols.insert(dto.coinInfo.symbol).inserted {
+                coins.append(dto.coinInfo)
+            }
+        }
 
         if let array = unwrapArray(container.payload) {
             for item in array {
                 guard let dictionary = item as? JSONObject else { continue }
-                guard let dto = MarketTickerDTO(dictionary: dictionary, exchange: exchange) else { continue }
-                tickers[dto.symbol] = dto.entity(meta: container.meta)
-                if seenSymbols.insert(dto.coinInfo.symbol).inserted {
-                    coins.append(dto.coinInfo)
-                }
+                ingestTickerItem(dictionary)
             }
         } else if let dictionary = container.payload as? JSONObject {
             if let nestedArray = unwrapArray(dictionary["items"] ?? dictionary["tickers"]) {
                 for item in nestedArray {
                     guard let tickerDictionary = item as? JSONObject else { continue }
-                    guard let dto = MarketTickerDTO(dictionary: tickerDictionary, exchange: exchange) else { continue }
-                    tickers[dto.symbol] = dto.entity(meta: container.meta)
-                    if seenSymbols.insert(dto.coinInfo.symbol).inserted {
-                        coins.append(dto.coinInfo)
-                    }
+                    ingestTickerItem(tickerDictionary)
                 }
             } else {
                 for (symbol, rawValue) in dictionary {
                     guard let tickerDictionary = rawValue as? JSONObject else { continue }
-                    guard let dto = MarketTickerDTO(dictionary: tickerDictionary.merging(["symbol": symbol as Any], uniquingKeysWith: { left, _ in left }), exchange: exchange) else { continue }
-                    tickers[dto.symbol] = dto.entity(meta: container.meta)
-                    if seenSymbols.insert(dto.coinInfo.symbol).inserted {
-                        coins.append(dto.coinInfo)
-                    }
+                    ingestTickerItem(tickerDictionary.merging(["symbol": symbol as Any], uniquingKeysWith: { left, _ in left }))
                 }
             }
         }
@@ -1507,7 +1764,8 @@ final class LiveMarketRepository: MarketRepositoryProtocol {
         let resolvedUniverse = resolveMarketUniverse(
             parsedCoins: coins,
             payload: container.payload,
-            exchange: exchange
+            exchange: exchange,
+            quoteCurrency: quoteCurrency
         )
         let allowedSymbols = Set(resolvedUniverse.coins.map(\.symbol))
         let filteredTickers: [String: TickerData]
@@ -1520,6 +1778,25 @@ final class LiveMarketRepository: MarketRepositoryProtocol {
         if exchange == .coinone {
             AppLogger.debug(.network, "Coinone ticker parsed count -> \(filteredTickers.count)")
         }
+        let droppedCount = max(receivedCount - mappedCount, 0)
+        let reasonSummary = droppedReasons.isEmpty
+            ? "none"
+            : droppedReasons.map { "\($0.key)=\($0.value)" }.sorted().joined(separator: ",")
+        AppLogger.debug(.network, "[MarketTickerREST] response status=200 itemCount=\(receivedCount)")
+        AppLogger.debug(.network, "[MarketTickerMapping] received=\(receivedCount) mapped=\(mappedCount) dropped=\(droppedCount) quote=\(quoteCurrency.rawValue) exchange=\(exchange.rawValue) reasonSummary=\(reasonSummary)")
+        if mappedCount == 0 {
+            let firstKeys: String
+            if let firstItem = unwrapArray(container.payload)?.first as? JSONObject {
+                firstKeys = firstItem.keys.sorted().joined(separator: ",")
+            } else if let dictionary = container.payload as? JSONObject,
+                      let firstItem = unwrapArray(dictionary["items"] ?? dictionary["tickers"])?.first as? JSONObject {
+                firstKeys = firstItem.keys.sorted().joined(separator: ",")
+            } else {
+                firstKeys = "-"
+            }
+            AppLogger.debug(.network, "[MarketTickerMapping] zero_rows rawItemCount=\(receivedCount) firstItemKeys=\(firstKeys) payload=\(debugJSONString(container.payload, limit: 800))")
+        }
+        AppLogger.debug(.network, "[MarketList] response count=\(filteredTickers.count)")
         return MarketTickerSnapshot(
             exchange: exchange,
             coins: resolvedUniverse.coins,
@@ -1579,18 +1856,44 @@ final class LiveMarketRepository: MarketRepositoryProtocol {
     }
 
     func fetchCandles(symbol: String, exchange: Exchange, interval: String) async throws -> CandleSnapshot {
+        try await fetchCandles(symbol: symbol, exchange: exchange, quoteCurrency: .krw, interval: interval, limit: 200)
+    }
+
+    func fetchCandles(
+        symbol: String,
+        exchange: Exchange,
+        quoteCurrency: MarketQuoteCurrency,
+        interval: String,
+        limit: Int
+    ) async throws -> CandleSnapshot {
         let startedAt = Date()
+        let queryItems = [
+            URLQueryItem(name: "symbol", value: symbol),
+            URLQueryItem(name: "exchange", value: exchange.rawValue),
+            URLQueryItem(name: "quoteCurrency", value: quoteCurrency.apiValue),
+            URLQueryItem(name: "timeframe", value: interval.uppercased()),
+            URLQueryItem(name: "limit", value: String(limit))
+        ]
+        let requestURL = (try? client.makeRequest(
+            path: client.configuration.marketCandlesPath,
+            queryItems: queryItems,
+            accessRequirement: .publicAccess
+        ).url?.absoluteString) ?? client.configuration.marketCandlesPath
+        AppLogger.debug(
+            .network,
+            "[ChartREST] request url=\(requestURL) exchange=\(exchange.rawValue) symbol=\(symbol) quote=\(quoteCurrency.rawValue) timeframe=\(interval.uppercased()) limit=\(limit)"
+        )
+        AppLogger.debug(
+            .network,
+            "[ChartREST] request selectedOnly=\(limit >= 200) exchange=\(exchange.rawValue) symbol=\(symbol) quote=\(quoteCurrency.rawValue) timeframe=\(interval.uppercased()) limit=\(limit)"
+        )
         AppLogger.debug(
             .network,
             "[ChartPipeline] exchange=\(exchange.rawValue) symbol=\(symbol) interval=\(interval.uppercased()) phase=request_dispatch endpoint=\(client.configuration.marketCandlesPath)"
         )
         let json = try await client.requestJSON(
             path: client.configuration.marketCandlesPath,
-            queryItems: [
-                URLQueryItem(name: "symbol", value: symbol),
-                URLQueryItem(name: "exchange", value: exchange.rawValue),
-                URLQueryItem(name: "interval", value: interval)
-            ],
+            queryItems: queryItems,
             accessRequirement: .publicAccess
         )
 
@@ -1600,7 +1903,12 @@ final class LiveMarketRepository: MarketRepositoryProtocol {
             guard let dictionary = item as? JSONObject, let dto = CandleDTO(dictionary: dictionary) else {
                 return nil
             }
-            return dto.entity
+            return dto.entity(
+                exchange: exchange,
+                symbol: symbol,
+                quoteCurrency: quoteCurrency,
+                timeframe: interval
+            )
         }
         .sorted { $0.time < $1.time }
 
@@ -1615,6 +1923,10 @@ final class LiveMarketRepository: MarketRepositoryProtocol {
                 .network,
                 "[ChartPipeline] exchange=\(exchange.rawValue) symbol=\(symbol) interval=\(interval.uppercased()) phase=response_success candles=\(candles.count) elapsedMs=\(elapsedMs)"
             )
+            AppLogger.debug(
+                .network,
+                "[ChartREST] response count=\(candles.count) first=\(candles.first?.time ?? 0) last=\(candles.last?.time ?? 0)"
+            )
         }
 
         return CandleSnapshot(
@@ -1622,6 +1934,60 @@ final class LiveMarketRepository: MarketRepositoryProtocol {
             symbol: symbol,
             interval: interval,
             candles: candles,
+            meta: container.meta
+        )
+    }
+
+    func fetchSparkline(
+        symbol: String,
+        exchange: Exchange,
+        quoteCurrency: MarketQuoteCurrency,
+        interval: String,
+        limit: Int
+    ) async throws -> MarketSparklineSnapshot {
+        var queryItems = [
+            URLQueryItem(name: "symbol", value: symbol),
+            URLQueryItem(name: "symbols", value: symbol),
+            URLQueryItem(name: "exchange", value: exchange.rawValue),
+            URLQueryItem(name: "quoteCurrency", value: quoteCurrency.apiValue),
+            URLQueryItem(name: "timeframe", value: interval.uppercased()),
+            URLQueryItem(name: "interval", value: interval.lowercased()),
+            URLQueryItem(name: "limit", value: String(limit))
+        ]
+        if symbol.rangeOfCharacter(from: CharacterSet(charactersIn: "-_/:")) != nil {
+            queryItems.append(URLQueryItem(name: "marketIds", value: symbol))
+        }
+        let requestURL = (try? client.makeRequest(
+            path: client.configuration.marketSparklinePath,
+            queryItems: queryItems,
+            accessRequirement: .publicAccess
+        ).url?.absoluteString) ?? client.configuration.marketSparklinePath
+        AppLogger.debug(
+            .network,
+            "[SparklineREST] request url=\(requestURL) exchange=\(exchange.rawValue) symbol=\(symbol) quote=\(quoteCurrency.rawValue) timeframe=\(interval.uppercased()) limit=\(limit)"
+        )
+        let json = try await client.requestJSON(
+            path: client.configuration.marketSparklinePath,
+            queryItems: queryItems,
+            accessRequirement: .publicAccess
+        )
+
+        let container = splitPayload(json)
+        let dictionary = container.payload as? JSONObject
+        let itemDictionary = (dictionary?["items"] as? [Any])?.first as? JSONObject
+        let sparklinePayload: Any = itemDictionary ?? container.payload
+        let responseDictionary = itemDictionary ?? dictionary
+        let points = parseSparklinePoints(from: sparklinePayload)
+        guard points.count >= 2 else {
+            throw NetworkServiceError.parsingFailed("sparkline data is empty")
+        }
+        return MarketSparklineSnapshot(
+            exchange: exchange,
+            symbol: symbol,
+            interval: interval,
+            points: points,
+            pointCount: parseSparklinePointCount(from: responseDictionary ?? [:]) ?? points.count,
+            source: responseDictionary?.string(["sparklineSource", "sparkline_source", "source", "provider"]),
             meta: container.meta
         )
     }
@@ -2107,40 +2473,51 @@ private struct MarketUniverseHints {
 private struct MarketTickerDTO {
     let symbol: String
     let coinInfo: CoinInfo
-    let price: Double
+    let price: Double?
     let changePercent: Double
     let volume24h: Double
     let high24: Double
     let low24: Double
     let sparkline: [Double]
+    let sparklinePoints: [SparklinePoint]
     let sparklinePointCount: Int?
+    let sparklineSource: String?
+    let previousPrice24h: Double?
     let timestamp: Date?
     let isStale: Bool
     let sourceExchange: Exchange
 
-    init?(dictionary: JSONObject, exchange: Exchange) {
+    init?(dictionary: JSONObject, exchange: Exchange, selectedQuoteCurrency: MarketQuoteCurrency = .krw) {
         guard let rawSymbol = marketRawSymbol(from: dictionary) else {
             return nil
         }
-        guard let price = dictionary.double([
+        let price = dictionary.double([
+            "currentPrice",
             "price",
-            "lastPrice",
+            "current",
             "tradePrice",
+            "trade_price",
+            "lastPrice",
             "closing_price",
             "last",
             "close",
             "close_price"
-        ]) else {
-            return nil
-        }
+        ])
 
-        let displayName = dictionary.string(["displayName", "name", "koreanName", "assetName"])
+        let displayName = dictionary.string(["koreanName", "nameKo", "displayName", "name", "assetName", "englishName"])
         let englishName = dictionary.string(["displayNameEn", "englishName", "nameEn"])
         let imageURL = marketImageURL(from: dictionary)
         let hasImage = marketHasImage(from: dictionary)
         let canonicalAssetKey = marketCanonicalAssetKey(from: dictionary)
+        var metadataDictionary = dictionary
+        if metadataDictionary["quoteCurrency"] == nil,
+           metadataDictionary["quote_currency"] == nil,
+           metadataDictionary["quoteAsset"] == nil,
+           metadataDictionary["quote_asset"] == nil {
+            metadataDictionary["quoteCurrency"] = selectedQuoteCurrency.rawValue
+        }
         let metadata = marketDisplayMetadata(
-            from: dictionary,
+            from: metadataDictionary,
             exchange: exchange,
             rawSymbol: rawSymbol,
             displayName: displayName,
@@ -2191,6 +2568,9 @@ private struct MarketTickerDTO {
         )
         self.price = price
         let rawChangePercent = dictionary.double([
+            "changeRate24h",
+            "percent",
+            "signedChangeRate",
             "changePercent",
             "change24h",
             "signed_change_rate",
@@ -2200,32 +2580,53 @@ private struct MarketTickerDTO {
         ]) ?? 0
         self.changePercent = abs(rawChangePercent) <= 1 ? rawChangePercent * 100 : rawChangePercent
         self.volume24h = dictionary.double([
+            "accTradePrice24h",
             "volume24h",
+            "accTradeVolume24h",
             "quoteVolume",
             "acc_trade_price_24h",
+            "acc_trade_volume_24h",
             "volume",
             "target_volume",
             "quote_volume"
         ]) ?? 0
-        self.high24 = dictionary.double(["high24", "highPrice", "high_price", "high", "high_price_24h"]) ?? price
-        self.low24 = dictionary.double(["low24", "lowPrice", "low_price", "low", "low_price_24h"]) ?? price
+        self.high24 = dictionary.double(["high24", "highPrice", "high_price", "high", "high_price_24h"]) ?? price ?? 0
+        self.low24 = dictionary.double(["low24", "lowPrice", "low_price", "low", "low_price_24h"]) ?? price ?? 0
+        self.sparklinePoints = parseSparklinePointItems(from: dictionary)
         self.sparkline = parseSparklinePoints(from: dictionary)
         self.sparklinePointCount = parseSparklinePointCount(from: dictionary)
+        self.sparklineSource = dictionary.string(["sparklineSource", "sparkline_source", "sparklineProvider", "sparkline_provider"])
+        self.previousPrice24h = dictionary.double([
+            "previousPrice24h",
+            "previous_price_24h",
+            "prevPrice24h",
+            "prev_price_24h",
+            "openingPrice",
+            "opening_price",
+            "openPrice",
+            "open_price"
+        ])
         self.timestamp = parseDateValue(dictionary["timestamp"] ?? dictionary["time"] ?? dictionary["updatedAt"])
         self.isStale = dictionary.bool(["stale", "isStale"]) ?? false
         self.sourceExchange = Exchange(rawValue: (dictionary.string(["sourceExchange", "exchange"]) ?? exchange.rawValue).lowercased()) ?? exchange
     }
 
-    func entity(meta: ResponseMeta) -> TickerData {
-        TickerData(
+    func entity(meta: ResponseMeta) -> TickerData? {
+        guard let price else {
+            return nil
+        }
+        return TickerData(
             price: price,
             change: changePercent,
             volume: volume24h,
             high24: high24,
             low24: low24,
             sparkline: sparkline,
+            sparklinePoints: sparklinePoints,
             sparklinePointCount: sparklinePointCount,
-            hasServerSparkline: sparkline.count >= 2,
+            hasServerSparkline: sparklinePoints.count >= 2 || sparkline.count >= 2,
+            sparklineSource: sparklineSource ?? (sparklinePoints.count >= 2 ? "ticker_sparkline_points" : (sparkline.count >= 2 ? "ticker_sparkline" : nil)),
+            previousPrice24h: previousPrice24h,
             timestamp: timestamp ?? meta.fetchedAt,
             isStale: isStale || meta.isStale,
             sourceExchange: sourceExchange,
@@ -2237,15 +2638,16 @@ private struct MarketTickerDTO {
 private func resolveMarketUniverse(
     parsedCoins: [CoinInfo],
     payload: Any,
-    exchange: Exchange
+    exchange: Exchange,
+    quoteCurrency: MarketQuoteCurrency
 ) -> ResolvedMarketUniverse {
     let hints = marketUniverseHints(from: payload, exchange: exchange)
     let baseCoins: [CoinInfo]
 
     if !hints.listedCoins.isEmpty {
-        baseCoins = deduplicatedCoins(hints.listedCoins, exchange: exchange)
+        baseCoins = deduplicatedCoins(hints.listedCoins, exchange: exchange, quoteCurrency: quoteCurrency)
     } else if !hints.listedSymbols.isEmpty {
-        let parsedCoinsBySymbol = deduplicatedCoins(parsedCoins, exchange: exchange)
+        let parsedCoinsBySymbol = deduplicatedCoins(parsedCoins, exchange: exchange, quoteCurrency: quoteCurrency)
             .reduce(into: [String: CoinInfo]()) { partialResult, coin in
                 if let existing = partialResult[coin.symbol] {
                     partialResult[coin.symbol] = existing.merged(with: coin)
@@ -2257,7 +2659,7 @@ private func resolveMarketUniverse(
             parsedCoinsBySymbol[symbol] ?? CoinCatalog.coin(symbol: symbol)
         }
     } else {
-        baseCoins = deduplicatedCoins(parsedCoins, exchange: exchange)
+        baseCoins = deduplicatedCoins(parsedCoins, exchange: exchange, quoteCurrency: quoteCurrency)
     }
 
     let filteredSymbols = deduplicatedSymbols(
@@ -2271,6 +2673,7 @@ private func resolveMarketUniverse(
     let filteredCoins = baseCoins.filter { coin in
         (hints.supportedSymbols.isEmpty || hints.supportedSymbols.contains(coin.symbol))
             && hints.excludedSymbols.contains(coin.symbol) == false
+            && marketQuoteMatches(coin, quoteCurrency: quoteCurrency)
     }
 
     return ResolvedMarketUniverse(
@@ -2346,12 +2749,17 @@ private func parseCoinInfoArray(from rawValue: Any?, exchange: Exchange) -> [Coi
     )
 }
 
-private func deduplicatedCoins(_ coins: [CoinInfo], exchange: Exchange) -> [CoinInfo] {
+private func deduplicatedCoins(_ coins: [CoinInfo], exchange: Exchange, quoteCurrency: MarketQuoteCurrency? = nil) -> [CoinInfo] {
     var mergedCoinsByMarketIdentity = [MarketIdentity: CoinInfo]()
     var orderedMarketIdentities = [MarketIdentity]()
 
     for coin in coins {
-        let marketIdentity = coin.marketIdentity(exchange: exchange)
+        if let quoteCurrency {
+            guard marketQuoteMatches(coin, quoteCurrency: quoteCurrency) else {
+                continue
+            }
+        }
+        let marketIdentity = coin.marketIdentity(exchange: exchange, quoteCurrency: quoteCurrency ?? coin.displayMetadata?.quoteAsset.flatMap(MarketQuoteCurrency.init(rawValue:)) ?? .krw)
         if let existing = mergedCoinsByMarketIdentity[marketIdentity] {
             mergedCoinsByMarketIdentity[marketIdentity] = existing.merged(with: coin)
         } else {
@@ -2361,6 +2769,38 @@ private func deduplicatedCoins(_ coins: [CoinInfo], exchange: Exchange) -> [Coin
     }
 
     return orderedMarketIdentities.compactMap { mergedCoinsByMarketIdentity[$0] }
+}
+
+private func marketQuoteMatches(_ coin: CoinInfo, quoteCurrency: MarketQuoteCurrency) -> Bool {
+    let quote = quoteCurrency.rawValue
+    let baseAsset = coin.displayMetadata?.baseAsset?.uppercased()
+    let canonicalSymbol = coin.canonicalSymbol.uppercased()
+    if baseAsset == quote || canonicalSymbol == quote {
+        return false
+    }
+    if let quoteAsset = coin.displayMetadata?.quoteAsset?.uppercased(),
+       quoteAsset.isEmpty == false {
+        return quoteAsset == quote
+    }
+    guard let marketId = coin.marketId?.uppercased() else {
+        return quoteCurrency == .krw
+    }
+    if marketId == quote {
+        return false
+    }
+    if marketId.contains("-") || marketId.contains("_") || marketId.contains("/") || marketId.contains(":") {
+        let separators = CharacterSet(charactersIn: "-_/:")
+        let components = marketId.components(separatedBy: separators).filter { !$0.isEmpty }
+        let knownQuotes = Set(MarketQuoteCurrency.allCases.map(\.rawValue))
+        if let first = components.first, knownQuotes.contains(first) {
+            return first == quote
+        }
+        return components.last == quote
+    }
+    if quote == "USDT" || quote == "KRW" || quote == "BTC" || quote == "ETH" {
+        return marketId.hasPrefix(quote) || marketId.hasSuffix(quote)
+    }
+    return true
 }
 
 private func deduplicatedSymbols(_ symbols: [String]) -> [String] {
@@ -2458,18 +2898,20 @@ private func marketRawSymbol(from dictionary: JSONObject) -> String? {
     dictionary.string([
         "canonicalSymbol",
         "canonical_symbol",
-        "displaySymbol",
-        "display_symbol",
+        "rawSymbol",
+        "raw_symbol",
         "ticker",
         "symbol",
-        "marketId",
-        "market_id",
-        "market",
-        "code",
         "baseAsset",
         "base_asset",
         "baseCurrency",
         "base_currency",
+        "marketId",
+        "market_id",
+        "market",
+        "code",
+        "displaySymbol",
+        "display_symbol",
         "asset",
         "currency",
         "target_currency",
@@ -2708,7 +3150,13 @@ private struct PublicTradeDTO {
 }
 
 private struct CandleDTO {
-    let entity: CandleData
+    let time: Int
+    let open: Double
+    let high: Double
+    let low: Double
+    let close: Double
+    let volume: Int
+    let quoteVolume: Double?
 
     init?(dictionary: JSONObject) {
         guard
@@ -2720,14 +3168,41 @@ private struct CandleDTO {
             return nil
         }
 
-        let timestamp = parseDateValue(dictionary["timestamp"] ?? dictionary["time"] ?? dictionary["candleDateTimeKst"] ?? dictionary["candle_date_time_utc"])
-        self.entity = CandleData(
-            time: Int((timestamp ?? Date()).timeIntervalSince1970),
+        let timestamp = parseDateValue(
+            dictionary["timestamp"]
+                ?? dictionary["time"]
+                ?? dictionary["openTime"]
+                ?? dictionary["open_time"]
+                ?? dictionary["candleDateTimeKst"]
+                ?? dictionary["candle_date_time_utc"]
+        )
+        self.time = Int((timestamp ?? Date()).timeIntervalSince1970)
+        self.open = open
+        self.high = high
+        self.low = low
+        self.close = close
+        self.volume = dictionary.int(["volume", "candleAccTradeVolume", "candle_acc_trade_volume"]) ?? 0
+        self.quoteVolume = dictionary.double(["quoteVolume", "candleAccTradePrice", "candle_acc_trade_price"])
+    }
+
+    func entity(
+        exchange: Exchange? = nil,
+        symbol: String? = nil,
+        quoteCurrency: MarketQuoteCurrency? = nil,
+        timeframe: String? = nil
+    ) -> CandleData {
+        CandleData(
+            time: time,
             open: open,
             high: high,
             low: low,
             close: close,
-            volume: dictionary.int(["volume", "candleAccTradeVolume", "candle_acc_trade_volume"]) ?? 0
+            volume: volume,
+            quoteVolume: quoteVolume,
+            exchange: exchange,
+            symbol: symbol,
+            quoteCurrency: quoteCurrency,
+            timeframe: timeframe
         )
     }
 }
@@ -3233,7 +3708,7 @@ private func unwrapArray(_ value: Any?) -> [Any]? {
         return array
     }
     if let dictionary = value as? JSONObject {
-        for key in ["items", "rows", "results", "list"] {
+        for key in ["items", "rows", "results", "list", "candles"] {
             if let nested = dictionary[key] as? [Any] {
                 return nested
             }
@@ -3347,7 +3822,15 @@ private func parseDateValue(_ rawValue: Any?) -> Date? {
     }
 }
 
-private func parseSparklinePoints(from dictionary: JSONObject) -> [Double] {
+private func parseSparklinePoints(from payload: Any) -> [Double] {
+    if let points = parseDoubleArray(payload) {
+        return points
+    }
+
+    guard let dictionary = payload as? JSONObject else {
+        return []
+    }
+
     for key in ["sparkline", "sparklinePoints", "sparkline_points", "trend", "history", "prices"] {
         if let points = parseDoubleArray(dictionary[key]) {
             return points
@@ -3363,6 +3846,66 @@ private func parseSparklinePoints(from dictionary: JSONObject) -> [Double] {
     }
 
     return []
+}
+
+private func parseSparklinePointItems(from dictionary: JSONObject) -> [SparklinePoint] {
+    for key in ["sparklinePoints", "sparkline_points"] {
+        if let points = parseSparklinePointItemsArray(dictionary[key]) {
+            return points
+        }
+
+        if let nested = dictionary[key] as? JSONObject {
+            for nestedKey in ["points", "items", "values", "prices"] {
+                if let points = parseSparklinePointItemsArray(nested[nestedKey]) {
+                    return points
+                }
+            }
+        }
+    }
+
+    return []
+}
+
+private func parseSparklinePointItemsArray(_ rawValue: Any?) -> [SparklinePoint]? {
+    guard let array = unwrapArray(rawValue) else {
+        return nil
+    }
+
+    let points = array.compactMap { item -> SparklinePoint? in
+        if let value = item as? Double {
+            return SparklinePoint(price: value, timestamp: nil)
+        }
+        if let value = item as? NSNumber {
+            return SparklinePoint(price: value.doubleValue, timestamp: nil)
+        }
+        if let value = item as? String,
+           let price = Double(value.replacingOccurrences(of: ",", with: "")) {
+            return SparklinePoint(price: price, timestamp: nil)
+        }
+        guard let dictionary = item as? JSONObject,
+              let price = dictionary.double([
+                "price",
+                "value",
+                "close",
+                "tradePrice",
+                "trade_price",
+                "currentPrice",
+                "current_price"
+              ]),
+              price.isFinite,
+              price > 0 else {
+            return nil
+        }
+        let timestamp = parseDateValue(
+            dictionary["timestamp"]
+                ?? dictionary["time"]
+                ?? dictionary["ts"]
+                ?? dictionary["date"]
+        )
+        return SparklinePoint(price: price, timestamp: timestamp)
+    }
+
+    return points.count >= 2 ? points : nil
 }
 
 private func parseSparklinePointCount(from dictionary: JSONObject) -> Int? {
@@ -3401,6 +3944,17 @@ private func parseDoubleArray(_ rawValue: Any?) -> [Double]? {
         }
         if let value = item as? String {
             return Double(value.replacingOccurrences(of: ",", with: ""))
+        }
+        if let dictionary = item as? JSONObject {
+            return dictionary.double([
+                "price",
+                "value",
+                "close",
+                "tradePrice",
+                "trade_price",
+                "currentPrice",
+                "current_price"
+            ])
         }
         return nil
     }

@@ -6,6 +6,7 @@ enum AppLogCategory: String {
     case auth = "AUTH"
     case network = "NETWORK"
     case websocket = "WEBSOCKET"
+    case layout = "LAYOUT"
 }
 
 enum AppLogger {

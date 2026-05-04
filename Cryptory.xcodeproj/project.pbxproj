@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		C0DE00000000000000000001 /* GoogleSignIn in Frameworks */ = {isa = PBXBuildFile; productRef = C0DE00000000000000000003 /* GoogleSignIn */; };
+		C0DE00000000000000000021 /* FirebaseMessaging in Frameworks */ = {isa = PBXBuildFile; productRef = C0DE00000000000000000023 /* FirebaseMessaging */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -41,6 +42,7 @@
 			membershipExceptions = (
 				"Info-Dev.plist",
 				Info.plist,
+				"Services/TranslationService 2.swift",
 			);
 			target = 8BDB61A12F7A0CA900987CEF /* Cryptory */;
 		};
@@ -73,6 +75,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				C0DE00000000000000000001 /* GoogleSignIn in Frameworks */,
+				C0DE00000000000000000021 /* FirebaseMessaging in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -144,6 +147,7 @@
 			name = Cryptory;
 			packageProductDependencies = (
 				C0DE00000000000000000003 /* GoogleSignIn */,
+				C0DE00000000000000000023 /* FirebaseMessaging */,
 			);
 			productName = Cryptory;
 			productReference = 8BDB61A22F7A0CA900987CEF /* Cryptory.app */;
@@ -229,6 +233,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				C0DE00000000000000000002 /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */,
+				C0DE00000000000000000022 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 8BDB61A32F7A0CA900987CEF /* Products */;
@@ -639,6 +644,14 @@
 				minimumVersion = 9.0.0;
 			};
 		};
+		C0DE00000000000000000022 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/firebase/firebase-ios-sdk.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 12.0.0;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -646,6 +659,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = C0DE00000000000000000002 /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */;
 			productName = GoogleSignIn;
+		};
+		C0DE00000000000000000023 /* FirebaseMessaging */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = C0DE00000000000000000022 /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
+			productName = FirebaseMessaging;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

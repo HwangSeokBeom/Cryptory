@@ -18,6 +18,7 @@ private func sparklineQuality(
         graphPathVersion: payload.graphPathVersion,
         renderVersion: payload.renderVersion,
         sourceVersion: payload.sourceVersion,
+        sourceName: payload.sourceName,
         shapeQuality: payload.shapeQuality
     )
 }
@@ -762,15 +763,15 @@ final class SparklineRenderView: UIView {
         let oldBucket = MarketSparklineRenderPolicy.pointCountBucket(oldPointCount)
         let newBucket = MarketSparklineRenderPolicy.pointCountBucket(newPointCount)
         let forcedUpgradeReason: String?
-        if oldDetail == .placeholder && newDetail == .liveDetailed {
+        if oldDetail == .placeholder && newDetail.pathDetailRank >= MarketSparklineDetailLevel.refinedMini.pathDetailRank {
             forcedUpgradeReason = "placeholder_to_live"
         } else if oldPointCount == 0 && newPointCount > 0 {
             forcedUpgradeReason = "placeholder_to_live"
-        } else if oldDetail == .retainedCoarse && newPointCount > oldPointCount {
+        } else if (oldDetail == .retainedCoarse || oldDetail == .derivedPreview) && newPointCount > oldPointCount {
             forcedUpgradeReason = "coarse_to_live"
         } else if (oldState == .placeholder || oldState == .staleVisible || oldState == .cachedVisible) && newState == .liveVisible {
             forcedUpgradeReason = "placeholder_to_live"
-        } else if (oldDetail == .retainedCoarse || oldDetail == .liveCoarse)
+        } else if (oldDetail == .retainedCoarse || oldDetail == .liveCoarse || oldDetail == .derivedPreview || oldDetail == .providerMini)
             && (MarketSparklineRenderPolicy.minimumRenderablePointCount...MarketSparklineRenderPolicy.coarseUpperBoundPointCount).contains(oldPointCount)
             && MarketSparklineRenderPolicy.isPromotedPointCount(newPointCount)
             && newDetail.isDetailed {
@@ -951,5 +952,11 @@ struct SparklineView: View, Equatable {
     var body: some View {
         SparklineCanvasView(configuration: resolvedConfiguration)
             .frame(width: width, height: height)
+            .onAppear {
+                AppLogger.debug(
+                    .network,
+                    "[SparklineRender] exchange=\(marketIdentity.exchange.rawValue) quoteCurrency=\(marketIdentity.quoteCurrency.rawValue) marketId=\(marketIdentity.marketId ?? marketIdentity.symbol) quality=\(resolvedConfiguration.payload.detailLevel.cacheComponent) pointCount=\(resolvedConfiguration.payload.pointCount) width=\(Int(width)) height=\(Int(height)) isFlat=\(resolvedConfiguration.payload.shapeQuality.isFlatLookingLowInformation)"
+                )
+            }
     }
 }

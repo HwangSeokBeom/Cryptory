@@ -4,22 +4,31 @@ struct MarketIdentity: Hashable, Codable {
     let exchange: Exchange
     let marketId: String?
     let symbol: String
+    let quoteCurrency: MarketQuoteCurrency
 
     nonisolated init(exchange: Exchange, marketId: String? = nil, symbol: String) {
         self.exchange = exchange
         self.marketId = Self.normalizedComponent(marketId)
         self.symbol = Self.normalizedComponent(symbol) ?? symbol.uppercased()
+        self.quoteCurrency = .krw
+    }
+
+    nonisolated init(exchange: Exchange, marketId: String? = nil, symbol: String, quoteCurrency: MarketQuoteCurrency) {
+        self.exchange = exchange
+        self.marketId = Self.normalizedComponent(marketId)
+        self.symbol = Self.normalizedComponent(symbol) ?? symbol.uppercased()
+        self.quoteCurrency = quoteCurrency
     }
 
     nonisolated var cacheKey: String {
         if let marketId {
-            return "\(exchange.rawValue)|\(marketId)"
+            return "\(exchange.rawValue)|\(quoteCurrency.rawValue)|\(marketId)"
         }
-        return "\(exchange.rawValue)|\(symbol)"
+        return "\(exchange.rawValue)|\(quoteCurrency.rawValue)|\(symbol)"
     }
 
     nonisolated var logFields: String {
-        "exchange=\(exchange.rawValue) marketId=\(marketId ?? "-") symbol=\(symbol)"
+        "exchange=\(exchange.rawValue) quote=\(quoteCurrency.rawValue) marketId=\(marketId ?? "-") symbol=\(symbol)"
     }
 
     private nonisolated static func normalizedComponent(_ rawValue: String?) -> String? {
@@ -239,11 +248,12 @@ struct CoinDisplayMetadata: Equatable, Codable {
         self.unavailableReason = unavailableReason
     }
 
-    nonisolated func marketIdentity(exchange: Exchange, symbol: String) -> MarketIdentity {
+    nonisolated func marketIdentity(exchange: Exchange, symbol: String, quoteCurrency: MarketQuoteCurrency = .krw) -> MarketIdentity {
         MarketIdentity(
             exchange: exchange,
             marketId: normalizedMarketId,
-            symbol: symbol
+            symbol: symbol,
+            quoteCurrency: quoteCurrency
         )
     }
 
@@ -385,11 +395,11 @@ struct CoinInfo: Identifiable, Equatable, Codable {
         )
     }
 
-    nonisolated func marketIdentity(exchange: Exchange) -> MarketIdentity {
+    nonisolated func marketIdentity(exchange: Exchange, quoteCurrency: MarketQuoteCurrency = .krw) -> MarketIdentity {
         if let displayMetadata {
-            return displayMetadata.marketIdentity(exchange: exchange, symbol: symbol)
+            return displayMetadata.marketIdentity(exchange: exchange, symbol: symbol, quoteCurrency: quoteCurrency)
         }
-        return MarketIdentity(exchange: exchange, symbol: symbol)
+        return MarketIdentity(exchange: exchange, symbol: symbol, quoteCurrency: quoteCurrency)
     }
 }
 

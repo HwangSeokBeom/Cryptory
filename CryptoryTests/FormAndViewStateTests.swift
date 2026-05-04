@@ -10,16 +10,76 @@ final class FormAndViewStateTests: XCTestCase {
         AssetImageClient.shared.debugReset()
     }
 
-    func testAppExternalLinksUseConfiguredWebBaseURL() {
-        let baseURLString = AppConfig.current.webBaseURL.absoluteString
-        let normalizedBaseURLString = baseURLString.hasSuffix("/") ? baseURLString : baseURLString + "/"
+    func testUSDTExchangeRateResponseDecodesWrapperPriceAndStringDates() throws {
+        let data = Data(
+            """
+            {
+              "success": true,
+              "data": {
+                "symbol": "USDT",
+                "name": "Tether USDt",
+                "convert": "KRW",
+                "price": 1375.25,
+                "source": "coinmarketcap",
+                "cacheHit": false,
+                "updatedAt": "2026-05-03T23:07:00Z",
+                "expiresAt": "2026-05-03T23:12:00Z",
+                "reason": null
+              }
+            }
+            """.utf8
+        )
+
+        let response = try JSONDecoder().decode(USDTExchangeRateResponseDTO.self, from: data)
+        let quote = try USDTExchangeRateMapper.quote(from: response)
+
+        XCTAssertTrue(response.success)
+        XCTAssertEqual(response.data.price, 1375.25)
+        XCTAssertEqual(quote.price, 1375.25)
+        XCTAssertEqual(quote.source, "coinmarketcap")
+        XCTAssertNotNil(quote.updatedAt)
+        XCTAssertNotNil(quote.expiresAt)
+    }
+
+    func testUSDTExchangeRateNullPriceMapsToFailure() throws {
+        let data = Data(
+            """
+            {
+              "success": true,
+              "data": {
+                "symbol": "USDT",
+                "name": "Tether USDt",
+                "convert": "KRW",
+                "price": null,
+                "source": "none",
+                "cacheHit": false,
+                "updatedAt": null,
+                "expiresAt": null,
+                "reason": "coinmarketcap_unavailable"
+              }
+            }
+            """.utf8
+        )
+        let response = try JSONDecoder().decode(USDTExchangeRateResponseDTO.self, from: data)
+
+        XCTAssertNil(response.data.price)
+        XCTAssertThrowsError(try USDTExchangeRateMapper.quote(from: response))
+    }
+
+    func testUSDTExchangeRateCalculatorConvertsBothDirections() {
+        XCTAssertEqual(USDTExchangeRateMapper.krwAmount(usdt: 2.5, rate: 1375.25), 3438.125)
+        XCTAssertEqual(USDTExchangeRateMapper.usdtAmount(krw: 2750.5, rate: 1375.25), 2.0)
+    }
+
+    func testAppExternalLinksUseFallbackLegalPagesURLs() {
         let expectedLinks: [(AppExternalLink, String, String)] = [
-            (.home, "홈페이지", normalizedBaseURLString),
-            (.privacyPolicy, "개인정보처리방침", normalizedBaseURLString + "privacy.html"),
-            (.termsOfService, "이용약관", normalizedBaseURLString + "terms.html"),
-            (.support, "고객지원", normalizedBaseURLString + "support.html"),
-            (.deleteAccount, "계정삭제 안내", normalizedBaseURLString + "delete-account.html"),
-            (.investmentDisclaimer, "투자 유의 및 면책", normalizedBaseURLString + "disclaimer.html")
+            (.home, "홈페이지", "https://hwangseokbeom.github.io/Cryptory-legal/"),
+            (.privacyPolicy, "개인정보처리방침", "https://hwangseokbeom.github.io/Cryptory-legal/privacy.html"),
+            (.termsOfService, "이용약관", "https://hwangseokbeom.github.io/Cryptory-legal/terms.html"),
+            (.support, "고객지원", "https://hwangseokbeom.github.io/Cryptory-legal/support.html"),
+            (.deleteAccount, "계정삭제 안내", "https://hwangseokbeom.github.io/Cryptory-legal/delete-account.html"),
+            (.investmentDisclaimer, "투자 유의 및 면책", "https://hwangseokbeom.github.io/Cryptory-legal/disclaimer.html"),
+            (.communityPolicy, "커뮤니티 운영 정책", "https://hwangseokbeom.github.io/Cryptory-legal/community-policy.html")
         ]
 
         XCTAssertEqual(AppExternalLink.allCases.count, expectedLinks.count)
@@ -28,13 +88,69 @@ final class FormAndViewStateTests: XCTestCase {
             XCTAssertEqual(link.title, title)
             XCTAssertEqual(link.urlString, urlString)
             XCTAssertEqual(link.url?.absoluteString, urlString)
+            XCTAssertEqual(link.url?.scheme, "https")
             XCTAssertNotNil(SafariDestination(link: link))
         }
+    }
+
+    func testLegalLinksConfigurationDecodesServerConfig() throws {
+        let data = Data(
+            """
+            {
+              "success": true,
+              "data": {
+                "legal": {
+                  "homepageUrl": "https://hwangseokbeom.github.io/Cryptory-legal/",
+                  "termsUrl": "https://hwangseokbeom.github.io/Cryptory-legal/terms.html",
+                  "privacyPolicyUrl": "https://hwangseokbeom.github.io/Cryptory-legal/privacy.html",
+                  "supportUrl": "https://hwangseokbeom.github.io/Cryptory-legal/support.html",
+                  "accountDeletionGuideUrl": "https://hwangseokbeom.github.io/Cryptory-legal/delete-account.html",
+                  "investmentDisclaimerUrl": "https://hwangseokbeom.github.io/Cryptory-legal/disclaimer.html",
+                  "communityPolicyUrl": "https://hwangseokbeom.github.io/Cryptory-legal/community-policy.html"
+                }
+              }
+            }
+            """.utf8
+        )
+        let json = try JSONSerialization.jsonObject(with: data)
+        let configuration = try XCTUnwrap(LegalLinksConfiguration.decodeServerResponse(from: json))
+
+        XCTAssertEqual(configuration.urlString(for: .communityPolicy), "https://hwangseokbeom.github.io/Cryptory-legal/community-policy.html")
+        XCTAssertEqual(configuration.urlString(for: .privacyPolicy), "https://hwangseokbeom.github.io/Cryptory-legal/privacy.html")
+        XCTAssertEqual(configuration.urlString(for: .deleteAccount), "https://hwangseokbeom.github.io/Cryptory-legal/delete-account.html")
+    }
+
+    func testLegalLinksConfigurationFallsBackWhenRemoteURLIsInvalid() throws {
+        let remote = try JSONDecoder().decode(
+            RemoteLegalLinksConfiguration.self,
+            from: Data(
+                """
+                {
+                  "homepageUrl": "",
+                  "termsUrl": "http://example.com/terms.html"
+                }
+                """.utf8
+            )
+        )
+        let configuration = LegalLinksConfiguration(remote: remote)
+
+        XCTAssertEqual(configuration.urlString(for: .home), LegalLinksConfiguration.fallback.homepageUrl)
+        XCTAssertEqual(configuration.urlString(for: .termsOfService), LegalLinksConfiguration.fallback.termsUrl)
+        XCTAssertEqual(configuration.urlString(for: .communityPolicy), LegalLinksConfiguration.fallback.communityPolicyUrl)
+    }
+
+    func testProfilePolicyLinksContainCommunityPolicyRow() {
+        XCTAssertEqual(
+            AppExternalLink.profilePolicyLinks,
+            [.support, .privacyPolicy, .termsOfService, .communityPolicy, .deleteAccount, .investmentDisclaimer, .home]
+        )
+        XCTAssertEqual(AppExternalLink.communityPolicy.profileSubtitle, "커뮤니티 게시글, 댓글, 신고 및 차단 처리 기준을 확인합니다.")
     }
 
     func testSafariDestinationRejectsInvalidExternalURLs() {
         XCTAssertNil(SafariDestination(title: "비어 있는 링크", urlString: " "))
         XCTAssertNil(SafariDestination(title: "스킴 없는 링크", urlString: "hwangseokbeom.github.io/Cryptory-legal/"))
+        XCTAssertNil(SafariDestination(title: "http 링크", urlString: "http://hwangseokbeom.github.io/Cryptory-legal/"))
         XCTAssertNil(SafariDestination(title: "지원하지 않는 링크", urlString: "ftp://hwangseokbeom.github.io/Cryptory-legal/"))
         XCTAssertNotNil(SafariDestination(title: "정상 링크", urlString: "https://hwangseokbeom.github.io/Cryptory-legal/"))
     }
@@ -550,6 +666,107 @@ final class FormAndViewStateTests: XCTestCase {
         XCTAssertEqual(detailedQuality.detailLevel, .liveDetailed)
         XCTAssertTrue(detailedQuality.isMinimumVisualQualityForFirstPaint)
         XCTAssertTrue(detailedQuality.promotionDecision(over: coarseQuality).accepted)
+    }
+
+    func testDerivedChange24hGraphMapsToDerivedPreview() {
+        let quality = MarketSparklineQuality(
+            graphState: .liveVisible,
+            points: [100, 102, 104, 106, 108, 110],
+            pointCount: 6,
+            sourceName: "derived_change24h"
+        )
+
+        XCTAssertEqual(quality.detailLevel, .derivedPreview)
+        XCTAssertEqual(quality.qualityRank, 2)
+    }
+
+    func testSparklineEndpointRanksAboveDerivedPreview() {
+        let derivedQuality = MarketSparklineQuality(
+            graphState: .liveVisible,
+            points: [100, 102, 104, 106, 108, 110],
+            pointCount: 6,
+            sourceName: "derived_change24h"
+        )
+        let refinedQuality = MarketSparklineQuality(
+            graphState: .liveVisible,
+            points: [
+                100, 103, 101, 106, 104, 109,
+                107, 112, 110, 115, 113, 118
+            ],
+            pointCount: 12,
+            sourceName: "sparkline_endpoint"
+        )
+
+        XCTAssertEqual(refinedQuality.detailLevel, .refinedMini)
+        XCTAssertGreaterThan(refinedQuality.qualityRank, derivedQuality.qualityRank)
+    }
+
+    func testDerivedGraphPromotesToSparklineEndpointRegardlessOfPointCount() {
+        let derivedQuality = MarketSparklineQuality(
+            graphState: .liveVisible,
+            points: [100, 102, 104, 106, 108, 110],
+            pointCount: 6,
+            sourceName: "derived_change24h"
+        )
+        let endpointQuality = MarketSparklineQuality(
+            graphState: .liveVisible,
+            points: [100, 103, 101, 106, 104, 109],
+            pointCount: 6,
+            sourceName: "sparkline_endpoint"
+        )
+
+        let decision = endpointQuality.promotionDecision(over: derivedQuality)
+
+        XCTAssertTrue(decision.accepted)
+        XCTAssertEqual(decision.reason, "upgrade_derived_to_refined")
+    }
+
+    func testSixPointGraphPromotesWhenTwentyFourPointCandidateArrives() {
+        let oldQuality = MarketSparklineQuality(
+            graphState: .liveVisible,
+            points: [100, 102, 104, 106, 108, 110],
+            pointCount: 6,
+            sourceName: "ticker_sparkline"
+        )
+        let refinedPoints: [Double] = [
+            100.0, 101.25, 102.5, 103.75, 105.0, 101.25,
+            102.5, 103.75, 105.0, 106.25, 102.5, 103.75,
+            105.0, 106.25, 107.5, 103.75, 105.0, 106.25,
+            107.5, 108.75, 105.0, 106.25, 107.5, 108.75
+        ]
+        let newQuality = MarketSparklineQuality(
+            graphState: .liveVisible,
+            points: refinedPoints,
+            pointCount: 24
+        )
+
+        let decision = newQuality.promotionDecision(over: oldQuality)
+
+        XCTAssertTrue(decision.accepted)
+        XCTAssertEqual(decision.reason, "upgrade_point_count")
+    }
+
+    func testRetainedDerivedStoreDoesNotBlockSparklineEndpointUpgrade() {
+        let retainedDerivedQuality = MarketSparklineQuality(
+            graphState: .cachedVisible,
+            points: [100, 102, 104, 106, 108, 110],
+            pointCount: 6,
+            sourceName: "retained_store_derived"
+        )
+        let endpointQuality = MarketSparklineQuality(
+            graphState: .liveVisible,
+            points: [
+                100, 103, 101, 106, 104, 109,
+                107, 112, 110, 115, 113, 118
+            ],
+            pointCount: 12,
+            sourceName: "sparkline_endpoint"
+        )
+
+        let decision = endpointQuality.promotionDecision(over: retainedDerivedQuality)
+
+        XCTAssertTrue(decision.accepted)
+        XCTAssertEqual(decision.reason, "upgrade_derived_to_refined")
     }
 
     func testMarketSparklineQualityVisibleBindableChangeAllowsNewerSourceVersionWithinSameDetail() {

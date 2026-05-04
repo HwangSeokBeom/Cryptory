@@ -246,7 +246,13 @@ struct TradeView: View {
     }
 
     private func openExternalLink(_ link: AppExternalLink) {
-        safariDestination = SafariDestination(link: link)
+        AppLogger.debug(.auth, "DEBUG [LegalLink] open type=\(link.policyDebugName) urlExists=\(link.urlString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false)")
+        guard let destination = SafariDestination(link: link) else {
+            AppLogger.debug(.auth, "WARN [LegalLink] invalid type=\(link.policyDebugName) reason=invalidURL")
+            vm.showNotification("링크를 열 수 없습니다.", type: .error)
+            return
+        }
+        safariDestination = destination
     }
 
     private func selectedCoinCard(_ coin: CoinInfo) -> some View {

@@ -35,6 +35,24 @@ struct PriceFormatter {
         formatPrice(value) + " KRW"
     }
 
+    nonisolated static func formatBTC(_ value: Double) -> String {
+        let text = value.formatted(.number.precision(.fractionLength(0...8)))
+        return "\(text) BTC"
+    }
+
+    nonisolated static func formatMarketPrice(_ value: Double, quoteCurrency: MarketQuoteCurrency) -> String {
+        switch quoteCurrency {
+        case .krw:
+            return formatPrice(value)
+        case .btc:
+            return formatBTC(value)
+        case .usdt:
+            return "\(formatPrice(value)) USDT"
+        case .eth:
+            return "\(value.formatted(.number.precision(.fractionLength(0...8)))) ETH"
+        }
+    }
+
     /// Format quantity to 4 decimal places
     nonisolated static func formatQty(_ value: Double) -> String {
         value.formatted(.number.precision(.fractionLength(0...4)))
