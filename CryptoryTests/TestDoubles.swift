@@ -22,19 +22,24 @@ struct StubMarketRepository: MarketRepositoryProtocol {
     var orderbookSnapshot = OrderbookSnapshot(exchange: .upbit, symbol: "BTC", orderbook: OrderbookData(asks: [], bids: []), meta: .empty)
     var publicTradesSnapshot = PublicTradesSnapshot(exchange: .upbit, symbol: "BTC", trades: [], meta: .empty)
     var candleSnapshot = CandleSnapshot(exchange: .upbit, symbol: "BTC", interval: "1h", candles: [], meta: .empty)
+    var sparklineSnapshot = MarketSparklineSnapshot(exchange: .upbit, symbol: "BTC", interval: "1h", points: [123_000_000, 125_000_000], pointCount: 2, source: "test", meta: .empty)
 
     func fetchMarkets(exchange: Exchange) async throws -> MarketCatalogSnapshot { marketCatalogSnapshot }
     func fetchTickers(exchange: Exchange) async throws -> MarketTickerSnapshot { tickerSnapshot }
     func fetchOrderbook(symbol: String, exchange: Exchange) async throws -> OrderbookSnapshot { orderbookSnapshot }
     func fetchTrades(symbol: String, exchange: Exchange) async throws -> PublicTradesSnapshot { publicTradesSnapshot }
     func fetchCandles(symbol: String, exchange: Exchange, interval: String) async throws -> CandleSnapshot { candleSnapshot }
+    func fetchSparkline(symbol: String, exchange: Exchange, quoteCurrency: MarketQuoteCurrency, interval: String, limit: Int) async throws -> MarketSparklineSnapshot { sparklineSnapshot }
 }
 
 final class SpyMarketRepository: MarketRepositoryProtocol {
     let marketCandlesEndpointPath = "/market/candles"
     private(set) var fetchedMarkets: [Exchange] = []
     private(set) var fetchedTickers: [Exchange] = []
+    private(set) var fetchedTickerQuotes: [(exchange: Exchange, quoteCurrency: MarketQuoteCurrency)] = []
     private(set) var fetchedCandles: [(symbol: String, exchange: Exchange, interval: String)] = []
+    private(set) var fetchedCandleQuotes: [(symbol: String, exchange: Exchange, quoteCurrency: MarketQuoteCurrency, interval: String, limit: Int)] = []
+    private(set) var fetchedSparklines: [(symbol: String, exchange: Exchange, quoteCurrency: MarketQuoteCurrency, interval: String, limit: Int)] = []
     private(set) var fetchedOrderbooks: [(symbol: String, exchange: Exchange)] = []
     private(set) var fetchedTrades: [(symbol: String, exchange: Exchange)] = []
 
@@ -96,6 +101,15 @@ final class SpyMarketRepository: MarketRepositoryProtocol {
     var orderbookSnapshot = OrderbookSnapshot(exchange: .upbit, symbol: "BTC", orderbook: OrderbookData(asks: [], bids: []), meta: .empty)
     var publicTradesSnapshot = PublicTradesSnapshot(exchange: .upbit, symbol: "BTC", trades: [], meta: .empty)
     var candleSnapshot = CandleSnapshot(exchange: .upbit, symbol: "BTC", interval: "1h", candles: [], meta: .empty)
+    var sparklineSnapshot = MarketSparklineSnapshot(
+        exchange: .upbit,
+        symbol: "BTC",
+        interval: "1h",
+        points: [123_500_000, 125_000_000],
+        pointCount: 2,
+        source: "test",
+        meta: .empty
+    )
 
     func fetchMarkets(exchange: Exchange) async throws -> MarketCatalogSnapshot {
         fetchedMarkets.append(exchange)
@@ -105,6 +119,11 @@ final class SpyMarketRepository: MarketRepositoryProtocol {
     func fetchTickers(exchange: Exchange) async throws -> MarketTickerSnapshot {
         fetchedTickers.append(exchange)
         return tickerSnapshots[exchange] ?? tickerSnapshots[.upbit]!
+    }
+
+    func fetchTickers(exchange: Exchange, quoteCurrency: MarketQuoteCurrency) async throws -> MarketTickerSnapshot {
+        fetchedTickerQuotes.append((exchange, quoteCurrency))
+        return try await fetchTickers(exchange: exchange)
     }
 
     func fetchOrderbook(symbol: String, exchange: Exchange) async throws -> OrderbookSnapshot {
@@ -122,10 +141,47 @@ final class SpyMarketRepository: MarketRepositoryProtocol {
         return candleSnapshot
     }
 
+    func fetchCandles(
+        symbol: String,
+        exchange: Exchange,
+        quoteCurrency: MarketQuoteCurrency,
+        interval: String,
+        limit: Int
+    ) async throws -> CandleSnapshot {
+        fetchedCandleQuotes.append((symbol, exchange, quoteCurrency, interval, limit))
+        return try await fetchCandles(symbol: symbol, exchange: exchange, interval: interval)
+    }
+
+    func fetchSparkline(
+        symbol: String,
+        exchange: Exchange,
+        quoteCurrency: MarketQuoteCurrency,
+        interval: String,
+        limit: Int
+    ) async throws -> MarketSparklineSnapshot {
+        fetchedSparklines.append((symbol, exchange, quoteCurrency, interval, limit))
+        return MarketSparklineSnapshot(
+            exchange: exchange,
+            symbol: symbol,
+            interval: interval,
+            points: sparklineSnapshot.points,
+            pointCount: sparklineSnapshot.pointCount,
+            source: sparklineSnapshot.source,
+            quality: sparklineSnapshot.quality,
+            isDerived: sparklineSnapshot.isDerived,
+            realSeries: sparklineSnapshot.realSeries,
+            graphDisplayAllowed: sparklineSnapshot.graphDisplayAllowed,
+            meta: sparklineSnapshot.meta
+        )
+    }
+
     func resetFetchHistory() {
         fetchedMarkets.removeAll()
         fetchedTickers.removeAll()
+        fetchedTickerQuotes.removeAll()
         fetchedCandles.removeAll()
+        fetchedCandleQuotes.removeAll()
+        fetchedSparklines.removeAll()
         fetchedOrderbooks.removeAll()
         fetchedTrades.removeAll()
     }
@@ -136,17 +192,22 @@ final class DelayedMarketRepository: MarketRepositoryProtocol {
     var marketCatalogSnapshots: [Exchange: MarketCatalogSnapshot]
     var tickerSnapshots: [Exchange: MarketTickerSnapshot]
     var candleSnapshotsByKey: [String: CandleSnapshot]
+    var sparklineSnapshotsByKey: [String: MarketSparklineSnapshot]
     var marketDelaysByExchange: [Exchange: UInt64]
     var tickerDelaysByExchange: [Exchange: UInt64]
     var candleDelaysByExchange: [Exchange: UInt64]
     private(set) var fetchedMarkets: [Exchange] = []
     private(set) var fetchedTickers: [Exchange] = []
     private(set) var fetchedCandles: [(symbol: String, exchange: Exchange, interval: String)] = []
+    private(set) var fetchedSparklines: [(symbol: String, exchange: Exchange, quoteCurrency: MarketQuoteCurrency, interval: String, limit: Int)] = []
+    private(set) var fetchedOrderbooks: [(symbol: String, exchange: Exchange)] = []
+    private(set) var fetchedTrades: [(symbol: String, exchange: Exchange)] = []
 
     init(
         marketCatalogSnapshots: [Exchange: MarketCatalogSnapshot],
         tickerSnapshots: [Exchange: MarketTickerSnapshot],
         candleSnapshotsByKey: [String: CandleSnapshot] = [:],
+        sparklineSnapshotsByKey: [String: MarketSparklineSnapshot] = [:],
         marketDelaysByExchange: [Exchange: UInt64] = [:],
         tickerDelaysByExchange: [Exchange: UInt64] = [:],
         candleDelaysByExchange: [Exchange: UInt64] = [:]
@@ -154,6 +215,7 @@ final class DelayedMarketRepository: MarketRepositoryProtocol {
         self.marketCatalogSnapshots = marketCatalogSnapshots
         self.tickerSnapshots = tickerSnapshots
         self.candleSnapshotsByKey = candleSnapshotsByKey
+        self.sparklineSnapshotsByKey = sparklineSnapshotsByKey
         self.marketDelaysByExchange = marketDelaysByExchange
         self.tickerDelaysByExchange = tickerDelaysByExchange
         self.candleDelaysByExchange = candleDelaysByExchange
@@ -176,11 +238,13 @@ final class DelayedMarketRepository: MarketRepositoryProtocol {
     }
 
     func fetchOrderbook(symbol: String, exchange: Exchange) async throws -> OrderbookSnapshot {
-        OrderbookSnapshot(exchange: exchange, symbol: symbol, orderbook: OrderbookData(asks: [], bids: []), meta: .empty)
+        fetchedOrderbooks.append((symbol, exchange))
+        return OrderbookSnapshot(exchange: exchange, symbol: symbol, orderbook: OrderbookData(asks: [], bids: []), meta: .empty)
     }
 
     func fetchTrades(symbol: String, exchange: Exchange) async throws -> PublicTradesSnapshot {
-        PublicTradesSnapshot(exchange: exchange, symbol: symbol, trades: [], meta: .empty)
+        fetchedTrades.append((symbol, exchange))
+        return PublicTradesSnapshot(exchange: exchange, symbol: symbol, trades: [], meta: .empty)
     }
 
     func fetchCandles(symbol: String, exchange: Exchange, interval: String) async throws -> CandleSnapshot {
@@ -193,6 +257,21 @@ final class DelayedMarketRepository: MarketRepositoryProtocol {
             return snapshot
         }
         return CandleSnapshot(exchange: exchange, symbol: symbol, interval: interval, candles: [], meta: .empty)
+    }
+
+    func fetchSparkline(
+        symbol: String,
+        exchange: Exchange,
+        quoteCurrency: MarketQuoteCurrency,
+        interval: String,
+        limit: Int
+    ) async throws -> MarketSparklineSnapshot {
+        fetchedSparklines.append((symbol, exchange, quoteCurrency, interval, limit))
+        let key = "\(exchange.rawValue):\(symbol):\(interval)"
+        if let snapshot = sparklineSnapshotsByKey[key] {
+            return snapshot
+        }
+        throw NetworkServiceError.httpError(404, "sparkline endpoint is unavailable", .maintenance)
     }
 }
 
@@ -720,6 +799,232 @@ final class SpyAuthSessionStore: AuthSessionStoring {
     }
 }
 
+final class SpyPublicContentRepository: PublicContentRepositoryProtocol {
+    var newsSnapshot = NewsSnapshot(items: [], meta: .empty)
+    var coinInfo = CoinDetailInfo(
+        symbol: "ORCA",
+        displaySymbol: "ORCA/KRW",
+        name: "Orca",
+        logoURL: nil,
+        provider: nil,
+        providerId: nil,
+        rank: nil,
+        marketCap: nil,
+        circulatingSupply: nil,
+        maxSupply: nil,
+        totalSupply: nil,
+        currentPrice: nil,
+        priceCurrency: "KRW",
+        high24h: nil,
+        low24h: nil,
+        allTimeHigh: nil,
+        allTimeLow: nil,
+        volume24h: nil,
+        tradeValue24h: nil,
+        marketCapChange24h: nil,
+        marketAsOf: nil,
+        priceChangePercentages: [.h24: 1.2],
+            description: nil,
+            officialURL: nil,
+            explorerURL: nil,
+            dataProvider: nil,
+            metadataSource: nil,
+            marketSource: nil,
+            fallbackUsed: false,
+            descriptionRenderLanguage: "none",
+            descriptionFallbackNotice: nil
+    )
+    var analysis = CoinAnalysisSnapshot(
+        symbol: "ORCA",
+        timeframe: .h1,
+        status: nil,
+        summaryLabel: .neutral,
+        bearishCount: 0,
+        neutralCount: 1,
+        bullishCount: 0,
+        score: 0,
+        indicators: [],
+        disclaimer: CoinAnalysisSnapshot.defaultDisclaimer,
+        dataProvider: nil,
+        fallbackUsed: false,
+        asOf: nil
+    )
+    var communitySnapshot = CoinCommunitySnapshot(
+        posts: [],
+        vote: CoinVoteSnapshot(bullishCount: 0, bearishCount: 0, totalCount: 0, myVote: nil)
+    )
+    var createdPost = CoinCommunityPost(
+        id: "post-1",
+        authorName: "tester",
+        avatarURL: nil,
+        createdAt: Date(timeIntervalSince1970: 0),
+        content: "hello",
+        symbol: "ORCA",
+        tags: [],
+        likeCount: 0,
+        commentCount: 0,
+        isFollowing: false,
+        badge: nil
+    )
+    var voteSnapshot = CoinVoteSnapshot(bullishCount: 1, bearishCount: 0, totalCount: 1, myVote: "bullish")
+    var commentsSnapshot = CoinCommunityCommentsSnapshot(comments: [], commentCount: 0)
+    var marketTrends = MarketTrendsSnapshot(
+        totalMarketCap: nil,
+        totalMarketCapChange24h: nil,
+        totalVolume24h: nil,
+        btcDominance: nil,
+        ethDominance: nil,
+        fearGreedIndex: nil,
+        altcoinIndex: nil,
+        btcLongShortRatio: nil,
+        marketPoll: nil,
+        movers: MarketMoversSnapshot(topGainers: [], topLosers: [], topVolume: []),
+        marketCapVolumeSeries: [],
+        range: nil,
+        currency: nil,
+        events: [],
+        topNews: [],
+        bitcoinHalvingCountdown: nil,
+        latestHeadline: nil,
+        dataProvider: nil,
+        fallbackUsed: false,
+        asOf: nil
+    )
+    var createError: Error?
+    var voteError: Error?
+    private(set) var createCallCount = 0
+    private(set) var voteCallCount = 0
+    private(set) var fetchCommunityCallCount = 0
+    private(set) var createSessions: [AuthSession] = []
+    private(set) var voteSessions: [AuthSession] = []
+
+    func fetchNews(category: String?, symbol: String?, date: Date?, sort: String, cursor: String?, limit: Int) async throws -> NewsSnapshot {
+        newsSnapshot
+    }
+
+    func fetchCoinNews(symbol: String, context: CoinNewsRequestContext?, date: Date?, sort: String, cursor: String?, limit: Int) async throws -> NewsSnapshot {
+        newsSnapshot
+    }
+
+    func fetchCoinInfo(symbol: String) async throws -> CoinDetailInfo {
+        coinInfo
+    }
+
+    func fetchCoinAnalysis(symbol: String, timeframe: CoinAnalysisTimeframe) async throws -> CoinAnalysisSnapshot {
+        analysis
+    }
+
+    func fetchCoinCommunity(symbol: String, sort: String, filter: CoinCommunityFilter, cursor: String?, limit: Int) async throws -> CoinCommunitySnapshot {
+        fetchCommunityCallCount += 1
+        return communitySnapshot
+    }
+
+    func createCoinCommunityPost(symbol: String, content: String, session: AuthSession) async throws -> CoinCommunityMutationResult {
+        createCallCount += 1
+        createSessions.append(session)
+        if let createError {
+            throw createError
+        }
+        let post = CoinCommunityPost(
+            id: createdPost.id,
+            authorName: createdPost.authorName,
+            avatarURL: createdPost.avatarURL,
+            createdAt: createdPost.createdAt,
+            content: content,
+            symbol: symbol,
+            tags: createdPost.tags,
+            likeCount: createdPost.likeCount,
+            commentCount: createdPost.commentCount,
+            isFollowing: createdPost.isFollowing,
+            badge: createdPost.badge
+        )
+        return CoinCommunityMutationResult(post: post)
+    }
+
+    func setCoinCommunityLike(symbol: String, itemId: String, isLiked: Bool, session: AuthSession) async throws -> CoinCommunityLikeResult {
+        voteSessions.append(session)
+        if let voteError {
+            throw voteError
+        }
+        return CoinCommunityLikeResult(itemId: itemId, likeCount: isLiked ? 1 : 0, isLiked: isLiked)
+    }
+
+    func fetchCoinCommunityComments(symbol: String, itemId: String, sort: String, session: AuthSession?) async throws -> CoinCommunityCommentsSnapshot {
+        commentsSnapshot
+    }
+
+    func createCoinCommunityComment(symbol: String, itemId: String, content: String, session: AuthSession) async throws -> CoinCommunityCommentsSnapshot {
+        voteSessions.append(session)
+        if let voteError {
+            throw voteError
+        }
+        return CoinCommunityCommentsSnapshot(
+            comments: [CoinCommunityComment(id: "comment-1", content: content, authorName: "tester", createdAt: nil)],
+            commentCount: 1
+        )
+    }
+
+    func setUserFollow(userId: String, isFollowing: Bool, session: AuthSession) async throws -> UserFollowResult {
+        voteSessions.append(session)
+        if let voteError {
+            throw voteError
+        }
+        return UserFollowResult(userId: userId, isFollowing: isFollowing)
+    }
+
+    func fetchUserRelationship(userId: String, session: AuthSession) async throws -> UserRelationship {
+        UserRelationship(userId: userId, isFollowing: false, isFollower: false, isBlocked: false, isMe: false)
+    }
+
+    func fetchFollowing(userId: String?, session: AuthSession) async throws -> UserListSnapshot {
+        UserListSnapshot(users: [], nextCursor: nil)
+    }
+
+    func fetchFollowers(userId: String, session: AuthSession) async throws -> UserListSnapshot {
+        UserListSnapshot(users: [], nextCursor: nil)
+    }
+
+    func reportCommunityTarget(targetType: CommunityReportTargetType, targetId: String, reason: CommunityReportReason, description: String?, session: AuthSession) async throws -> CommunityReportResult {
+        CommunityReportResult(targetType: targetType, targetId: targetId, message: "ok", hidden: true)
+    }
+
+    func blockUser(userId: String, session: AuthSession) async throws -> BlockedUser {
+        BlockedUser(id: userId, displayName: nil, blockedAt: nil)
+    }
+
+    func unblockUser(userId: String, session: AuthSession) async throws {}
+
+    func fetchBlockedUsers(session: AuthSession) async throws -> [BlockedUser] {
+        []
+    }
+
+    func voteCoin(symbol: String, direction: String, session: AuthSession) async throws -> CoinVoteSnapshot {
+        voteCallCount += 1
+        voteSessions.append(session)
+        if let voteError {
+            throw voteError
+        }
+        return voteSnapshot
+    }
+
+    func voteMarketSentiment(direction: String, session: AuthSession) async throws -> MarketPollSnapshot {
+        voteCallCount += 1
+        voteSessions.append(session)
+        if let voteError {
+            throw voteError
+        }
+        return MarketPollSnapshot(bullishCount: 1, bearishCount: 0, totalCount: 1, myVote: direction)
+    }
+
+    func fetchMarketTrends(range: String, interval: String, currency: String) async throws -> MarketTrendsSnapshot {
+        marketTrends
+    }
+
+    func fetchMarketThemes() async throws -> [MarketThemeSnapshot] {
+        []
+    }
+}
+
 final class NoOpPublicWebSocketService: PublicWebSocketServicing {
     var onConnectionStateChange: ((PublicWebSocketConnectionState) -> Void)?
     var onTickerReceived: ((TickerStreamPayload) -> Void)?
@@ -818,6 +1123,8 @@ final class URLProtocolSpy: URLProtocol {
     static var responseData = Data("{}".utf8)
     static var lastRequest: URLRequest?
     static var lastRequestBody: Data?
+    static var responseQueue: [(statusCode: Int, data: Data)] = []
+    static var requestedPaths: [String] = []
 
     static func reset() {
         requestCount = 0
@@ -825,6 +1132,8 @@ final class URLProtocolSpy: URLProtocol {
         responseData = Data("{}".utf8)
         lastRequest = nil
         lastRequestBody = nil
+        responseQueue = []
+        requestedPaths = []
     }
 
     override class func canInit(with request: URLRequest) -> Bool { true }
@@ -834,9 +1143,13 @@ final class URLProtocolSpy: URLProtocol {
         Self.requestCount += 1
         Self.lastRequest = request
         Self.lastRequestBody = request.httpBody ?? request.httpBodyStream?.readAllData()
-        let response = HTTPURLResponse(url: request.url!, statusCode: Self.responseStatusCode, httpVersion: nil, headerFields: nil)!
+        Self.requestedPaths.append(request.url?.path ?? "")
+        let queuedResponse = Self.responseQueue.isEmpty ? nil : Self.responseQueue.removeFirst()
+        let statusCode = queuedResponse?.statusCode ?? Self.responseStatusCode
+        let data = queuedResponse?.data ?? Self.responseData
+        let response = HTTPURLResponse(url: request.url!, statusCode: statusCode, httpVersion: nil, headerFields: nil)!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        client?.urlProtocol(self, didLoad: Self.responseData)
+        client?.urlProtocol(self, didLoad: data)
         client?.urlProtocolDidFinishLoading(self)
     }
 

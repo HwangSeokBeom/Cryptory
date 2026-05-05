@@ -33,6 +33,7 @@ struct PublicMarketSubscription: Hashable {
     let exchange: String?
     let marketId: String?
     let symbol: String?
+    let quoteCurrency: MarketQuoteCurrency?
     let interval: String?
 
     init(
@@ -47,12 +48,14 @@ struct PublicMarketSubscription: Hashable {
         self.exchange = marketIdentity?.exchange.rawValue ?? exchange
         self.marketId = marketIdentity?.marketId
         self.symbol = marketIdentity?.symbol ?? symbol
+        self.quoteCurrency = marketIdentity?.quoteCurrency
         self.interval = interval
     }
 
     func hash(into hasher: inout Hasher) {
         hasher.combine(channel)
         hasher.combine(marketIdentity?.cacheKey ?? "\(exchange ?? "*")|\(marketId ?? symbol ?? "*")")
+        hasher.combine(quoteCurrency?.rawValue ?? "-")
         hasher.combine(interval ?? "-")
     }
 
@@ -60,6 +63,7 @@ struct PublicMarketSubscription: Hashable {
         lhs.channel == rhs.channel
             && (lhs.marketIdentity?.cacheKey ?? "\(lhs.exchange ?? "*")|\(lhs.marketId ?? lhs.symbol ?? "*")")
                 == (rhs.marketIdentity?.cacheKey ?? "\(rhs.exchange ?? "*")|\(rhs.marketId ?? rhs.symbol ?? "*")")
+            && lhs.quoteCurrency == rhs.quoteCurrency
             && lhs.interval == rhs.interval
     }
 }
@@ -205,8 +209,10 @@ enum MarketWebSocketMessageParser {
             guard !trades.isEmpty else { return nil }
             return .trades(TradesStreamPayload(symbol: symbol, exchange: exchange, trades: trades))
 
-        case PublicStreamChannel.candles.rawValue, "candle":
-            let interval = websocketString(payload, keys: ["interval"]) ?? websocketString(json, keys: ["interval"]) ?? "1h"
+        case PublicStreamChannel.candles.rawValue, "candle", "market.candle":
+            let interval = websocketString(payload, keys: ["timeframe", "interval"])
+                ?? websocketString(json, keys: ["timeframe", "interval"])
+                ?? "1h"
             let rawCandles = (payload["candles"] as? [Any]) ?? [payload]
             let candles = rawCandles.compactMap { item -> CandleData? in
                 guard let dictionary = item as? [String: Any] else { return nil }
@@ -482,8 +488,9 @@ final class WebSocketService: PublicWebSocketServicing {
 
     private func subscriptionMessage(for subscription: PublicMarketSubscription, action: String) -> String {
         var payload: [String: String] = [
+            "type": action,
             "action": action,
-            "channel": subscription.channel.rawValue
+            "channel": subscription.channel == .candles ? "market.candle" : subscription.channel.rawValue
         ]
 
         if let exchange = subscription.exchange {
@@ -492,8 +499,11 @@ final class WebSocketService: PublicWebSocketServicing {
         if let symbol = subscription.symbol {
             payload["symbol"] = symbol
         }
+        if let quoteCurrency = subscription.quoteCurrency {
+            payload["quoteCurrency"] = quoteCurrency.rawValue
+        }
         if let interval = subscription.interval {
-            payload["interval"] = interval
+            payload["timeframe"] = interval.uppercased()
         }
 
         let data = (try? JSONSerialization.data(withJSONObject: payload)) ?? Data()
@@ -532,8 +542,9 @@ final class WebSocketService: PublicWebSocketServicing {
         let exchange = subscription.exchange ?? "*"
         let marketId = subscription.marketId ?? "*"
         let symbol = subscription.symbol ?? "*"
+        let quote = subscription.quoteCurrency?.rawValue ?? "-"
         let interval = subscription.interval ?? "-"
-        return "channel=\(subscription.channel.rawValue) exchange=\(exchange) marketId=\(marketId) symbol=\(symbol) interval=\(interval)"
+        return "channel=\(subscription.channel.rawValue) exchange=\(exchange) quote=\(quote) marketId=\(marketId) symbol=\(symbol) interval=\(interval)"
     }
 }
 

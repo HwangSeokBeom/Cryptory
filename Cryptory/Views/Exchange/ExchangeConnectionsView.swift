@@ -115,7 +115,7 @@ struct ExchangeConnectionsView: View {
                 .font(.system(size: 24, weight: .heavy))
                 .foregroundColor(.themeText)
 
-            Text("연결 상태를 확인하고, 필요할 때 새 API 키를 추가하거나 기존 연결을 안전하게 수정할 수 있어요.")
+            Text("읽기 전용 거래소 연동 상태를 확인하고, 자산 조회 전용 API 키를 안전하게 관리할 수 있어요.")
                 .font(.system(size: 13))
                 .foregroundColor(.textSecondary)
                 .lineSpacing(3)
@@ -198,7 +198,7 @@ struct ExchangeConnectionsView: View {
                 .font(.system(size: 12, weight: .bold))
                 .foregroundColor(.themeText)
 
-            Text("거래소 웹사이트에서 직접 발급한 API 키만 연결할 수 있어요. 가능하면 조회 권한부터 시작하고, 출금 권한은 켜지 않는 것을 권장해요.")
+            Text("자산 조회 전용 API Key만 등록할 수 있습니다. 주문 권한 또는 출금 권한이 포함된 API Key는 등록하지 마세요.")
                 .font(.system(size: 12))
                 .foregroundColor(.textSecondary)
         }
@@ -213,7 +213,7 @@ struct ExchangeConnectionsView: View {
                 icon: "link.badge.plus",
                 iconColor: .accent,
                 title: "아직 연결된 거래소가 없어요",
-                detail: "거래소를 연결하면 자산, 잔고, 주문 상태를 한 곳에서 한 번에 확인할 수 있어요."
+                detail: "읽기 전용 API Key를 연결하면 자산과 보유 코인을 한 곳에서 확인할 수 있어요."
             )
 
             managementGuideCard
@@ -338,7 +338,7 @@ struct ExchangeConnectionsView: View {
                 .font(.system(size: 12, weight: .bold))
                 .foregroundColor(.themeText)
 
-            Text("거래소 비밀번호는 요구하지 않으며, API 키는 연결 확인과 기능 제공을 위해서만 사용해요. 가능하면 조회 권한부터 시작하고 출금 권한은 비활성화해 주세요.")
+            Text("거래소 비밀번호는 요구하지 않으며, API 키는 읽기 전용 자산 조회를 위해서만 사용해요. 주문/출금 권한이 포함된 키는 등록하지 마세요.")
                 .font(.system(size: 12))
                 .foregroundColor(.textSecondary)
                 .lineSpacing(2)
@@ -382,7 +382,7 @@ struct ExchangeConnectionsView: View {
 
     private func permissionBadge(for permission: ExchangeConnectionPermission) -> some View {
         let isTradingEnabled = permission == .tradeEnabled
-        return Text(permission.title)
+        return Text(isTradingEnabled ? "읽기 전용으로 제한됨" : permission.title)
             .font(.system(size: 11, weight: .bold))
             .foregroundColor(isTradingEnabled ? .up : .accent)
             .padding(.horizontal, 8)
@@ -573,7 +573,7 @@ private struct ExchangeAddSheet: View {
                                         .font(.system(size: 15, weight: .bold))
                                         .foregroundColor(.themeText)
 
-                                    Text(exchange.supportsOrder ? "자산 조회와 주문 연동에 사용할 수 있어요." : "자산 조회 연결에 사용할 수 있어요.")
+                                    Text("읽기 전용 자산 조회 연결에 사용할 수 있어요.")
                                         .font(.system(size: 12))
                                         .foregroundColor(.textSecondary)
                                         .multilineTextAlignment(.leading)
@@ -623,13 +623,15 @@ extension ExchangeConnectionsView {
         @State private var isSubmitting = false
         @State private var validationMessage: String?
         @State private var safariDestination: SafariDestination?
+        @State private var confirmedReadOnlyPermission = false
+        @State private var confirmedNoOrderWithdrawPermission = false
 
         private var guide: ExchangeConnectionGuide {
             formViewState.exchange.connectionGuide
         }
 
         private var isTradePermissionSelectable: Bool {
-            formViewState.exchange.supportsOrder
+            AppFeatureFlags.current.isTradingEnabled && formViewState.exchange.supportsOrder
         }
 
         private var submitValidationMessage: String? {
@@ -642,7 +644,10 @@ extension ExchangeConnectionsView {
         }
 
         private var canSubmit: Bool {
-            !isSubmitting && submitValidationMessage == nil
+            !isSubmitting
+                && submitValidationMessage == nil
+                && confirmedReadOnlyPermission
+                && confirmedNoOrderWithdrawPermission
         }
 
         private var developerCenterLinkTitle: String {
@@ -664,22 +669,13 @@ extension ExchangeConnectionsView {
                             permissionOptionCard(
                                 permission: .readOnly,
                                 title: "조회 전용",
-                                description: "자산, 잔고, 보유 코인 정보를 불러올 수 있어요.",
-                                footnote: "최소 권한으로 시작할 수 있어요.",
+                                description: "자산 조회 전용 API Key만 등록할 수 있습니다.",
+                                footnote: "Cryptory는 읽기 전용 포트폴리오 조회 목적으로만 사용합니다.",
                                 isRecommended: true,
                                 isDisabled: false
                             )
 
-                            permissionOptionCard(
-                                permission: .tradeEnabled,
-                                title: "주문 가능",
-                                description: "조회 기능에 더해 주문/취소 기능에 사용할 수 있어요.",
-                                footnote: isTradePermissionSelectable
-                                    ? "거래소에서 주문 권한을 추가로 켜야 해요."
-                                    : "현재 앱에서는 이 거래소의 주문 기능 연결을 아직 권장하지 않아요.",
-                                isRecommended: false,
-                                isDisabled: !isTradePermissionSelectable
-                            )
+                            readOnlyConfirmationCard
                         }
                         .padding(.vertical, 4)
                     }
@@ -711,7 +707,7 @@ extension ExchangeConnectionsView {
                 .scrollContentBackground(.hidden)
                 .background(Color.bg)
                 .scrollDismissesKeyboard(.interactively)
-                .navigationTitle(connection == nil ? "거래소 연결 추가" : "거래소 연결 수정")
+                .navigationTitle("읽기 전용 거래소 연동")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .topBarLeading) {
@@ -725,7 +721,7 @@ extension ExchangeConnectionsView {
                 }
                 .onAppear {
                     nickname = connection?.nickname ?? ""
-                    permission = connection?.permission ?? .readOnly
+                    permission = .readOnly
                 }
                 .sheet(item: $safariDestination) { destination in
                     SafariSheet(destination: destination)
@@ -744,7 +740,7 @@ extension ExchangeConnectionsView {
                             .font(.system(size: 15, weight: .bold))
                             .foregroundColor(.themeText)
 
-                        Text(connection == nil ? "외부 거래소에서 발급한 API 키를 연결합니다." : "저장된 연결 정보를 안전하게 수정합니다.")
+                        Text(connection == nil ? "외부 거래소에서 발급한 읽기 전용 API 키를 연결합니다." : "저장된 읽기 전용 연결 정보를 안전하게 수정합니다.")
                             .font(.system(size: 12))
                             .foregroundColor(.textSecondary)
                     }
@@ -752,7 +748,7 @@ extension ExchangeConnectionsView {
                     Spacer()
                 }
 
-                Text("API 키가 이미 있다면 아래 인증 정보에 바로 붙여넣어 연결할 수 있어요.")
+                Text("주문 권한 또는 출금 권한이 포함된 API Key는 등록하지 마세요.")
                     .font(.system(size: 12))
                     .foregroundColor(.textSecondary)
             }
@@ -816,13 +812,11 @@ extension ExchangeConnectionsView {
         private var securityScopeCard: some View {
             VStack(alignment: .leading, spacing: 14) {
                 VStack(alignment: .leading, spacing: 5) {
-                    Text(permission == .readOnly ? "필요 권한 안내" : "주문 권한 안내")
+                    Text("권한 안내")
                         .font(.system(size: 15, weight: .bold))
                         .foregroundColor(.themeText)
 
-                    Text(permission == .readOnly
-                         ? "조회 전용 연결은 자산과 주문 조회에 필요한 권한만 확인하면 돼요."
-                         : "주문 기능을 쓰려면 조회 권한에 주문 권한만 추가하고, 출금 권한은 제외하세요.")
+                    Text("자산 조회 전용 API Key만 등록할 수 있습니다. 주문/출금 권한이 감지되거나 의심되는 키는 사용하지 마세요.")
                         .font(.system(size: 12))
                         .foregroundColor(.textSecondary)
                         .lineSpacing(2)
@@ -852,8 +846,8 @@ extension ExchangeConnectionsView {
 
                 VStack(alignment: .leading, spacing: 10) {
                     securityBullet("앱은 거래소 계정 비밀번호를 요구하지 않아요.")
-                    securityBullet("입력한 API 키는 연결 검증과 자산/주문 기능 제공을 위해 서버의 연결 API로 전달돼요.")
-                    securityBullet("조회 전용 연결을 기본으로 권장하며, 주문 권한은 필요할 때만 추가하세요.")
+                    securityBullet("입력한 API 키는 연결 검증과 읽기 전용 자산 조회를 위해 서버의 연결 API로 전달돼요.")
+                    securityBullet("주문 권한 또는 출금 권한이 포함된 API Key는 등록하지 마세요.")
 
                     if connection != nil {
                         securityBullet("기존 Secret Key는 다시 보여주지 않아요. 변경이 필요하면 새 값을 다시 입력해 주세요.")
@@ -905,7 +899,7 @@ extension ExchangeConnectionsView {
                 if let permissionGuideURLString = guide.permissionGuideURLString {
                     guideLinkButton(
                         title: "권한 및 허용 IP 설정 방법 보기",
-                        subtitle: "주문 권한, 출금 권한 제외, 허용 IP 등록 기준을 확인하세요.",
+                        subtitle: "읽기 권한만 허용하고 출금 권한 제외, 허용 IP 등록 기준을 확인하세요.",
                         urlString: permissionGuideURLString
                     )
                 }
@@ -915,7 +909,7 @@ extension ExchangeConnectionsView {
                         .font(.system(size: 12, weight: .bold))
                         .foregroundColor(.themeText)
 
-                    ForEach(Array(guide.issuanceSteps.enumerated()), id: \.offset) { index, step in
+                    ForEach(Array(readOnlyIssuanceSteps.enumerated()), id: \.offset) { index, step in
                         HStack(alignment: .top, spacing: 10) {
                             Text("\(index + 1).")
                                 .font(.system(size: 12, weight: .semibold))
@@ -955,7 +949,7 @@ extension ExchangeConnectionsView {
                                 .tint(.white)
                         }
 
-                        Text(isSubmitting ? "\(formViewState.submitTitle) 중..." : formViewState.submitTitle)
+                        Text(isSubmitting ? "연결 중..." : (connection == nil ? "읽기 전용 API Key 연결" : "읽기 전용 API Key 수정"))
                             .font(.system(size: 15, weight: .bold))
                     }
                     .foregroundColor((canSubmit || isSubmitting) ? .white : .textMuted)
@@ -969,7 +963,7 @@ extension ExchangeConnectionsView {
                 .buttonStyle(.plain)
                 .disabled(!canSubmit)
 
-                Text("필수 키를 입력하면 \(formViewState.submitTitle)할 수 있어요.")
+                Text("필수 키와 읽기 전용 확인을 완료하면 연결할 수 있어요.")
                     .font(.system(size: 11))
                     .foregroundColor(.textMuted)
                     .opacity(canSubmit ? 0 : 1)
@@ -985,22 +979,69 @@ extension ExchangeConnectionsView {
         }
 
         private var relevantPermissionTips: [String] {
-            let filteredTips: [String]
-            switch permission {
-            case .readOnly:
-                filteredTips = guide.permissionTips.filter {
-                    $0.contains("조회") || $0.contains("Reading")
-                }
-            case .tradeEnabled:
-                filteredTips = guide.permissionTips.filter {
-                    $0.contains("조회")
-                        || $0.contains("주문")
-                        || $0.contains("Trading")
-                        || $0.contains("Reading")
+            [
+                "자산 조회와 보유 코인 확인 권한만 허용하세요.",
+                "읽기 권한 외 기능 권한은 비활성화하세요.",
+                "출금 권한은 반드시 제외하세요."
+            ]
+        }
+
+        private var readOnlyConfirmationCard: some View {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("필수 확인")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundColor(.themeText)
+
+                confirmationRow(
+                    isOn: $confirmedReadOnlyPermission,
+                    text: "이 API Key가 읽기 전용 권한임을 확인했습니다."
+                )
+
+                confirmationRow(
+                    isOn: $confirmedNoOrderWithdrawPermission,
+                    text: "주문/출금 권한이 포함된 API Key를 등록하지 않겠습니다."
+                )
+            }
+            .padding(14)
+            .background(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(Color.bgSecondary)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .stroke(Color.accent.opacity(0.28), lineWidth: 1)
+                    )
+            )
+        }
+
+        private var readOnlyIssuanceSteps: [String] {
+            [
+                "거래소 웹사이트에서 API Key를 발급할 때 읽기 권한만 선택하세요.",
+                "출금 권한은 선택하지 말고, 가능하면 허용 IP를 제한하세요.",
+                "발급된 키를 붙여넣기 전 읽기 전용 권한인지 다시 확인하세요."
+            ]
+        }
+
+        private func confirmationRow(isOn: Binding<Bool>, text: String) -> some View {
+            Button {
+                isOn.wrappedValue.toggle()
+                validationMessage = nil
+            } label: {
+                HStack(alignment: .top, spacing: 10) {
+                    Image(systemName: isOn.wrappedValue ? "checkmark.square.fill" : "square")
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundColor(isOn.wrappedValue ? .accent : .textMuted)
+                        .padding(.top, 1)
+
+                    Text(text)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(.textSecondary)
+                        .lineSpacing(2)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    Spacer(minLength: 0)
                 }
             }
-
-            return filteredTips.isEmpty ? guide.permissionTips : filteredTips
+            .buttonStyle(.plain)
         }
 
         private func credentialInputRow<Content: View>(
@@ -1263,14 +1304,14 @@ extension ExchangeConnectionsView {
                 didSucceed = await vm.updateExchangeConnection(
                     connection: connection,
                     nickname: nickname,
-                    permission: permission,
+                    permission: .readOnly,
                     credentials: credentialValues
                 )
             } else {
                 didSucceed = await vm.createExchangeConnection(
                     exchange: formViewState.exchange,
                     nickname: nickname,
-                    permission: permission,
+                    permission: .readOnly,
                     credentials: credentialValues
                 )
             }

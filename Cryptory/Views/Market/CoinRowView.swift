@@ -1,4 +1,7 @@
 import SwiftUI
+#if canImport(UIKit)
+import UIKit
+#endif
 
 struct MarketRowRenderModel: Identifiable, Equatable {
     let id: String
@@ -6,9 +9,15 @@ struct MarketRowRenderModel: Identifiable, Equatable {
     let exchange: Exchange
     let sourceExchange: Exchange
     let symbol: String
+    let baseSymbol: String
+    let quoteCurrency: String
+    let pairDisplayName: String
+    let listSymbolDisplayName: String
+    let detailSymbolDisplayName: String
     let canonicalSymbol: String
     let displaySymbol: String
     let displayName: String
+    let displayNameEn: String
     let imageURL: String?
     let hasImage: Bool?
     let localAssetName: String
@@ -31,15 +40,35 @@ struct MarketRowRenderModel: Identifiable, Equatable {
     let hasEnoughSparklineData: Bool
     let sparklinePoints: Int
 
+    var priceAccessibilityText: String {
+        guard marketIdentity.quoteCurrency == .btc || marketIdentity.quoteCurrency == .eth else {
+            return priceText
+        }
+        return "\(priceText) \(marketIdentity.quoteCurrency.rawValue)"
+    }
+
+    var volumeAccessibilityText: String {
+        guard marketIdentity.quoteCurrency == .btc || marketIdentity.quoteCurrency == .eth else {
+            return volumeText
+        }
+        return "\(volumeText) \(marketIdentity.quoteCurrency.rawValue)"
+    }
+
     init(row: MarketRowViewState) {
         self.id = row.id
         self.marketIdentity = row.marketIdentity
         self.exchange = row.exchange
         self.sourceExchange = row.sourceExchange
         self.symbol = row.symbol
+        self.baseSymbol = row.baseSymbol
+        self.quoteCurrency = row.quoteCurrency
+        self.pairDisplayName = row.pairDisplayName
+        self.listSymbolDisplayName = row.listSymbolDisplayName
+        self.detailSymbolDisplayName = row.detailSymbolDisplayName
         self.canonicalSymbol = row.canonicalSymbol
         self.displaySymbol = row.displaySymbol
         self.displayName = row.displayName
+        self.displayNameEn = row.displayNameEn
         self.imageURL = row.imageURL
         self.hasImage = row.hasImage
         self.localAssetName = row.localAssetName
@@ -69,9 +98,15 @@ struct MarketRowRenderModel: Identifiable, Equatable {
         sourceExchange: Exchange,
         marketIdentity: MarketIdentity,
         symbol: String,
+        baseSymbol: String? = nil,
+        quoteCurrency: String? = nil,
+        pairDisplayName: String? = nil,
+        listSymbolDisplayName: String? = nil,
+        detailSymbolDisplayName: String? = nil,
         canonicalSymbol: String? = nil,
         displaySymbol: String? = nil,
         displayName: String,
+        displayNameEn: String? = nil,
         imageURL: String?,
         hasImage: Bool? = nil,
         localAssetName: String? = nil,
@@ -99,9 +134,21 @@ struct MarketRowRenderModel: Identifiable, Equatable {
         self.exchange = exchange
         self.sourceExchange = sourceExchange
         self.symbol = symbol
+        let resolvedBaseSymbol = baseSymbol ?? SymbolNormalization.baseAssetCode(
+            rawSymbol: symbol,
+            marketId: marketIdentity.marketId,
+            quoteAsset: marketIdentity.quoteCurrency.rawValue,
+            canonicalSymbol: canonicalSymbol
+        )
+        self.baseSymbol = resolvedBaseSymbol
+        self.quoteCurrency = quoteCurrency ?? marketIdentity.quoteCurrency.rawValue
+        self.pairDisplayName = pairDisplayName ?? "\(resolvedBaseSymbol)/\(marketIdentity.quoteCurrency.rawValue)"
+        self.listSymbolDisplayName = listSymbolDisplayName ?? resolvedBaseSymbol
+        self.detailSymbolDisplayName = detailSymbolDisplayName ?? self.pairDisplayName
         self.canonicalSymbol = canonicalSymbol ?? SymbolNormalization.canonicalAssetCode(rawSymbol: symbol)
         self.displaySymbol = displaySymbol ?? self.canonicalSymbol
         self.displayName = displayName
+        self.displayNameEn = displayNameEn ?? displayName
         self.imageURL = imageURL
         self.hasImage = hasImage
         self.localAssetName = localAssetName ?? SymbolNormalization.localAssetName(for: self.canonicalSymbol)
@@ -212,6 +259,7 @@ struct MarketRowContent: View {
                 .equatable()
                 .frame(width: configuration.volumeWidth, alignment: .trailing)
                 .padding(.leading, 6)
+                .fixedSize(horizontal: false, vertical: true)
                 .layoutPriority(1)
             }
 
@@ -226,12 +274,59 @@ struct MarketRowContent: View {
                 .equatable()
                 .frame(width: sparklineColumnWidth, alignment: .trailing)
                 .padding(.leading, configuration.sparklineColumnLeadingPadding)
+                .clipped()
                 .layoutPriority(3)
             }
         }
         .frame(minHeight: configuration.rowHeight)
         .padding(.horizontal, 16)
         .padding(.vertical, configuration.rowVerticalPadding)
+        .clipped()
+        .background(
+            GeometryReader { proxy in
+                Color.clear
+                    .onAppear {
+                        logLayout(proxyWidth: proxy.size.width)
+                    }
+                    .onChange(of: proxy.size.width) { _, newWidth in
+                        logLayout(proxyWidth: newWidth)
+                    }
+            }
+        )
+    }
+
+    private func logLayout(proxyWidth: CGFloat) {
+        let fixedWidth = configuration.priceWidth
+            + configuration.changeWidth
+            + configuration.changeColumnLeadingPadding
+            + (configuration.showsVolume ? configuration.volumeWidth + 6 : 0)
+            + (configuration.showsSparkline ? sparklineColumnWidth + configuration.sparklineColumnLeadingPadding : 0)
+        let contentWidth = max(proxyWidth - 32, 0)
+        let assetAreaWidth = max(contentWidth - fixedWidth, 0)
+        let assetTitleWidth = estimatedSymbolTitleWidth(model.listSymbolDisplayName)
+        let identityChromeWidth = (showsFavoriteControl ? 22 : 0)
+            + (configuration.showsSymbolImage ? configuration.symbolImageSize + 8 : 14)
+        let availableAssetTitleWidth = max(assetAreaWidth - identityChromeWidth, 0)
+        let didSymbolTruncate = assetTitleWidth > availableAssetTitleWidth
+        let didOverflow = configuration.symbolColumnMinimumWidth + fixedWidth > contentWidth
+        AppLogger.debug(
+            .layout,
+            "[GraphLayout] exchange=\(model.marketIdentity.exchange.rawValue) quoteCurrency=\(model.marketIdentity.quoteCurrency.rawValue) marketId=\(model.marketIdentity.marketId ?? model.marketIdentity.symbol) rowWidth=\(Int(proxyWidth.rounded())) contentWidth=\(Int(contentWidth.rounded())) sparklineWidth=\(Int(configuration.sparklineWidth.rounded())) sparklineHeight=\(Int(configuration.sparklineHeight.rounded())) priceWidth=\(Int(configuration.priceWidth.rounded())) changeWidth=\(Int(configuration.changeWidth.rounded())) volumeWidth=\(Int(configuration.volumeWidth.rounded())) didOverflow=\(didOverflow) bottomInset=-"
+        )
+        AppLogger.debug(
+            .layout,
+            "[MarketRowLayout] level=\((didOverflow || didSymbolTruncate) ? "WARN" : "DEBUG") rowWidth=\(Int(proxyWidth.rounded())) assetTitle=\(model.listSymbolDisplayName) assetTitleWidth=\(Int(assetTitleWidth.rounded())) didSymbolTruncate=\(didSymbolTruncate) quoteCurrency=\(model.marketIdentity.quoteCurrency.rawValue) priceWidth=\(Int(configuration.priceWidth.rounded())) changeWidth=\(Int(configuration.changeWidth.rounded())) volumeWidth=\(Int(configuration.volumeWidth.rounded())) sparklineWidth=\(Int(sparklineColumnWidth.rounded())) assetAreaWidth=\(Int(assetAreaWidth.rounded())) formattedPrice=\(model.priceText) formattedVolume=\(model.volumeText) didOverflow=\(didOverflow)"
+        )
+    }
+
+    private func estimatedSymbolTitleWidth(_ title: String) -> CGFloat {
+        let fontSize: CGFloat = configuration.compactLayout ? 12 : 13
+        #if canImport(UIKit)
+        let font = UIFont.systemFont(ofSize: fontSize, weight: .heavy)
+        return (title as NSString).size(withAttributes: [.font: font]).width
+        #else
+        return CGFloat(title.count) * fontSize * 0.64
+        #endif
     }
 }
 
@@ -245,9 +340,15 @@ private struct MarketRowIdentitySection: View, Equatable {
         lhs.model.marketIdentity == rhs.model.marketIdentity
             && lhs.model.exchange == rhs.model.exchange
             && lhs.model.symbol == rhs.model.symbol
+            && lhs.model.baseSymbol == rhs.model.baseSymbol
+            && lhs.model.quoteCurrency == rhs.model.quoteCurrency
+            && lhs.model.pairDisplayName == rhs.model.pairDisplayName
+            && lhs.model.listSymbolDisplayName == rhs.model.listSymbolDisplayName
+            && lhs.model.detailSymbolDisplayName == rhs.model.detailSymbolDisplayName
             && lhs.model.canonicalSymbol == rhs.model.canonicalSymbol
             && lhs.model.displaySymbol == rhs.model.displaySymbol
             && lhs.model.displayName == rhs.model.displayName
+            && lhs.model.displayNameEn == rhs.model.displayNameEn
             && lhs.model.imageURL == rhs.model.imageURL
             && lhs.model.hasImage == rhs.model.hasImage
             && lhs.model.localAssetName == rhs.model.localAssetName
@@ -288,11 +389,12 @@ private struct MarketRowIdentitySection: View, Equatable {
             }
 
             VStack(alignment: .leading, spacing: configuration.compactLayout ? 1 : 2) {
-                Text(model.displaySymbol)
+                Text(model.listSymbolDisplayName)
                     .font(configuration.compactLayout ? .system(size: 12, weight: .heavy) : .system(size: 13, weight: .bold))
                     .foregroundColor(.themeText)
                     .lineLimit(1)
-                    .minimumScaleFactor(0.72)
+                    .minimumScaleFactor(0.85)
+                    .truncationMode(.tail)
                     .allowsTightening(true)
                     .layoutPriority(2)
 
@@ -306,6 +408,14 @@ private struct MarketRowIdentitySection: View, Equatable {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(accessibilityLabel)
+    }
+
+    private var accessibilityLabel: String {
+        let name = model.displayName.isEmpty ? model.displayNameEn : model.displayName
+        let nameSuffix = name.isEmpty ? "" : ", \(name)"
+        return "\(model.listSymbolDisplayName), \(model.quoteCurrency) 마켓\(nameSuffix)"
     }
 }
 
@@ -323,18 +433,27 @@ private struct MarketRowPriceSection: View, Equatable {
 
     var body: some View {
         Text(model.priceText)
-            .font(configuration.compactLayout ? .mono(12, weight: .bold) : .mono(13, weight: .bold))
+            .font(priceFont)
             .foregroundColor(
                 model.isPricePlaceholder
                     ? .textMuted
                     : (configuration.emphasizesChangeRate ? .themeText : (model.isUp ? .up : .down))
             )
             .lineLimit(1)
-            .minimumScaleFactor(configuration.emphasizesChangeRate ? 0.74 : 0.82)
+            .minimumScaleFactor(configuration.compactQuoteMode ? 0.8 : (configuration.emphasizesChangeRate ? 0.74 : 0.82))
             .allowsTightening(true)
             .padding(.vertical, 4)
             .frame(maxWidth: .infinity, alignment: .trailing)
             .background(flashBackground)
+            .accessibilityLabel("현재가")
+            .accessibilityValue(model.priceAccessibilityText)
+    }
+
+    private var priceFont: Font {
+        if configuration.compactQuoteMode {
+            return .mono(11, weight: .bold)
+        }
+        return configuration.compactLayout ? .mono(12, weight: .bold) : .mono(13, weight: .bold)
     }
 
     private var flashBackground: some View {
@@ -426,6 +545,10 @@ private struct MarketRowVolumeSection: View, Equatable {
             .foregroundColor(model.isVolumePlaceholder ? .textMuted : .textSecondary)
             .lineLimit(1)
             .minimumScaleFactor(0.72)
+            .truncationMode(.tail)
+            .frame(maxWidth: .infinity, alignment: .trailing)
+            .accessibilityLabel("거래대금")
+            .accessibilityValue(model.volumeAccessibilityText)
     }
 }
 
@@ -452,5 +575,7 @@ private struct MarketSparklineSection: View, Equatable {
             width: width,
             height: height
         )
+        .frame(width: width, height: height, alignment: .trailing)
+        .clipped()
     }
 }

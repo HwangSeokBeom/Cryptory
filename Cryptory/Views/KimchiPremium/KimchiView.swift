@@ -26,6 +26,9 @@ struct KimchiView: View {
                 ScreenStatusBannerView(viewState: vm.kimchiStatusViewState)
                     .padding(.horizontal, 16)
 
+                kimchiDisclaimer
+                    .padding(.horizontal, 16)
+
                 if let kimchiTransitionMessage = vm.kimchiTransitionMessage,
                    vm.kimchiPresentationState.sameExchangeStaleReuse {
                     transitionBanner(message: kimchiTransitionMessage)
@@ -47,6 +50,23 @@ struct KimchiView: View {
         .onDisappear {
             AppLogger.debug(.lifecycle, "KimchiView onDisappear #\(instanceID)")
         }
+    }
+
+    private var kimchiDisclaimer: some View {
+        Text("국내외 시세 차이를 참고용으로 보여줍니다. 이 정보는 투자 조언이나 거래 권유가 아닙니다. 환율과 거래소별 가격 기준에 따라 실제 수치가 달라질 수 있습니다.")
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundColor(.textMuted)
+            .lineSpacing(2)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(12)
+            .background(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(Color.bgSecondary)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .stroke(Color.themeBorder, lineWidth: 1)
+                    )
+            )
     }
 
     private var kimchiStyle: KimchiExchangeStyle {

@@ -54,6 +54,7 @@ struct ProfileView: View {
                 }
             }
             .task {
+                await LegalLinksConfigurationCenter.shared.refreshIfNeeded()
                 await refreshNotificationStatus()
                 if vm.isAuthenticated,
                    case .idle = vm.exchangeConnectionsState {
@@ -113,6 +114,7 @@ struct ProfileView: View {
                         .font(.system(size: 19, weight: .heavy))
                         .foregroundColor(.themeText)
                         .lineLimit(2)
+                        .truncationMode(.middle)
 
                     Text(accountSubtitle)
                         .font(.system(size: 13))
@@ -147,8 +149,8 @@ struct ProfileView: View {
                     .foregroundColor(.themeText)
 
                 Text(vm.isAuthenticated
-                     ? "현재 로그인 세션이 활성화되어 있으며, 거래소 API 연결과 정책/지원 관리를 이 화면에서 정리할 수 있어요."
-                     : "로그인 후 거래소 연결, 자산 확인, 주문 기능 같은 개인화 기능을 사용할 수 있어요.")
+                     ? "현재 로그인 세션이 활성화되어 있으며, 읽기 전용 거래소 API 연결과 정책/지원 관리를 이 화면에서 정리할 수 있어요."
+                     : "로그인 후 읽기 전용 거래소 연결과 자산 확인 같은 개인화 기능을 사용할 수 있어요.")
                     .font(.system(size: 12))
                     .foregroundColor(.textSecondary)
                     .lineSpacing(2)
@@ -213,12 +215,9 @@ struct ProfileView: View {
         VStack(alignment: .leading, spacing: 10) {
             sectionTitle("고객지원 및 정책")
 
-            policyRow(.support, subtitle: "문의, 문제 신고, 앱 사용 지원 페이지를 엽니다.")
-            policyRow(.privacyPolicy, subtitle: "개인정보 수집과 처리 기준을 확인합니다.")
-            policyRow(.termsOfService, subtitle: "서비스 이용 조건과 책임 범위를 확인합니다.")
-            policyRow(.deleteAccount, subtitle: "계정 삭제 절차와 데이터 처리 범위를 확인합니다.")
-            policyRow(.investmentDisclaimer, subtitle: "투자 유의사항과 면책 범위를 확인합니다.")
-            policyRow(.home, subtitle: "공식 홈페이지를 엽니다.")
+            ForEach(AppExternalLink.profilePolicyLinks) { link in
+                policyRow(link, subtitle: link.profileSubtitle)
+            }
         }
         .padding(16)
         .background(cardBackground)
@@ -332,25 +331,47 @@ struct ProfileView: View {
 
     private func policyRow(_ link: AppExternalLink, subtitle: String) -> some View {
         actionRow(
-            icon: "safari",
+            icon: link.systemImageName,
             iconColor: .accent,
             title: link.title,
             subtitle: subtitle
         ) {
             openExternalLink(link)
         }
+        .accessibilityLabel("\(link.title), \(subtitle)")
+        .accessibilityHint("링크를 앱 내 브라우저로 엽니다.")
     }
 
     private var accountIdentifier: String {
-        vm.authState.session?.email
-            ?? vm.authState.session?.userID
-            ?? "게스트 사용자"
+        guard let session = vm.authState.session else {
+            return "게스트 사용자"
+        }
+        let resolution = UserDisplayNamePolicy.resolve(
+            displayName: session.displayName,
+            nickname: session.nickname,
+            emailMasked: session.emailMasked,
+            email: session.email,
+            fallback: session.userID ?? "사용자"
+        )
+        AppLogger.debug(.lifecycle, "[ProfileRender] selectedName=\(resolution.primaryName) subtitleSource=\(resolution.subtitle == nil ? "none" : "emailMasked")")
+        return resolution.primaryName
     }
 
     private var accountSubtitle: String {
-        vm.isAuthenticated
-            ? "로그인 상태가 유지되고 있어요."
-            : "로그인하면 내 자산, 연결 거래소, 계정 설정을 함께 관리할 수 있어요."
+        guard vm.isAuthenticated else {
+            return "로그인하면 내 자산, 연결 거래소, 계정 설정을 함께 관리할 수 있어요."
+        }
+        guard let session = vm.authState.session else {
+            return "로그인 상태가 유지되고 있어요."
+        }
+        let resolution = UserDisplayNamePolicy.resolve(
+            displayName: session.displayName,
+            nickname: session.nickname,
+            emailMasked: session.emailMasked,
+            email: session.email,
+            fallback: session.userID ?? "사용자"
+        )
+        return resolution.subtitle ?? "로그인 상태가 유지되고 있어요."
     }
 
     private var connectionSummary: String {
@@ -421,8 +442,13 @@ struct ProfileView: View {
     }
 
     private func openExternalLink(_ link: AppExternalLink) {
-        AppLogger.debug(.auth, "[PolicyLinkDebug] action=open destination=\(link.policyDebugName)")
-        safariDestination = SafariDestination(link: link)
+        AppLogger.debug(.auth, "DEBUG [LegalLink] open type=\(link.policyDebugName) urlExists=\(link.urlString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false)")
+        guard let destination = SafariDestination(link: link) else {
+            AppLogger.debug(.auth, "WARN [LegalLink] invalid type=\(link.policyDebugName) reason=invalidURL")
+            vm.showNotification("링크를 열 수 없습니다.", type: .error)
+            return
+        }
+        safariDestination = destination
     }
 
     private func openAppSettings() {

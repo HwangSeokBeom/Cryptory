@@ -18,6 +18,8 @@ private func sparklineQuality(
         graphPathVersion: payload.graphPathVersion,
         renderVersion: payload.renderVersion,
         sourceVersion: payload.sourceVersion,
+        pointsHash: payload.pointsHash,
+        sourceName: payload.sourceName,
         shapeQuality: payload.shapeQuality
     )
 }
@@ -30,7 +32,7 @@ private func logGraphQualityDecision(
 ) {
     AppLogger.debug(
         .lifecycle,
-        "[GraphQualityDebug] \(marketIdentity.logFields) action=promote_or_reject oldDetail=\(existing?.detailLevel.cacheComponent ?? "none") newDetail=\(incoming.detailLevel.cacheComponent) oldPointCount=\(existing?.pointCount ?? 0) newPointCount=\(incoming.pointCount) accepted=\(decision.accepted) reason=\(decision.reason)"
+            "[GraphSignatureDebug] exchange=\(marketIdentity.exchange.rawValue) quoteCurrency=\(marketIdentity.quoteCurrency.rawValue) canonicalMarketId=\(marketIdentity.marketId ?? marketIdentity.symbol) oldQuality=\(existing?.sourceName ?? existing?.detailLevel.cacheComponent ?? "none") newQuality=\(incoming.sourceName ?? incoming.detailLevel.cacheComponent) oldPointCount=\(existing?.pointCount ?? 0) newPointCount=\(incoming.pointCount) oldPointsHash=\(existing?.pointsHash ?? 0) newPointsHash=\(incoming.pointsHash) oldUpdatedAt=\(existing?.sourceVersion ?? 0) newUpdatedAt=\(incoming.sourceVersion) decision=\(decision.accepted ? "accept" : "reject") reason=\(decision.reason) pointsHashEqual=\((existing?.pointsHash).map { $0 == incoming.pointsHash } ?? false)"
     )
 }
 
@@ -73,7 +75,10 @@ private final class RetainedSparklineStore {
                     "[GraphHoldDebug] \(marketIdentity.logFields) action=first_paint_low_information_allowed detailLevel=\(incoming.detailLevel.cacheComponent) pointCount=\(incoming.pointCount)"
                 )
             }
-            let decision = incomingQuality.promotionDecision(over: retainedQuality)
+            let decision = MarketSparklineQuality.graphQualityDecision(
+                current: retainedQuality,
+                incoming: incomingQuality
+            )
             let displayPayload: MarketSparklineRenderPayload
             if let retainedPayload,
                retainedPayload.hasRenderableGraph,
@@ -168,7 +173,7 @@ private final class RetainedSparklineStore {
         }
         let existingQuality = sparklineQuality(for: existing)
         let incomingQuality = sparklineQuality(for: incoming)
-        if incomingQuality.promotionDecision(over: existingQuality).accepted {
+        if MarketSparklineQuality.shouldReplaceGraph(current: existingQuality, incoming: incomingQuality) {
             return true
         }
         return incomingQuality.visibleBindableChangeReason(over: existingQuality) != nil
@@ -190,6 +195,7 @@ private final class MarketSparklinePathCache {
         graphRenderIdentity: String,
         detailLevel: MarketSparklineDetailLevel,
         graphPathVersion: Int,
+        pointsHash: Int,
         size: CGSize,
         geometry: MarketSparklineGeometry,
         marketIdentity _: MarketIdentity
@@ -200,11 +206,15 @@ private final class MarketSparklinePathCache {
 
         let scaledWidth = Int(size.width.rounded(.toNearestOrEven))
         let scaledHeight = Int(size.height.rounded(.toNearestOrEven))
-        let cacheKey = "\(graphRenderIdentity)|detail=\(detailLevel.cacheComponent)|path=\(graphPathVersion)|\(scaledWidth)x\(scaledHeight)"
+        let cacheKey = "\(graphRenderIdentity)|detail=\(detailLevel.cacheComponent)|path=\(graphPathVersion)|points=\(pointsHash)|\(scaledWidth)x\(scaledHeight)|domain=v1"
 
         lock.lock()
         if let cachedPath = pathsByKey[cacheKey] {
             lock.unlock()
+            AppLogger.debug(
+                .lifecycle,
+                "[GraphPathCacheDebug] canonicalGraphKey=\(graphRenderIdentity) width=\(scaledWidth) height=\(scaledHeight) pointsHash=\(pointsHash) cacheHit=true pathReused=true reason=same_render_signature"
+            )
             return cachedPath
         }
         lock.unlock()
@@ -220,6 +230,10 @@ private final class MarketSparklinePathCache {
         }
         pathsByKey[cacheKey] = builtPath
         lock.unlock()
+        AppLogger.debug(
+            .lifecycle,
+            "[GraphPathCacheDebug] canonicalGraphKey=\(graphRenderIdentity) width=\(scaledWidth) height=\(scaledHeight) pointsHash=\(pointsHash) cacheHit=false pathReused=false reason=points_or_size_changed"
+        )
         return builtPath
     }
 
@@ -232,10 +246,20 @@ private final class MarketSparklinePathCache {
         }
 
         let path = UIBezierPath()
-        let scaledPoints = geometry.normalizedPoints.map { point in
-            CGPoint(
+        let graphHeightUsage = MarketSparklineRenderPolicy.graphHeightUsage(
+            rangeRatio: geometry.relativeRange,
+            width: size.width,
+            height: size.height,
+            isLowInformation: geometry.normalizedPoints.count < MarketSparklineRenderPolicy.degradedListSparklinePointCount
+        )
+        let usageScale = geometry.graphHeightUsage > 0
+            ? graphHeightUsage / geometry.graphHeightUsage
+            : 1
+        let scaledPoints: [CGPoint] = geometry.normalizedPoints.map { point in
+            let adjustedY = 0.5 + (point.y - 0.5) * CGFloat(usageScale)
+            return CGPoint(
                 x: point.x * size.width,
-                y: point.y * size.height
+                y: min(max(adjustedY, 0.08), 0.92) * size.height
             )
         }
         let boostedPoints = boostScaledPointsIfNeeded(
@@ -250,23 +274,8 @@ private final class MarketSparklinePathCache {
 
         path.move(to: firstPoint)
 
-        if boostedPoints.count == 2 {
-            path.addLine(to: boostedPoints[1])
-            return MarketSparklinePathResult(
-                path: path.cgPath,
-                didApplyTinyRangeBoost: boostedPoints != scaledPoints
-            )
-        }
-
         for index in 1..<boostedPoints.count {
-            let previousPoint = boostedPoints[index - 1]
-            let point = boostedPoints[index]
-            let midpoint = CGPoint(
-                x: (previousPoint.x + point.x) / 2,
-                y: (previousPoint.y + point.y) / 2
-            )
-            path.addQuadCurve(to: midpoint, controlPoint: previousPoint)
-            path.addQuadCurve(to: point, controlPoint: point)
+            path.addLine(to: boostedPoints[index])
         }
 
         return MarketSparklinePathResult(
@@ -318,6 +327,37 @@ struct SparklineCanvasConfiguration: Equatable {
     let width: CGFloat
     let height: CGFloat
     let firstPaintSource: String
+
+    var lowConfidenceReason: String {
+        let source = (payload.sourceName ?? "").lowercased()
+        if source.contains("fallbacklistsparkline") || source.contains("fallback_list_sparkline") {
+            return "providerLowLiquidity"
+        }
+        if payload.shapeQuality.rawRange == 0 {
+            return "flatSeries"
+        }
+        if payload.shapeQuality.uniqueValueBucketCount < 3 {
+            return "insufficientUniquePrices"
+        }
+        if payload.shapeQuality.directionChangeCount == 0 {
+            return "lowDirectionChanges"
+        }
+        if payload.shapeQuality.isLowInformationListSparkline || payload.shapeQuality.relativeRange < 0.002 {
+            return "lowRangeRatio"
+        }
+        return "-"
+    }
+
+    var lowConfidenceStrokeOpacity: Float {
+        let source = (payload.sourceName ?? "").lowercased()
+        let isLowConfidence = source.contains("fallbacklistsparkline")
+            || payload.pointCount < MarketSparklineRenderPolicy.degradedListSparklinePointCount
+            || payload.shapeQuality.isLowInformationListSparkline
+        guard isLowConfidence else {
+            return visualState.strokeOpacity
+        }
+        return min(visualState.strokeOpacity, 0.42)
+    }
 }
 
 struct SparklineRenderDebugSnapshot: Equatable {
@@ -453,7 +493,7 @@ final class SparklineRenderView: UIView {
     private func configureLayers() {
         let displayScale = traitCollection.displayScale
         strokeLayer.fillColor = UIColor.clear.cgColor
-        strokeLayer.lineWidth = 1.5
+        strokeLayer.lineWidth = 1.25
         strokeLayer.lineCap = .round
         strokeLayer.lineJoin = .round
         strokeLayer.contentsScale = displayScale
@@ -486,6 +526,7 @@ final class SparklineRenderView: UIView {
             currentConfiguration.payload.graphRenderIdentity,
             currentConfiguration.payload.detailLevel.cacheComponent,
             String(currentConfiguration.payload.graphPathVersion),
+            String(currentConfiguration.payload.pointsHash),
             String(currentConfiguration.payload.renderVersion),
             String(currentConfiguration.payload.sourceVersion),
             String(currentConfiguration.payload.pointCount),
@@ -564,6 +605,7 @@ final class SparklineRenderView: UIView {
                     graphRenderIdentity: currentConfiguration.payload.graphRenderIdentity,
                     detailLevel: currentConfiguration.payload.detailLevel,
                     graphPathVersion: currentConfiguration.payload.graphPathVersion,
+                    pointsHash: currentConfiguration.payload.pointsHash,
                     size: renderSize,
                     geometry: geometry,
                     marketIdentity: currentConfiguration.marketIdentity
@@ -597,6 +639,7 @@ final class SparklineRenderView: UIView {
                 currentConfiguration.payload.graphRenderIdentity,
                 currentConfiguration.payload.detailLevel.cacheComponent,
                 String(currentConfiguration.payload.graphPathVersion),
+                String(currentConfiguration.payload.pointsHash),
                 String(currentConfiguration.payload.renderVersion),
                 String(currentConfiguration.payload.sourceVersion),
                 String(currentConfiguration.payload.pointCount),
@@ -616,7 +659,8 @@ final class SparklineRenderView: UIView {
                 currentRenderedBindingKey = currentConfiguration.payload.bindingKey
             }
             strokeLayer.strokeColor = (currentConfiguration.isUp ? UIColor(Color.up) : UIColor(Color.down)).cgColor
-            strokeLayer.opacity = currentConfiguration.visualState.strokeOpacity
+            strokeLayer.opacity = currentConfiguration.lowConfidenceStrokeOpacity
+            strokeLayer.lineDashPattern = currentConfiguration.lowConfidenceStrokeOpacity < currentConfiguration.visualState.strokeOpacity ? [3, 3] : nil
             strokeLayer.isHidden = false
             placeholderFillLayer.isHidden = true
             placeholderBorderLayer.isHidden = true
@@ -640,6 +684,10 @@ final class SparklineRenderView: UIView {
                         "[GraphDetailDebug] \(currentConfiguration.marketIdentity.logFields) action=flat_range_visual_boost_applied rawRange=\(geometry.rawRange) relativeRange=\(geometry.relativeRange)"
                     )
                 }
+                AppLogger.debug(
+                    .network,
+            "[GraphRender] exchange=\(currentConfiguration.marketIdentity.exchange.rawValue) quoteCurrency=\(currentConfiguration.marketIdentity.quoteCurrency.rawValue) marketId=\(currentConfiguration.marketIdentity.marketId ?? currentConfiguration.marketIdentity.symbol) state=\(currentConfiguration.payload.graphState) pointCount=\(currentConfiguration.payload.pointCount) quality=\(currentConfiguration.payload.sourceName ?? currentConfiguration.payload.detailLevel.cacheComponent) isDerived=\(currentConfiguration.payload.detailLevel == .derivedPreview) realSeries=\(MarketSparklineRenderPolicy.isRealSeriesSource(currentConfiguration.payload.sourceName)) width=\(Int(renderSize.width.rounded(.toNearestOrEven))) height=\(Int(renderSize.height.rounded(.toNearestOrEven))) min=\(currentConfiguration.payload.shapeQuality.minValue) max=\(currentConfiguration.payload.shapeQuality.maxValue) mean=\(currentConfiguration.payload.geometry?.meanValue ?? 0) range=\(currentConfiguration.payload.shapeQuality.rawRange) rangeRatio=\(currentConfiguration.payload.geometry?.relativeRange ?? currentConfiguration.payload.shapeQuality.relativeRange) graphHeightUsage=\(MarketSparklineRenderPolicy.graphHeightUsage(rangeRatio: currentConfiguration.payload.geometry?.relativeRange ?? currentConfiguration.payload.shapeQuality.relativeRange, width: renderSize.width, height: renderSize.height, isLowInformation: currentConfiguration.payload.shapeQuality.isLowInformationListSparkline)) flat=\(currentConfiguration.payload.shapeQuality.rawRange == 0) directionChanges=\(currentConfiguration.payload.shapeQuality.directionChangeCount) sampledCount=\(currentConfiguration.payload.geometry?.normalizedPoints.count ?? 0) clipped=false lowConfidence=\(currentConfiguration.lowConfidenceStrokeOpacity < currentConfiguration.visualState.strokeOpacity) lowConfidenceReason=\(currentConfiguration.lowConfidenceReason)"
+                )
                 if effectiveReason == "detail_upgrade" {
                     AppLogger.debug(
                         .lifecycle,
@@ -762,15 +810,15 @@ final class SparklineRenderView: UIView {
         let oldBucket = MarketSparklineRenderPolicy.pointCountBucket(oldPointCount)
         let newBucket = MarketSparklineRenderPolicy.pointCountBucket(newPointCount)
         let forcedUpgradeReason: String?
-        if oldDetail == .placeholder && newDetail == .liveDetailed {
+        if oldDetail == .placeholder && newDetail.pathDetailRank >= MarketSparklineDetailLevel.refinedMini.pathDetailRank {
             forcedUpgradeReason = "placeholder_to_live"
         } else if oldPointCount == 0 && newPointCount > 0 {
             forcedUpgradeReason = "placeholder_to_live"
-        } else if oldDetail == .retainedCoarse && newPointCount > oldPointCount {
+        } else if (oldDetail == .retainedCoarse || oldDetail == .derivedPreview) && newPointCount > oldPointCount {
             forcedUpgradeReason = "coarse_to_live"
         } else if (oldState == .placeholder || oldState == .staleVisible || oldState == .cachedVisible) && newState == .liveVisible {
             forcedUpgradeReason = "placeholder_to_live"
-        } else if (oldDetail == .retainedCoarse || oldDetail == .liveCoarse)
+        } else if (oldDetail == .retainedCoarse || oldDetail == .liveCoarse || oldDetail == .derivedPreview || oldDetail == .providerMini)
             && (MarketSparklineRenderPolicy.minimumRenderablePointCount...MarketSparklineRenderPolicy.coarseUpperBoundPointCount).contains(oldPointCount)
             && MarketSparklineRenderPolicy.isPromotedPointCount(newPointCount)
             && newDetail.isDetailed {
@@ -817,11 +865,29 @@ final class SparklineRenderView: UIView {
         strokeLayer.isHidden = true
         placeholderFillLayer.isHidden = false
         placeholderBorderLayer.isHidden = false
-        placeholderFillLayer.path = path
-        placeholderBorderLayer.path = path
-        placeholderFillLayer.fillColor = UIColor(Color.bgTertiary.opacity(isUnavailable ? 0.55 : 0.75)).cgColor
-        placeholderBorderLayer.strokeColor = UIColor(Color.themeBorder.opacity(isUnavailable ? 0.25 : 0.35)).cgColor
-        placeholderBorderLayer.lineDashPattern = isUnavailable ? nil : [3, 2]
+        if isUnavailable {
+            let bounds = path.boundingBoxOfPath
+            let width = max(min(bounds.width * 0.34, 34), 14)
+            let y = bounds.midY
+            let dashPath = UIBezierPath()
+            dashPath.move(to: CGPoint(x: bounds.midX - width / 2, y: y))
+            dashPath.addLine(to: CGPoint(x: bounds.midX + width / 2, y: y))
+            placeholderFillLayer.path = nil
+            placeholderFillLayer.isHidden = true
+            placeholderBorderLayer.path = dashPath.cgPath
+            placeholderBorderLayer.strokeColor = UIColor(Color.textMuted.opacity(0.55)).cgColor
+            placeholderBorderLayer.lineWidth = 2
+            placeholderBorderLayer.lineCap = .round
+            placeholderBorderLayer.lineDashPattern = nil
+        } else {
+            placeholderFillLayer.path = path
+            placeholderBorderLayer.path = path
+            placeholderFillLayer.fillColor = UIColor(Color.bgTertiary.opacity(0.75)).cgColor
+            placeholderBorderLayer.strokeColor = UIColor(Color.themeBorder.opacity(0.35)).cgColor
+            placeholderBorderLayer.lineWidth = 1
+            placeholderBorderLayer.lineCap = .butt
+            placeholderBorderLayer.lineDashPattern = [3, 2]
+        }
     }
 
     private func preservePreviousUsableGraphIfPossible(
@@ -916,8 +982,8 @@ struct SparklineView: View, Equatable {
         payload: MarketSparklineRenderPayload,
         isUp: Bool,
         marketIdentity: MarketIdentity,
-        width: CGFloat = 76,
-        height: CGFloat = 20
+        width: CGFloat = 84,
+        height: CGFloat = 34
     ) {
         let resolution = RetainedSparklineStore.shared.resolve(
             incoming: payload,
@@ -951,5 +1017,11 @@ struct SparklineView: View, Equatable {
     var body: some View {
         SparklineCanvasView(configuration: resolvedConfiguration)
             .frame(width: width, height: height)
+            .onAppear {
+                AppLogger.debug(
+                    .network,
+                    "[GraphRender] exchange=\(marketIdentity.exchange.rawValue) quoteCurrency=\(marketIdentity.quoteCurrency.rawValue) marketId=\(marketIdentity.marketId ?? marketIdentity.symbol) state=\(resolvedConfiguration.payload.graphState) pointCount=\(resolvedConfiguration.payload.pointCount) quality=\(resolvedConfiguration.payload.sourceName ?? resolvedConfiguration.payload.detailLevel.cacheComponent) isDerived=\(resolvedConfiguration.payload.detailLevel == .derivedPreview) realSeries=\(MarketSparklineRenderPolicy.isRealSeriesSource(resolvedConfiguration.payload.sourceName)) width=\(Int(width)) height=\(Int(height)) min=\(resolvedConfiguration.payload.shapeQuality.minValue) max=\(resolvedConfiguration.payload.shapeQuality.maxValue) mean=\(resolvedConfiguration.payload.geometry?.meanValue ?? 0) range=\(resolvedConfiguration.payload.shapeQuality.rawRange) rangeRatio=\(resolvedConfiguration.payload.geometry?.relativeRange ?? resolvedConfiguration.payload.shapeQuality.relativeRange) graphHeightUsage=\(MarketSparklineRenderPolicy.graphHeightUsage(rangeRatio: resolvedConfiguration.payload.geometry?.relativeRange ?? resolvedConfiguration.payload.shapeQuality.relativeRange, width: width, height: height, isLowInformation: resolvedConfiguration.payload.shapeQuality.isLowInformationListSparkline)) flat=\(resolvedConfiguration.payload.shapeQuality.rawRange == 0) directionChanges=\(resolvedConfiguration.payload.shapeQuality.directionChangeCount) sampledCount=\(resolvedConfiguration.payload.geometry?.normalizedPoints.count ?? 0) clipped=false lowConfidence=\(resolvedConfiguration.lowConfidenceStrokeOpacity < resolvedConfiguration.visualState.strokeOpacity) lowConfidenceReason=\(resolvedConfiguration.lowConfidenceReason)"
+                )
+            }
     }
 }

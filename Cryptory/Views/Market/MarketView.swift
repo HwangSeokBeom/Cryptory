@@ -1,5 +1,8 @@
 import SwiftUI
 
+private let marketTabBarReservedHeight: CGFloat = 92
+private let marketScrollBottomPadding: CGFloat = 24
+
 private struct MarketExchangeStyle {
     let title: String
     let subtitle: String
@@ -41,9 +44,23 @@ struct MarketView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            SearchBar(text: $vm.searchQuery)
+            SearchBar(
+                text: $vm.searchQuery,
+                onFocusChanged: { isFocused in
+                    vm.setMarketSearchFocused(isFocused)
+                },
+                onSubmit: {
+                    vm.submitMarketSearch()
+                }
+            )
+            recentSearchSection
             MarketSegmentedControl(selection: $vm.marketFilter)
                 .padding(.bottom, 10)
+            if !vm.supportedQuoteCurrencies.isEmpty {
+                quoteSegmentedControl
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 10)
+            }
 
             ScreenStatusBannerView(viewState: vm.marketStatusViewState)
                 .padding(.horizontal, 16)
@@ -56,21 +73,30 @@ struct MarketView: View {
                     .padding(.bottom, 10)
             }
 
-            ScrollView {
-                VStack(spacing: 16) {
-                    exchangeHero
-                    representativeSection
-                    listSection
-                }
-                .padding(.bottom, 20)
-                .transaction { transaction in
-                    if suppressesMarketSwapAnimations {
-                        transaction.disablesAnimations = true
-                        transaction.animation = nil
+            GeometryReader { proxy in
+                ScrollView {
+                    VStack(spacing: 16) {
+                        exchangeHero
+                        representativeSection
+                        listSection
+                    }
+                    .padding(.bottom, marketScrollBottomPadding + marketTabBarReservedHeight + proxy.safeAreaInsets.bottom)
+                    .transaction { transaction in
+                        if suppressesMarketSwapAnimations {
+                            transaction.disablesAnimations = true
+                            transaction.animation = nil
+                        }
                     }
                 }
+                .scrollDismissesKeyboard(.interactively)
+                .id(vm.marketScrollResetID)
+                .onAppear {
+                    AppLogger.debug(
+                        .layout,
+                        "[GraphLayout] exchange=\(vm.selectedExchange.rawValue) quoteCurrency=\(vm.selectedQuoteCurrency.rawValue) marketId=- rowWidth=0 contentWidth=\(Int(proxy.size.width)) sparklineWidth=\(Int(displayConfiguration.sparklineWidth)) sparklineHeight=\(Int(displayConfiguration.sparklineHeight)) priceWidth=\(Int(displayConfiguration.priceWidth)) changeWidth=\(Int(displayConfiguration.changeWidth)) volumeWidth=\(Int(displayConfiguration.volumeWidth)) didOverflow=false bottomInset=\(Int(marketScrollBottomPadding + marketTabBarReservedHeight + proxy.safeAreaInsets.bottom))"
+                    )
+                }
             }
-            .scrollDismissesKeyboard(.interactively)
         }
         .dismissKeyboardOnBackgroundTap(enabled: !vm.showExchangeMenu)
         .onAppear {
@@ -107,14 +133,15 @@ struct MarketView: View {
     }
 
     private var marketStyle: MarketExchangeStyle {
+        let quoteMarketName = "\(vm.selectedExchange.displayName) \(vm.selectedQuoteCurrency.marketDisplayName) 마켓"
         switch vm.selectedExchange {
         case .upbit:
             return MarketExchangeStyle(
-                title: "원화 마켓 빠른 보기",
+                title: "\(vm.selectedQuoteCurrency.marketDisplayName) 마켓 빠른 보기",
                 subtitle: "거래대금 상위 종목부터 즉시 반응하게 보여줍니다.",
                 representativeTitle: "대표 종목",
-                listTitle: "전체 원화 마켓",
-                volumeTitle: "거래대금",
+                listTitle: quoteMarketName,
+                volumeTitle: volumeTitle(for: vm.selectedQuoteCurrency),
                 accentStart: vm.selectedExchange.color.opacity(0.92),
                 accentEnd: vm.selectedExchange.color.opacity(0.58)
             )
@@ -123,46 +150,147 @@ struct MarketView: View {
                 title: "실시간 주요 종목",
                 subtitle: "빗썸 체감에 맞춰 강한 변동 종목을 먼저 보여줍니다.",
                 representativeTitle: "주요 종목",
-                listTitle: "실시간 시세 리스트",
-                volumeTitle: "거래량",
+                listTitle: quoteMarketName,
+                volumeTitle: volumeTitle(for: vm.selectedQuoteCurrency),
                 accentStart: vm.selectedExchange.color.opacity(0.88),
                 accentEnd: Color(hex: "#F8C86A")
             )
         case .coinone:
             return MarketExchangeStyle(
-                title: "실시간 랭킹 보드",
+                title: "\(vm.selectedQuoteCurrency.marketDisplayName) 실시간 랭킹 보드",
                 subtitle: "대표 종목과 전체 리스트가 순차적으로 채워집니다.",
                 representativeTitle: "랭킹 보드",
-                listTitle: "코인원 시세",
-                volumeTitle: "체결량",
+                listTitle: quoteMarketName,
+                volumeTitle: volumeTitle(for: vm.selectedQuoteCurrency),
                 accentStart: vm.selectedExchange.color.opacity(0.9),
                 accentEnd: Color(hex: "#8DE4DB")
             )
         case .korbit:
             return MarketExchangeStyle(
-                title: "코빗 원화 시세",
+                title: "코빗 \(vm.selectedQuoteCurrency.marketDisplayName) 시세",
                 subtitle: "선택 직후 대표 종목부터 먼저 보여드리고 전체를 확장합니다.",
                 representativeTitle: "주요 페어",
-                listTitle: "코빗 전체 리스트",
-                volumeTitle: "거래량",
+                listTitle: quoteMarketName,
+                volumeTitle: volumeTitle(for: vm.selectedQuoteCurrency),
                 accentStart: vm.selectedExchange.color.opacity(0.9),
                 accentEnd: Color(hex: "#90B8EA")
             )
         case .binance:
             return MarketExchangeStyle(
-                title: "글로벌 마켓",
+                title: "글로벌 \(vm.selectedQuoteCurrency.rawValue) 마켓",
                 subtitle: "국내 김프 비교용 글로벌 기준가 흐름을 빠르게 확인합니다.",
                 representativeTitle: "대표 마켓",
-                listTitle: "글로벌 시세",
-                volumeTitle: "거래량",
+                listTitle: quoteMarketName,
+                volumeTitle: volumeTitle(for: vm.selectedQuoteCurrency),
                 accentStart: vm.selectedExchange.color.opacity(0.88),
                 accentEnd: Color(hex: "#F7D55B")
             )
         }
     }
 
+    private func volumeTitle(for quoteCurrency: MarketQuoteCurrency) -> String {
+        switch quoteCurrency {
+        case .krw:
+            return "거래대금"
+        case .usdt:
+            return "거래대금(USDT)"
+        case .btc:
+            return "거래대금(BTC)"
+        case .eth:
+            return "거래대금(ETH)"
+        }
+    }
+
     private var displayConfiguration: MarketListDisplayConfiguration {
         vm.marketDisplayConfiguration
+    }
+
+    private var quoteSegmentedControl: some View {
+        HStack(spacing: 4) {
+            ForEach(vm.supportedQuoteCurrencies) { quote in
+                Button {
+                    vm.updateQuoteCurrency(quote, source: "market_quote_segment")
+                } label: {
+                    Text(quote.title)
+                        .font(.system(size: 12, weight: vm.selectedQuoteCurrency == quote ? .heavy : .semibold))
+                        .foregroundColor(vm.selectedQuoteCurrency == quote ? .bg : .textSecondary)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 9)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(vm.selectedQuoteCurrency == quote ? Color.accent : Color.bgSecondary)
+                        )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(3)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color.bgTertiary.opacity(0.85))
+        )
+    }
+
+    @ViewBuilder
+    private var recentSearchSection: some View {
+        if vm.isMarketSearchFocused && vm.searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && vm.recentMarketSearches.isEmpty == false {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Text("최근 검색")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundColor(.textSecondary)
+                    Spacer()
+                    Button {
+                        vm.clearRecentMarketSearches()
+                    } label: {
+                        Text("전체 삭제")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(.textMuted)
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                ForEach(vm.recentMarketSearches) { item in
+                    HStack(spacing: 10) {
+                        Button {
+                            vm.selectRecentMarketSearch(item.keyword)
+                        } label: {
+                            HStack(spacing: 8) {
+                                Image(systemName: "clock")
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundColor(.textMuted)
+                                Text(item.keyword)
+                                    .font(.system(size: 13, weight: .medium))
+                                    .foregroundColor(.themeText)
+                                    .lineLimit(1)
+                                Spacer()
+                            }
+                        }
+                        .buttonStyle(.plain)
+
+                        Button {
+                            vm.deleteRecentMarketSearch(item.keyword)
+                        } label: {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 11, weight: .bold))
+                                .foregroundColor(.textMuted)
+                                .frame(width: 24, height: 24)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .background(Color.bgSecondary.opacity(0.96))
+            .overlay(
+                Rectangle()
+                    .fill(Color.themeBorder.opacity(0.32))
+                    .frame(height: 1),
+                alignment: .bottom
+            )
+            .padding(.bottom, 10)
+        }
     }
 
     private var exchangeHero: some View {
@@ -251,7 +379,12 @@ struct MarketView: View {
 
             marketTableHeader
 
-            if shouldShowListSkeleton {
+            if let unsupportedMessage = vm.marketUnsupportedStateMessage {
+                stateView(
+                    title: "지원하지 않는 마켓입니다.",
+                    detail: unsupportedMessage
+                )
+            } else if shouldShowListSkeleton {
                 LazyVStack(spacing: 0) {
                     ForEach(0..<8, id: \.self) { _ in
                         marketRowSkeleton
@@ -268,12 +401,17 @@ struct MarketView: View {
             } else if case .failed(let message) = vm.marketState, vm.displayedMarketRows.isEmpty {
                 stateView(
                     title: "시세를 불러오지 못했어요",
-                    detail: message
+                    detail: message,
+                    retryAction: {
+                        Task {
+                            await vm.refreshMarketData(forceRefresh: true, reason: "market_error_retry")
+                        }
+                    }
                 )
             } else if case .empty = vm.marketState, vm.displayedMarketRows.isEmpty {
                 stateView(
-                    title: "노출할 거래쌍이 없어요",
-                    detail: "선택한 거래소에서 보여드릴 시세를 아직 준비하지 못했어요."
+                    title: "표시할 마켓 데이터가 없습니다.",
+                    detail: "\(vm.selectedExchange.displayName) · \(vm.selectedQuoteCurrency.rawValue)"
                 )
             } else if vm.marketFilter == .fav && vm.displayedMarketRows.isEmpty {
                 stateView(
@@ -296,7 +434,7 @@ struct MarketView: View {
                                 vm.selectCoin(row.coin)
                             },
                             onToggleFavorite: {
-                                vm.toggleFavorite(row.symbol)
+                                vm.toggleFavorite(row)
                             },
                             onVisible: {
                                 vm.markMarketRowVisible(
@@ -306,6 +444,7 @@ struct MarketView: View {
                             }
                         )
                         .equatable()
+                        .clipped()
 
                         Divider()
                             .background(Color.themeBorder.opacity(0.28))
@@ -315,6 +454,7 @@ struct MarketView: View {
                     RoundedRectangle(cornerRadius: 16, style: .continuous)
                         .fill(Color.bgSecondary)
                 )
+                .clipped()
                 .id("list-content-\(vm.selectedExchange.rawValue)")
                 .transition(.identity)
             }
@@ -334,6 +474,7 @@ struct MarketView: View {
             if displayConfiguration.showsVolume {
                 Text(marketStyle.volumeTitle)
                     .frame(width: displayConfiguration.volumeWidth, alignment: .trailing)
+                    .padding(.leading, 6)
             }
             if displayConfiguration.showsSparkline {
                 Text("추이")
@@ -344,8 +485,11 @@ struct MarketView: View {
                     .padding(.leading, displayConfiguration.sparklineColumnLeadingPadding)
             }
         }
-        .font(.system(size: 11, weight: .medium))
+        .font(.system(size: displayConfiguration.compactQuoteMode ? 10 : 11, weight: .medium))
         .foregroundColor(.textMuted)
+        .lineLimit(1)
+        .minimumScaleFactor(0.72)
+        .allowsTightening(true)
         .padding(.horizontal, 16)
         .padding(.top, 4)
         .padding(.bottom, 8)
@@ -377,7 +521,7 @@ struct MarketView: View {
         case .exchangeChanged, .loading:
             return "거래소 변경 직후 바로 준비 중"
         case .partial:
-            return "리스트와 sparkline 순차 반영 중"
+            return "리스트 순차 반영 중"
         case .hydrated:
             return "전체 리스트 반영 완료"
         }
@@ -440,12 +584,12 @@ struct MarketView: View {
             VStack(alignment: .leading, spacing: 12) {
                 HStack(alignment: .top) {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(row.symbol)
+                        Text(row.listSymbolDisplayName)
                             .font(.system(size: 14, weight: .heavy))
                             .foregroundColor(.themeText)
                             .lineLimit(1)
-                            .minimumScaleFactor(0.9)
-                            .fixedSize(horizontal: true, vertical: false)
+                            .minimumScaleFactor(0.85)
+                            .truncationMode(.tail)
                         Text(row.displayName)
                             .font(.system(size: 11))
                             .foregroundColor(.textSecondary)
@@ -477,10 +621,12 @@ struct MarketView: View {
                             payload: row.sparklinePayload,
                             isUp: row.isUp,
                             marketIdentity: row.marketIdentity,
-                            width: 76,
-                            height: 24
+                            width: 104,
+                            height: 36
                         )
                     )
+                    .frame(width: 104, height: 36)
+                    .clipped()
                 }
             }
             .padding(14)
@@ -559,7 +705,7 @@ struct MarketView: View {
         .redacted(reason: .placeholder)
     }
 
-    private func stateView(title: String, detail: String) -> some View {
+    private func stateView(title: String, detail: String, retryAction: (() -> Void)? = nil) -> some View {
         VStack(spacing: 12) {
             Spacer(minLength: 60)
             Text(title)
@@ -570,6 +716,20 @@ struct MarketView: View {
                 .foregroundColor(.textMuted)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 24)
+            if let retryAction {
+                Button(action: retryAction) {
+                    Text("다시 시도")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundColor(.bg)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 9)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(Color.accent)
+                        )
+                }
+                .buttonStyle(.plain)
+            }
             Spacer()
         }
         .frame(maxWidth: .infinity)

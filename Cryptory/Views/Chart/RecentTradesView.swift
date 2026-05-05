@@ -5,18 +5,18 @@ struct RecentTradesView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("실시간 체결")
+            Text("최근 시장 기록")
                 .font(.system(size: 13, weight: .bold))
                 .foregroundColor(.themeText)
 
             if trades.isEmpty {
-                Text("최근 체결 데이터가 아직 없어요.")
+                Text("최근 시장 데이터가 아직 없어요.")
                     .font(.system(size: 12))
                     .foregroundColor(.textMuted)
             } else {
                 ForEach(trades.prefix(6)) { trade in
                     HStack {
-                        Text(trade.side == "sell" ? "매도" : "매수")
+                        Text(trade.side == "sell" ? "하락측" : "상승측")
                             .font(.system(size: 10, weight: .bold))
                             .foregroundColor(trade.side == "sell" ? .down : .up)
                             .frame(width: 34)

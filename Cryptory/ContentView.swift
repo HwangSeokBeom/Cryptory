@@ -8,7 +8,7 @@ struct ContentView: View {
     private let instanceID: Int
     private let marketView: MarketView
     private let chartView: ChartView
-    private let tradeView: TradeView
+    private let newsView: NewsView
     private let portfolioView: PortfolioView
     private let kimchiView: KimchiView
 
@@ -22,7 +22,7 @@ struct ContentView: View {
 
         self.marketView = MarketView(vm: viewModel)
         self.chartView = ChartView(vm: viewModel)
-        self.tradeView = TradeView(vm: viewModel)
+        self.newsView = NewsView(vm: viewModel)
         self.portfolioView = PortfolioView(vm: viewModel)
         self.kimchiView = KimchiView(vm: viewModel)
 
@@ -60,11 +60,12 @@ struct ContentView: View {
                             Label(Tab.chart.title, systemImage: Tab.chart.systemImage)
                         }
 
-                    tradeView
-                        .tag(Tab.trade)
+                    newsView
+                        .tag(Tab.news)
                         .tabItem {
-                            Label(Tab.trade.title, systemImage: Tab.trade.systemImage)
+                            Label(Tab.news.title, systemImage: Tab.news.systemImage)
                         }
+                        .accessibilityLabel("뉴스 탭")
 
                     portfolioView
                         .tag(Tab.portfolio)
@@ -146,6 +147,9 @@ struct ContentView: View {
             AppLogger.debug(.lifecycle, "ContentView onAppear #\(instanceID) tab=\(vm.activeTab.rawValue)")
             vm.onAppear()
         }
+        .task {
+            await LegalLinksConfigurationCenter.shared.refreshIfNeeded()
+        }
         .onDisappear {
             AppLogger.debug(.lifecycle, "ContentView onDisappear #\(instanceID) tab=\(vm.activeTab.rawValue)")
         }
@@ -153,7 +157,9 @@ struct ContentView: View {
             vm.onScenePhaseChanged(newValue)
         }
         .onOpenURL { url in
-            _ = LiveGoogleSignInProvider.shared.handleOpenURL(url)
+            if LiveGoogleSignInProvider.shared.handleOpenURL(url) == false {
+                _ = vm.handleIncomingURL(url)
+            }
         }
         .onChange(of: isExchangeConnectionsSheetPresented) { _, isPresented in
             vm.syncExchangeConnectionsPresentationState(

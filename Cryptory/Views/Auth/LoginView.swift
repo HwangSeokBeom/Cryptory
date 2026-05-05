@@ -20,6 +20,7 @@ struct LoginView: View {
     private let footerLinks: [AppExternalLink] = [
         .termsOfService,
         .privacyPolicy,
+        .communityPolicy,
         .support,
         .deleteAccount,
         .investmentDisclaimer,
@@ -68,6 +69,9 @@ struct LoginView: View {
         .onChange(of: vm.signupEmail) { _, _ in clearSignUpServerErrorIfNeeded() }
         .onChange(of: vm.signupPassword) { _, _ in clearSignUpServerErrorIfNeeded() }
         .onChange(of: vm.signupPasswordConfirm) { _, _ in clearSignUpServerErrorIfNeeded() }
+        .task {
+            await LegalLinksConfigurationCenter.shared.refreshIfNeeded()
+        }
     }
 
     private var sheetGrabber: some View {
@@ -126,7 +130,7 @@ struct LoginView: View {
                 .foregroundColor(.themeText)
 
             Text(vm.authFlowMode == .login
-                 ? "로그인 후 내 자산, 주문, 거래소 연결을 바로 이어서 사용할 수 있어요."
+                 ? "로그인 후 내 자산과 읽기 전용 거래소 연결을 바로 이어서 사용할 수 있어요."
                  : "이메일로 계정을 만들고 약관 동의 후 바로 로그인 상태로 진입합니다.")
                 .font(.system(size: 13))
                 .foregroundColor(.textSecondary)
@@ -646,8 +650,13 @@ struct LoginView: View {
     }
 
     private func openExternalLink(_ link: AppExternalLink) {
-        AppLogger.debug(.auth, "[PolicyLinkDebug] action=open destination=\(link.policyDebugName)")
-        safariDestination = SafariDestination(link: link)
+        AppLogger.debug(.auth, "DEBUG [LegalLink] open type=\(link.policyDebugName) urlExists=\(link.urlString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false)")
+        guard let destination = SafariDestination(link: link) else {
+            AppLogger.debug(.auth, "WARN [LegalLink] invalid type=\(link.policyDebugName) reason=invalidURL")
+            vm.showNotification("링크를 열 수 없습니다.", type: .error)
+            return
+        }
+        safariDestination = destination
     }
 }
 

@@ -6,7 +6,7 @@ struct OrderbookView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("호가창")
+            Text("시장 깊이")
                 .font(.system(size: 13, weight: .bold))
                 .foregroundColor(.themeText)
                 .padding(.horizontal, 16)

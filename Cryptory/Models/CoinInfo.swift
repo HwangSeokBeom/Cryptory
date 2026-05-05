@@ -4,22 +4,53 @@ struct MarketIdentity: Hashable, Codable {
     let exchange: Exchange
     let marketId: String?
     let symbol: String
+    let quoteCurrency: MarketQuoteCurrency
 
     nonisolated init(exchange: Exchange, marketId: String? = nil, symbol: String) {
         self.exchange = exchange
-        self.marketId = Self.normalizedComponent(marketId)
-        self.symbol = Self.normalizedComponent(symbol) ?? symbol.uppercased()
+        self.quoteCurrency = .krw
+        let resolvedSymbol = Self.canonicalSymbol(
+            exchange: exchange,
+            rawSymbol: symbol,
+            marketId: marketId,
+            quoteCurrency: .krw
+        )
+        self.symbol = resolvedSymbol
+        self.marketId = Self.canonicalMarketId(
+            exchange: exchange,
+            marketId: marketId,
+            symbol: resolvedSymbol,
+            quoteCurrency: .krw
+        )
+    }
+
+    nonisolated init(exchange: Exchange, marketId: String? = nil, symbol: String, quoteCurrency: MarketQuoteCurrency) {
+        self.exchange = exchange
+        self.quoteCurrency = quoteCurrency
+        let resolvedSymbol = Self.canonicalSymbol(
+            exchange: exchange,
+            rawSymbol: symbol,
+            marketId: marketId,
+            quoteCurrency: quoteCurrency
+        )
+        self.symbol = resolvedSymbol
+        self.marketId = Self.canonicalMarketId(
+            exchange: exchange,
+            marketId: marketId,
+            symbol: resolvedSymbol,
+            quoteCurrency: quoteCurrency
+        )
     }
 
     nonisolated var cacheKey: String {
         if let marketId {
-            return "\(exchange.rawValue)|\(marketId)"
+            return "\(exchange.rawValue)|\(quoteCurrency.rawValue)|\(marketId)"
         }
-        return "\(exchange.rawValue)|\(symbol)"
+        return "\(exchange.rawValue)|\(quoteCurrency.rawValue)|\(symbol)"
     }
 
     nonisolated var logFields: String {
-        "exchange=\(exchange.rawValue) marketId=\(marketId ?? "-") symbol=\(symbol)"
+        "exchange=\(exchange.rawValue) quote=\(quoteCurrency.rawValue) marketId=\(marketId ?? "-") symbol=\(symbol)"
     }
 
     private nonisolated static func normalizedComponent(_ rawValue: String?) -> String? {
@@ -30,6 +61,88 @@ struct MarketIdentity: Hashable, Codable {
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .uppercased()
         return normalizedValue.isEmpty ? nil : normalizedValue
+    }
+
+    private nonisolated static func canonicalSymbol(
+        exchange: Exchange,
+        rawSymbol: String,
+        marketId: String?,
+        quoteCurrency: MarketQuoteCurrency
+    ) -> String {
+        SymbolNormalization.canonicalAssetCode(
+            exchange: exchange,
+            rawSymbol: rawSymbol,
+            marketId: marketId,
+            quoteAsset: quoteCurrency.rawValue
+        )
+    }
+
+    nonisolated static func canonicalMarketId(
+        exchange _: Exchange,
+        marketId: String?,
+        symbol: String,
+        quoteCurrency: MarketQuoteCurrency
+    ) -> String? {
+        guard let rawMarketId = normalizedComponent(marketId) else {
+            return nil
+        }
+
+        let quote = quoteCurrency.rawValue.uppercased()
+        let baseSymbol = SymbolNormalization.canonicalAssetCode(
+            rawSymbol: symbol,
+            marketId: rawMarketId,
+            quoteAsset: quote
+        )
+        let separators = CharacterSet(charactersIn: "-_/:")
+        let parts = rawMarketId
+            .components(separatedBy: separators)
+            .filter { $0.isEmpty == false }
+
+        if parts.count >= 2 {
+            if parts[0] == quote, let base = parts.dropFirst().first {
+                return "\(quote)-\(base)"
+            }
+            if let last = parts.last, last == quote, let base = parts.first {
+                return "\(quote)-\(base)"
+            }
+            return parts.joined(separator: "-")
+        }
+
+        if rawMarketId == quote {
+            return nil
+        }
+        if rawMarketId.hasPrefix(quote), rawMarketId.count > quote.count {
+            return "\(quote)-\(String(rawMarketId.dropFirst(quote.count)))"
+        }
+        if rawMarketId.hasSuffix(quote), rawMarketId.count > quote.count {
+            return "\(quote)-\(String(rawMarketId.dropLast(quote.count)))"
+        }
+        if rawMarketId == baseSymbol {
+            return "\(quote)-\(baseSymbol)"
+        }
+        return rawMarketId
+    }
+
+    nonisolated var graphRequestAliases: [String] {
+        var aliases = [String]()
+
+        func append(_ rawValue: String?) {
+            guard let normalizedValue = Self.normalizedComponent(rawValue),
+                  aliases.contains(normalizedValue) == false else {
+                return
+            }
+            aliases.append(normalizedValue)
+        }
+
+        append(marketId)
+        append(symbol)
+        append("\(quoteCurrency.rawValue)-\(symbol)")
+        append("\(symbol)-\(quoteCurrency.rawValue)")
+        append("\(symbol)_\(quoteCurrency.rawValue)")
+        append("\(quoteCurrency.rawValue)_\(symbol)")
+        append("\(symbol)\(quoteCurrency.rawValue)")
+        append("\(quoteCurrency.rawValue)\(symbol)")
+        return aliases
     }
 }
 
@@ -43,8 +156,18 @@ enum SymbolNormalization {
         "XBT": "BTC"
     ]
 
+    private nonisolated static let quoteCurrenciesByRemovalPriority = [
+        "FDUSD",
+        "USDT",
+        "USDC",
+        "KRW",
+        "USD",
+        "BTC",
+        "ETH"
+    ]
+
     private nonisolated static var quoteCurrencies: Set<String> {
-        Set(["KRW", "USD", "USDT", "BTC", "ETH"])
+        Set(quoteCurrenciesByRemovalPriority)
     }
 
     private nonisolated static var separators: CharacterSet {
@@ -59,21 +182,45 @@ enum SymbolNormalization {
         quoteAsset: String? = nil,
         canonicalSymbol: String? = nil
     ) -> String {
-        if let canonicalSymbol = normalizedToken(canonicalSymbol) {
-            return canonicalSymbol
+        let normalizedQuoteAsset = normalizedToken(quoteAsset)
+        if let normalizedQuoteAsset {
+            return baseAssetCode(
+                rawSymbol: rawSymbol,
+                marketId: marketId,
+                baseAsset: baseAsset,
+                quoteAsset: normalizedQuoteAsset,
+                canonicalSymbol: canonicalSymbol
+            )
         }
 
+        let normalizedCanonicalSymbol = normalizedToken(canonicalSymbol)
         let parsedRawSymbol = normalizedPairCode(rawSymbol)
         let parsedMarketId = normalizedPairCode(marketId)
+        let normalizedMarketId = normalizedToken(marketId)
         let normalizedBaseAsset = normalizedToken(baseAsset)
 
         if let parsedMarketId,
            shouldPreferMarketIdCandidate(
             parsedMarketId,
-            rawSymbolCandidate: parsedRawSymbol,
+            rawSymbolCandidate: normalizedCanonicalSymbol ?? parsedRawSymbol,
             baseAssetCandidate: normalizedBaseAsset
            ) {
             return parsedMarketId
+        }
+
+        if let normalizedMarketId,
+           normalizedMarketId.rangeOfCharacter(from: separators) == nil,
+           quoteCurrencies.contains(normalizedMarketId) == false,
+           shouldPreferMarketIdCandidate(
+            normalizedMarketId,
+            rawSymbolCandidate: normalizedCanonicalSymbol ?? parsedRawSymbol,
+            baseAssetCandidate: normalizedBaseAsset
+           ) {
+            return normalizedMarketId
+        }
+
+        if let normalizedCanonicalSymbol {
+            return normalizedCanonicalSymbol
         }
 
         if let parsedRawSymbol {
@@ -92,11 +239,45 @@ enum SymbolNormalization {
             return normalizedBaseAsset
         }
 
-        if let quoteAsset = normalizedToken(quoteAsset), quoteCurrencies.contains(quoteAsset) == false {
-            return quoteAsset
+        return normalizedToken(rawSymbol) ?? rawSymbol.uppercased()
+    }
+
+    nonisolated static func baseAssetCode(
+        rawSymbol: String,
+        marketId: String? = nil,
+        baseAsset: String? = nil,
+        quoteAsset: String,
+        canonicalSymbol: String? = nil
+    ) -> String {
+        let normalizedQuoteAsset = normalizedToken(quoteAsset)
+        let normalizedBaseAsset = normalizedToken(baseAsset)
+        let normalizedCanonicalSymbol = normalizedToken(canonicalSymbol)
+        let normalizedRawSymbol = normalizedToken(rawSymbol)
+
+        if let normalizedBaseAsset,
+           normalizedBaseAsset != normalizedQuoteAsset {
+            return normalizedBaseAsset
         }
 
-        return normalizedToken(rawSymbol) ?? rawSymbol.uppercased()
+        if let marketCandidate = baseAssetCodeFromPair(marketId, quoteAsset: normalizedQuoteAsset) {
+            return marketCandidate
+        }
+
+        if let rawCandidate = baseAssetCodeFromPair(rawSymbol, quoteAsset: normalizedQuoteAsset) {
+            return rawCandidate
+        }
+
+        if let normalizedCanonicalSymbol,
+           normalizedCanonicalSymbol != normalizedQuoteAsset {
+            return normalizedCanonicalSymbol
+        }
+
+        if let normalizedRawSymbol,
+           normalizedRawSymbol != normalizedQuoteAsset {
+            return normalizedRawSymbol
+        }
+
+        return normalizedRawSymbol ?? rawSymbol.uppercased()
     }
 
     nonisolated static func canonicalAlias(for assetKey: String?) -> String? {
@@ -150,7 +331,11 @@ enum SymbolNormalization {
             return normalizedToken(parts[0])
         }
 
-        for quoteCurrency in ["KRW", "USDT", "USD", "BTC", "ETH"] {
+        if quoteCurrencies.contains(normalizedValue) {
+            return normalizedValue
+        }
+
+        for quoteCurrency in quoteCurrenciesByRemovalPriority {
             if normalizedValue.hasPrefix(quoteCurrency), normalizedValue.count > quoteCurrency.count {
                 return normalizedToken(String(normalizedValue.dropFirst(quoteCurrency.count)))
             }
@@ -160,6 +345,39 @@ enum SymbolNormalization {
         }
 
         return normalizedValue
+    }
+
+    private nonisolated static func baseAssetCodeFromPair(_ rawValue: String?, quoteAsset: String?) -> String? {
+        guard let normalizedValue = normalizedToken(rawValue),
+              let quoteAsset,
+              quoteAsset.isEmpty == false else {
+            return nil
+        }
+
+        let parts = normalizedValue
+            .components(separatedBy: separators)
+            .filter { $0.isEmpty == false }
+
+        if parts.count >= 2 {
+            if parts[0] == quoteAsset {
+                return normalizedToken(parts.dropFirst().joined(separator: ""))
+            }
+            if let lastPart = parts.last, lastPart == quoteAsset {
+                return normalizedToken(parts.dropLast().joined(separator: ""))
+            }
+            return nil
+        }
+
+        if normalizedValue == quoteAsset {
+            return nil
+        }
+        if normalizedValue.hasPrefix(quoteAsset), normalizedValue.count > quoteAsset.count {
+            return normalizedToken(String(normalizedValue.dropFirst(quoteAsset.count)))
+        }
+        if normalizedValue.hasSuffix(quoteAsset), normalizedValue.count > quoteAsset.count {
+            return normalizedToken(String(normalizedValue.dropLast(quoteAsset.count)))
+        }
+        return nil
     }
 
     private nonisolated static func normalizedToken(_ rawValue: String?) -> String? {
@@ -239,11 +457,12 @@ struct CoinDisplayMetadata: Equatable, Codable {
         self.unavailableReason = unavailableReason
     }
 
-    nonisolated func marketIdentity(exchange: Exchange, symbol: String) -> MarketIdentity {
+    nonisolated func marketIdentity(exchange: Exchange, symbol: String, quoteCurrency: MarketQuoteCurrency = .krw) -> MarketIdentity {
         MarketIdentity(
             exchange: exchange,
             marketId: normalizedMarketId,
-            symbol: symbol
+            symbol: symbol,
+            quoteCurrency: quoteCurrency
         )
     }
 
@@ -320,6 +539,28 @@ struct CoinInfo: Identifiable, Equatable, Codable {
         displayMetadata?.displaySymbol ?? canonicalSymbol
     }
 
+    nonisolated func baseSymbol(quoteCurrency: MarketQuoteCurrency) -> String {
+        SymbolNormalization.baseAssetCode(
+            rawSymbol: symbol,
+            marketId: marketId,
+            baseAsset: displayMetadata?.baseAsset,
+            quoteAsset: quoteCurrency.rawValue,
+            canonicalSymbol: canonicalSymbol
+        )
+    }
+
+    nonisolated func pairDisplayName(quoteCurrency: MarketQuoteCurrency) -> String {
+        "\(baseSymbol(quoteCurrency: quoteCurrency))/\(quoteCurrency.rawValue)"
+    }
+
+    nonisolated func listSymbolDisplayName(quoteCurrency: MarketQuoteCurrency) -> String {
+        baseSymbol(quoteCurrency: quoteCurrency)
+    }
+
+    nonisolated func detailSymbolDisplayName(quoteCurrency: MarketQuoteCurrency) -> String {
+        pairDisplayName(quoteCurrency: quoteCurrency)
+    }
+
     nonisolated var resolvedHasImage: Bool? {
         displayMetadata?.hasImage ?? hasImage
     }
@@ -385,11 +626,11 @@ struct CoinInfo: Identifiable, Equatable, Codable {
         )
     }
 
-    nonisolated func marketIdentity(exchange: Exchange) -> MarketIdentity {
+    nonisolated func marketIdentity(exchange: Exchange, quoteCurrency: MarketQuoteCurrency = .krw) -> MarketIdentity {
         if let displayMetadata {
-            return displayMetadata.marketIdentity(exchange: exchange, symbol: symbol)
+            return displayMetadata.marketIdentity(exchange: exchange, symbol: symbol, quoteCurrency: quoteCurrency)
         }
-        return MarketIdentity(exchange: exchange, symbol: symbol)
+        return MarketIdentity(exchange: exchange, symbol: symbol, quoteCurrency: quoteCurrency)
     }
 }
 

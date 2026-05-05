@@ -45,7 +45,7 @@ struct HoldingCard: View, Equatable {
                     statCell(label: "총수량", value: PriceFormatter.formatQty6(holding.totalQuantity))
                     statCell(label: "평가금액", value: "₩" + PriceFormatter.formatInteger(holding.evaluationAmount))
                     statCell(label: "가용/잠금", value: "\(PriceFormatter.formatQty(holding.availableQuantity)) / \(PriceFormatter.formatQty(holding.lockedQuantity))")
-                    statCell(label: "매수평균가", value: PriceFormatter.formatPrice(holding.averageBuyPrice))
+                    statCell(label: "평균 단가", value: PriceFormatter.formatPrice(holding.averageBuyPrice))
                     pnlCell
                 }
             }

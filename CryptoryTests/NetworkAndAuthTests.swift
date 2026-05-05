@@ -489,6 +489,204 @@ final class NetworkAndAuthTests: XCTestCase {
         XCTAssertEqual(snapshot.tickers["BTC"]?.hasServerSparkline, true)
     }
 
+    func testMarketTickerCanonicalItemsShapeAndFallbackFields() async throws {
+        URLProtocolSpy.reset()
+        URLProtocolSpy.responseData = Data(
+            """
+            {
+              "success": true,
+              "data": {
+                "exchange": "upbit",
+                "quoteCurrency": "KRW",
+                "items": [
+                  {
+                    "market": "KRW-BTC",
+                    "baseCurrency": "BTC",
+                    "koreanName": "비트코인",
+                    "currentPrice": "150000000",
+                    "signedChangeRate": "0.012",
+                    "accTradePrice24h": "1234567890",
+                    "high24h": "151000000",
+                    "low24h": "149000000"
+                  },
+                  {
+                    "market": "KRW-PYTH",
+                    "baseCurrency": "PYTH",
+                    "displayName": "Pyth Network",
+                    "currentPrice": null,
+                    "percent": "-0.4"
+                  }
+                ]
+              }
+            }
+            """.utf8
+        )
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [URLProtocolSpy.self]
+        let repository = LiveMarketRepository(
+            client: APIClient(
+                configuration: makeAPIConfiguration(baseURL: "https://example.com"),
+                session: URLSession(configuration: configuration)
+            )
+        )
+
+        let snapshot = try await repository.fetchTickers(exchange: .upbit, quoteCurrency: .krw)
+        let url = try XCTUnwrap(URLProtocolSpy.lastRequest?.url)
+        let queryItems = Dictionary(uniqueKeysWithValues: (URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []).map { ($0.name, $0.value ?? "") })
+
+        XCTAssertEqual(queryItems["exchange"], "upbit")
+        XCTAssertEqual(queryItems["quoteCurrency"], "KRW")
+        XCTAssertEqual(queryItems["limit"], "100")
+        XCTAssertEqual(snapshot.coins.count, 2)
+        XCTAssertEqual(snapshot.coins.first?.marketId, "KRW-BTC")
+        XCTAssertEqual(snapshot.coins.first?.symbol, "BTC")
+        XCTAssertEqual(snapshot.tickers["BTC"]?.price, 150_000_000)
+        XCTAssertEqual(snapshot.tickers["BTC"]?.change, 1.2)
+        XCTAssertEqual(snapshot.tickers["BTC"]?.volume, 1_234_567_890)
+        XCTAssertNil(snapshot.tickers["PYTH"])
+        XCTAssertTrue(snapshot.coins.contains { $0.symbol == "PYTH" })
+    }
+
+    func testMarketIdentityUsesMarketIdWhenAvailableAndQuoteFallbackWhenMissing() {
+        let krwBTC = MarketIdentity(exchange: .upbit, marketId: "KRW-BTC", symbol: "BTC", quoteCurrency: .krw)
+        let btcETH = MarketIdentity(exchange: .upbit, marketId: "BTC-ETH", symbol: "ETH", quoteCurrency: .btc)
+        let krwETH = MarketIdentity(exchange: .upbit, symbol: "ETH", quoteCurrency: .krw)
+        let btcQuoteETH = MarketIdentity(exchange: .upbit, symbol: "ETH", quoteCurrency: .btc)
+
+        XCTAssertEqual(krwBTC.cacheKey, "upbit|KRW|KRW-BTC")
+        XCTAssertEqual(btcETH.cacheKey, "upbit|BTC|BTC-ETH")
+        XCTAssertNotEqual(krwBTC.cacheKey, btcETH.cacheKey)
+        XCTAssertEqual(krwETH.cacheKey, "upbit|KRW|ETH")
+        XCTAssertEqual(btcQuoteETH.cacheKey, "upbit|BTC|ETH")
+        XCTAssertNotEqual(krwETH.cacheKey, btcQuoteETH.cacheKey)
+    }
+
+    func testCandleCanonicalDataCandlesShapeAndTimeframeQuery() async throws {
+        URLProtocolSpy.reset()
+        URLProtocolSpy.responseData = Data(
+            """
+            {
+              "success": true,
+              "data": {
+                "exchange": "upbit",
+                "symbol": "BTC",
+                "quoteCurrency": "KRW",
+                "timeframe": "1H",
+                "candles": [
+                  {
+                    "timestamp": 1710000000,
+                    "open": 10,
+                    "high": 12,
+                    "low": 9,
+                    "close": 11,
+                    "volume": 3,
+                    "quoteVolume": 33
+                  }
+                ]
+              }
+            }
+            """.utf8
+        )
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [URLProtocolSpy.self]
+        let repository = LiveMarketRepository(
+            client: APIClient(
+                configuration: makeAPIConfiguration(baseURL: "https://example.com"),
+                session: URLSession(configuration: configuration)
+            )
+        )
+
+        let snapshot = try await repository.fetchCandles(symbol: "BTC", exchange: .upbit, quoteCurrency: .krw, interval: "1h", limit: 200)
+        let url = try XCTUnwrap(URLProtocolSpy.lastRequest?.url)
+        let queryItems = Dictionary(uniqueKeysWithValues: (URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []).map { ($0.name, $0.value ?? "") })
+
+        XCTAssertEqual(queryItems["exchange"], "upbit")
+        XCTAssertEqual(queryItems["symbol"], "BTC")
+        XCTAssertEqual(queryItems["quoteCurrency"], "KRW")
+        XCTAssertEqual(queryItems["timeframe"], "1H")
+        XCTAssertNil(queryItems["interval"])
+        XCTAssertEqual(queryItems["limit"], "200")
+        XCTAssertEqual(snapshot.candles.count, 1)
+        XCTAssertEqual(snapshot.candles.first?.quoteVolume, 33)
+    }
+
+    @MainActor
+    func testFirstMarketLoadDoesNotFanOutCandleRequests() async throws {
+        let repository = SpyMarketRepository()
+        let coins = (0..<30).map { index in
+            CoinCatalog.coin(
+                symbol: "T\(index)",
+                exchange: .upbit,
+                marketId: "KRW-T\(index)",
+                baseAsset: "T\(index)",
+                quoteAsset: "KRW",
+                canonicalSymbol: "T\(index)",
+                displaySymbol: "T\(index)",
+                displayName: "Token \(index)",
+                englishName: "Token \(index)",
+                isTradable: true
+            )
+        }
+        repository.marketCatalogSnapshots[.upbit] = MarketCatalogSnapshot(
+            exchange: .upbit,
+            markets: coins,
+            supportedIntervalsBySymbol: Dictionary(uniqueKeysWithValues: coins.map { ($0.symbol, ["1h"]) }),
+            meta: .empty
+        )
+        repository.tickerSnapshots[.upbit] = MarketTickerSnapshot(
+            exchange: .upbit,
+            coins: coins,
+            tickers: Dictionary(uniqueKeysWithValues: coins.enumerated().map { index, coin in
+                (
+                    coin.symbol,
+                    TickerData(
+                        price: Double(1000 + index),
+                        change: 0.1,
+                        volume: Double(10_000 - index),
+                        high24: Double(1100 + index),
+                        low24: Double(900 + index),
+                        sparkline: [Double(990 + index), Double(1000 + index)],
+                        hasServerSparkline: true
+                    )
+                )
+            }),
+            meta: .empty
+        )
+        let defaults = UserDefaults(suiteName: "testFirstMarketLoadDoesNotFanOutCandleRequests")!
+        defaults.removePersistentDomain(forName: "testFirstMarketLoadDoesNotFanOutCandleRequests")
+        let vm = CryptoViewModel(
+            marketRepository: repository,
+            tradingRepository: SpyTradingRepository(),
+            portfolioRepository: SpyPortfolioRepository(),
+            kimchiPremiumRepository: StubKimchiPremiumRepository(),
+            exchangeConnectionsRepository: SpyExchangeConnectionsRepository(),
+            publicContentRepository: SpyPublicContentRepository(),
+            authService: StubAuthenticationService(),
+            authSessionStore: SpyAuthSessionStore(),
+            publicWebSocketService: NoOpPublicWebSocketService(),
+            privateWebSocketService: NoOpPrivateWebSocketService(),
+            marketSnapshotCacheStore: InMemoryMarketSnapshotCacheStore(),
+            userDefaults: defaults
+        )
+
+        await vm.refreshMarketData(forceRefresh: true, reason: "unit_first_load")
+        try? await Task.sleep(nanoseconds: 250_000_000)
+
+        XCTAssertGreaterThan(vm.displayedMarketRows.count, 0)
+        XCTAssertEqual(repository.fetchedTickers.count, 1)
+        XCTAssertEqual(repository.fetchedCandles.count, 0)
+        XCTAssertEqual(repository.fetchedTrades.count, 0)
+        XCTAssertEqual(repository.fetchedOrderbooks.count, 0)
+
+        vm.selectedCoin = coins[0]
+        await vm.loadChartData(forceRefresh: true, reason: "unit_chart_detail")
+
+        XCTAssertEqual(repository.fetchedCandles.count, 1)
+        XCTAssertEqual(repository.fetchedCandles.first?.symbol, "T0")
+    }
+
     func testTickerParsingSupportsAssetImageURL() async throws {
         URLProtocolSpy.reset()
         URLProtocolSpy.responseData = Data(
