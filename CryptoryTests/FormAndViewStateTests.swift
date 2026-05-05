@@ -677,7 +677,51 @@ final class FormAndViewStateTests: XCTestCase {
         )
 
         XCTAssertEqual(quality.detailLevel, .derivedPreview)
-        XCTAssertEqual(quality.qualityRank, 2)
+        XCTAssertEqual(quality.qualityRank, 1)
+    }
+
+    func testPlaceholderQualityDoesNotRejectPlaceholderAsDowngradeLoop() {
+        let current = MarketSparklineQuality(
+            graphState: .placeholder,
+            points: [],
+            pointCount: 0
+        )
+        let incoming = MarketSparklineQuality(
+            graphState: .placeholder,
+            points: [],
+            pointCount: 0
+        )
+
+        let decision = incoming.promotionDecision(over: current)
+
+        XCTAssertTrue(decision.accepted)
+        XCTAssertEqual(decision.reason, "empty_pending")
+    }
+
+    func testCanonicalGraphKeyNormalizesExchangeMarketIdentity() {
+        let coinoneUSDE = MarketIdentity(exchange: .coinone, marketId: "USDE", symbol: "E")
+        XCTAssertEqual(coinoneUSDE.symbol, "USDE")
+        XCTAssertEqual(coinoneUSDE.marketId, "KRW-USDE")
+        XCTAssertEqual(coinoneUSDE.cacheKey, "coinone|KRW|KRW-USDE")
+
+        let korbitXRP = MarketIdentity(exchange: .korbit, marketId: "KRW-XRP", symbol: "A")
+        XCTAssertEqual(korbitXRP.symbol, "XRP")
+        XCTAssertEqual(korbitXRP.marketId, "KRW-XRP")
+        XCTAssertEqual(korbitXRP.cacheKey, "korbit|KRW|KRW-XRP")
+
+        let bithumbBTC = MarketIdentity(exchange: .bithumb, marketId: "BTC_KRW", symbol: "BTC")
+        XCTAssertEqual(bithumbBTC.marketId, "KRW-BTC")
+        XCTAssertEqual(bithumbBTC.cacheKey, "bithumb|KRW|KRW-BTC")
+
+        let binanceBTC = MarketIdentity(
+            exchange: .binance,
+            marketId: "BTCUSDT",
+            symbol: "BTC",
+            quoteCurrency: .usdt
+        )
+        XCTAssertEqual(binanceBTC.marketId, "USDT-BTC")
+        XCTAssertEqual(binanceBTC.cacheKey, "binance|USDT|USDT-BTC")
+        XCTAssertTrue(binanceBTC.graphRequestAliases.contains("BTCUSDT"))
     }
 
     func testSparklineEndpointRanksAboveDerivedPreview() {

@@ -80,6 +80,7 @@ struct MarketView: View {
                     }
                 }
                 .scrollDismissesKeyboard(.interactively)
+                .id(vm.marketScrollResetID)
                 .onAppear {
                     AppLogger.debug(
                         .layout,
@@ -349,7 +350,7 @@ struct MarketView: View {
                                 vm.selectCoin(row.coin)
                             },
                             onToggleFavorite: {
-                                vm.toggleFavorite(row.symbol)
+                                vm.toggleFavorite(row)
                             },
                             onVisible: {
                                 vm.markMarketRowVisible(

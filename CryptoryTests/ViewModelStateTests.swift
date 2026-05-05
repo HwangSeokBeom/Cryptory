@@ -1667,6 +1667,7 @@ final class ViewModelStateTests: XCTestCase {
         )
 
         vm.onAppear()
+        vm.updateExchange(.upbit, source: "test_market_rows")
         await waitUntil {
             guard let row = vm.displayedMarketRows.first(where: { $0.symbol == "BTC" }) else {
                 return false
@@ -1720,6 +1721,40 @@ final class ViewModelStateTests: XCTestCase {
     @MainActor
     func testMarketRowsPublishPriceVolumeAndSparklineTogether() async {
         let marketRepository = SpyMarketRepository()
+        marketRepository.tickerSnapshots[.upbit] = MarketTickerSnapshot(
+            exchange: .upbit,
+            tickers: [
+                "BTC": TickerData(
+                    price: 125_000_000,
+                    change: 1.2,
+                    volume: 100_000_000,
+                    high24: 126_000_000,
+                    low24: 120_000_000,
+                    sparkline: [
+                        123_500_000, 124_000_000, 123_800_000, 124_500_000,
+                        124_200_000, 125_100_000, 124_900_000, 125_000_000
+                    ],
+                    sparklinePointCount: 8,
+                    hasServerSparkline: true,
+                    sparklineSource: "provider_sparkline"
+                ),
+                "ETH": TickerData(
+                    price: 5_000_000,
+                    change: -0.4,
+                    volume: 50_000_000,
+                    high24: 5_100_000,
+                    low24: 4_900_000,
+                    sparkline: [
+                        5_020_000, 5_010_000, 5_030_000, 5_000_000,
+                        5_025_000, 4_980_000, 5_015_000, 5_000_000
+                    ],
+                    sparklinePointCount: 8,
+                    hasServerSparkline: true,
+                    sparklineSource: "provider_sparkline"
+                )
+            ],
+            meta: .empty
+        )
         let vm = CryptoViewModel(
             marketRepository: marketRepository,
             tradingRepository: SpyTradingRepository(),
@@ -1746,9 +1781,9 @@ final class ViewModelStateTests: XCTestCase {
         XCTAssertEqual(btcRow.id, MarketIdentity(exchange: .upbit, symbol: "BTC").cacheKey)
         XCTAssertFalse(btcRow.isPricePlaceholder)
         XCTAssertFalse(btcRow.isVolumePlaceholder)
-        XCTAssertEqual(btcRow.sparkline.count, 6)
-        XCTAssertEqual(btcRow.sparklinePointCount, 6)
-        XCTAssertEqual(btcRow.sparklineSource, "ticker_sparkline")
+        XCTAssertEqual(btcRow.sparkline.count, 8)
+        XCTAssertEqual(btcRow.sparklinePointCount, 8)
+        XCTAssertEqual(btcRow.sparklineSource, "provider_sparkline")
         XCTAssertTrue(btcRow.hasEnoughSparklineData)
         XCTAssertEqual(btcRow.chartPresentation, .live)
         XCTAssertTrue(btcRow.graphState.keepsVisibleGraph)
@@ -1760,7 +1795,7 @@ final class ViewModelStateTests: XCTestCase {
     @MainActor
     func testTickerSparklinePointsPaintsReadyRowGraphOnFirstPaint() async throws {
         let repository = SpyMarketRepository()
-        let coin = makeMarketCoin(exchange: .upbit, marketId: "KRW-BIO", symbol: "BIO", imageURL: nil)
+        let coin = makeMarketCoin(exchange: .upbit, marketId: "KRW-TSP", symbol: "TSP", imageURL: nil)
         repository.marketCatalogSnapshots[.upbit] = MarketCatalogSnapshot(
             exchange: .upbit,
             markets: [coin],
@@ -1780,9 +1815,15 @@ final class ViewModelStateTests: XCTestCase {
                     sparkline: [],
                     sparklinePoints: [
                         SparklinePoint(price: 100, timestamp: Date(timeIntervalSince1970: 1)),
-                        SparklinePoint(price: 120, timestamp: Date(timeIntervalSince1970: 2))
+                        SparklinePoint(price: 103, timestamp: Date(timeIntervalSince1970: 2)),
+                        SparklinePoint(price: 101, timestamp: Date(timeIntervalSince1970: 3)),
+                        SparklinePoint(price: 106, timestamp: Date(timeIntervalSince1970: 4)),
+                        SparklinePoint(price: 104, timestamp: Date(timeIntervalSince1970: 5)),
+                        SparklinePoint(price: 109, timestamp: Date(timeIntervalSince1970: 6)),
+                        SparklinePoint(price: 107, timestamp: Date(timeIntervalSince1970: 7)),
+                        SparklinePoint(price: 112, timestamp: Date(timeIntervalSince1970: 8))
                     ],
-                    sparklinePointCount: 2,
+                    sparklinePointCount: 8,
                     hasServerSparkline: true,
                     sparklineSource: "ticker_sparkline_points"
                 )
@@ -1801,13 +1842,14 @@ final class ViewModelStateTests: XCTestCase {
         )
 
         vm.onAppear()
+        vm.updateExchange(.upbit, source: "test_ticker_sparkline_points")
         await waitUntil {
-            vm.displayedMarketRows.first?.graphState.keepsVisibleGraph == true
+            vm.displayedMarketRows.first(where: { $0.symbol == "TSP" })?.graphState.keepsVisibleGraph == true
         }
 
-        let row = try XCTUnwrap(vm.displayedMarketRows.first)
-        XCTAssertEqual(row.marketIdentity, MarketIdentity(exchange: .upbit, marketId: "KRW-BIO", symbol: "BIO"))
-        XCTAssertEqual(row.sparkline, [100, 104, 108, 112, 116, 120])
+        let row = try XCTUnwrap(vm.displayedMarketRows.first(where: { $0.symbol == "TSP" }))
+        XCTAssertEqual(row.marketIdentity, MarketIdentity(exchange: .upbit, marketId: "KRW-TSP", symbol: "TSP"))
+        XCTAssertEqual(row.sparkline, [100, 103, 101, 106, 104, 109, 107, 112])
         XCTAssertEqual(row.sparklineSource, "ticker_sparkline_points")
         XCTAssertEqual(row.graphState, .liveVisible)
         XCTAssertTrue(repository.fetchedCandles.isEmpty)
@@ -1815,7 +1857,7 @@ final class ViewModelStateTests: XCTestCase {
     }
 
     @MainActor
-    func testTickerPriceAndChangeDerivesReadySparklineWithoutNetwork() async throws {
+    func testTickerProviderSparklinePaintsReadySparklineWithoutNetwork() async throws {
         let repository = SpyMarketRepository()
         let coin = makeMarketCoin(exchange: .upbit, marketId: "KRW-DRV", symbol: "DRV", imageURL: nil)
         repository.marketCatalogSnapshots[.upbit] = MarketCatalogSnapshot(
@@ -1832,8 +1874,12 @@ final class ViewModelStateTests: XCTestCase {
                     price: 105,
                     change: 5,
                     volume: 10_000,
-                    high24: 110,
-                    low24: 95
+                    high24: 112,
+                    low24: 95,
+                    sparkline: [100, 102, 101, 104, 103, 106, 105, 108],
+                    sparklinePointCount: 8,
+                    hasServerSparkline: true,
+                    sparklineSource: "provider_sparkline"
                 )
             ],
             meta: .empty
@@ -1855,10 +1901,10 @@ final class ViewModelStateTests: XCTestCase {
         }
 
         let row = try XCTUnwrap(vm.displayedMarketRows.first)
-        XCTAssertEqual(row.sparklineSource, "derived_change24h")
-        XCTAssertEqual(row.sparkline.count, 6)
+        XCTAssertEqual(row.sparklineSource, "provider_sparkline")
+        XCTAssertEqual(row.sparkline.count, 8)
         XCTAssertEqual(try XCTUnwrap(row.sparkline.first), 100, accuracy: 0.0001)
-        XCTAssertEqual(try XCTUnwrap(row.sparkline.last), 105, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(row.sparkline.last), 108, accuracy: 0.0001)
         XCTAssertEqual(row.graphState, .liveVisible)
         XCTAssertTrue(repository.fetchedCandles.isEmpty)
         XCTAssertTrue(repository.fetchedTrades.isEmpty)
@@ -2742,7 +2788,7 @@ final class ViewModelStateTests: XCTestCase {
     }
 
     @MainActor
-    func testFirstPaintVisibleRowsDoNotStartWithRetainedCoarseGraph() async {
+    func testFirstPaintVisibleRowsTreatLowPointTickerSparklineAsHydrationCandidate() async {
         let candleSnapshot = CandleSnapshot(
             exchange: .upbit,
             symbol: "BTC",
@@ -2804,20 +2850,19 @@ final class ViewModelStateTests: XCTestCase {
             guard let row = vm.displayedMarketRows.first(where: { $0.symbol == "BTC" }) else {
                 return false
             }
-            return row.sparkline.count >= 2
+            return row.hasPrice
         }
 
         guard let initialRow = vm.displayedMarketRows.first(where: { $0.symbol == "BTC" }) else {
             return XCTFail("Expected initial BTC market row")
         }
-        XCTAssertEqual(initialRow.sparklinePayload.detailLevel, .derivedPreview)
-        XCTAssertEqual(initialRow.sparkline.count, 6)
+        XCTAssertEqual(initialRow.sparklineSource, "ticker_missing_list_sparkline")
+        XCTAssertEqual(initialRow.sparkline.count, 0)
+        XCTAssertEqual(initialRow.graphState, .placeholder)
         XCTAssertTrue(repository.fetchedCandles.isEmpty)
         XCTAssertTrue(repository.fetchedTrades.isEmpty)
         XCTAssertTrue(repository.fetchedOrderbooks.isEmpty)
-        if let firstSparklineFetch = repository.fetchedSparklines.first {
-            XCTAssertEqual(firstSparklineFetch.limit, 24)
-        }
+        XCTAssertTrue(repository.fetchedSparklines.isEmpty)
     }
 
     @MainActor
@@ -3326,7 +3371,11 @@ final class ViewModelStateTests: XCTestCase {
                 CandleData(time: 1, open: 1, high: 2, low: 1, close: 1, volume: 1),
                 CandleData(time: 2, open: 2, high: 3, low: 2, close: 2, volume: 1),
                 CandleData(time: 3, open: 3, high: 4, low: 3, close: 3, volume: 1),
-                CandleData(time: 4, open: 4, high: 5, low: 4, close: 4, volume: 1)
+                CandleData(time: 4, open: 4, high: 5, low: 4, close: 4, volume: 1),
+                CandleData(time: 5, open: 4, high: 6, low: 4, close: 6, volume: 1),
+                CandleData(time: 6, open: 6, high: 7, low: 5, close: 5, volume: 1),
+                CandleData(time: 7, open: 5, high: 8, low: 5, close: 8, volume: 1),
+                CandleData(time: 8, open: 8, high: 9, low: 7, close: 7, volume: 1)
             ],
             meta: ResponseMeta(
                 fetchedAt: Date(timeIntervalSinceNow: -120),
@@ -3376,10 +3425,11 @@ final class ViewModelStateTests: XCTestCase {
         )
 
         vm.onAppear()
+        vm.updateExchange(.upbit, source: "test_stale_graph_failure")
         await waitUntil(timeoutNanoseconds: 4_000_000_000) {
             repository.fetchedCandles.count >= 1
                 && vm.displayedMarketRows.first?.graphState.keepsVisibleGraph == true
-                && vm.displayedMarketRows.first?.sparkline.count == 4
+                && vm.displayedMarketRows.first?.sparkline.count == 8
         }
 
         guard let liveRow = vm.displayedMarketRows.first else {
@@ -5513,13 +5563,9 @@ final class ViewModelStateTests: XCTestCase {
         }
 
         vm.markMarketRowVisible(marketIdentity: marketIdentity)
-        await waitUntil(timeoutNanoseconds: 5_000_000_000) {
-            repository.fetchedSparklines.contains(where: { $0.symbol == "KRW-ETHFI" })
-        }
+        try? await Task.sleep(for: .milliseconds(300))
 
-        XCTAssertTrue(repository.fetchedSparklines.contains(where: {
-            $0.symbol == "KRW-ETHFI" && $0.exchange == .upbit
-        }), "Fetched sparklines: \(repository.fetchedSparklines)")
+        XCTAssertTrue(repository.fetchedSparklines.isEmpty, "Initial visible rows should not fetch sparkline batches: \(repository.fetchedSparklines)")
         XCTAssertFalse(
             repository.fetchedSparklines.contains(where: { $0.symbol == "ETHFI" }),
             "Fetched sparklines: \(repository.fetchedSparklines)"
@@ -5649,7 +5695,10 @@ final class ViewModelStateTests: XCTestCase {
 
         XCTAssertTrue(vm.supportedQuoteCurrencies.isEmpty)
         XCTAssertNotNil(vm.marketUnsupportedStateMessage)
-        XCTAssertTrue(repository.fetchedSparklines.isEmpty)
+        XCTAssertFalse(
+            repository.fetchedSparklines.contains(where: { $0.exchange == .coinone && $0.quoteCurrency == .btc }),
+            "Unsupported quote should not start BTC sparkline fetches: \(repository.fetchedSparklines)"
+        )
     }
 
     @MainActor
@@ -5902,15 +5951,19 @@ final class ViewModelStateTests: XCTestCase {
 
         XCTAssertTrue(vm.displayedMarketRows.isEmpty)
         XCTAssertFalse(vm.marketState.isLoading)
-        XCTAssertTrue(repository.fetchedSparklines.isEmpty)
+        XCTAssertFalse(
+            repository.fetchedSparklines.contains(where: { $0.exchange == .coinone && $0.quoteCurrency == .btc }),
+            "Unsupported quote should not start BTC sparkline fetches: \(repository.fetchedSparklines)"
+        )
         guard case .empty = vm.marketState else {
             return XCTFail("Expected unsupported quote to resolve as empty/unsupported presentation")
         }
     }
 
     @MainActor
-    func testVisibleSparklineReplacesDerivedPreviewWithPreparedSixtyPointResponse() async {
+    func testTickerResponseSparklineRendersWithoutVisibleBatchUpgrade() async {
         let repository = SpyMarketRepository()
+        let tickerPoints = (0..<24).map { 100.0 + Double($0) }
         repository.marketCatalogSnapshots[.upbit] = makeCatalogSnapshot(
             exchange: .upbit,
             entries: [(marketId: "KRW-BTC", symbol: "BTC", imageURL: nil)]
@@ -5924,7 +5977,11 @@ final class ViewModelStateTests: XCTestCase {
                     change: 5,
                     volume: 10_000,
                     high24: 110,
-                    low24: 95
+                    low24: 95,
+                    sparkline: tickerPoints,
+                    sparklinePointCount: tickerPoints.count,
+                    hasServerSparkline: true,
+                    sparklineSource: "ticker_sparkline_points"
                 )
             ],
             meta: .empty
@@ -5956,22 +6013,410 @@ final class ViewModelStateTests: XCTestCase {
 
         vm.onAppear()
         await waitUntil(timeoutNanoseconds: 1_000_000_000) {
-            vm.displayedMarketRows.first?.sparklinePayload.detailLevel == .derivedPreview
-                && vm.displayedMarketRows.first?.sparklinePointCount == 6
-        }
-        await waitUntil(timeoutNanoseconds: 2_000_000_000) {
-            vm.displayedMarketRows.first?.sparklineSource == "sparkline_endpoint"
-                && vm.displayedMarketRows.first?.sparklinePointCount == 60
+            vm.displayedMarketRows.first?.sparklineSource == "listSparkline24"
+                && vm.displayedMarketRows.first?.sparklinePointCount == 24
         }
 
-        XCTAssertTrue(repository.fetchedSparklines.contains(where: {
-            $0.exchange == .upbit && $0.quoteCurrency == .krw && $0.symbol == "KRW-BTC" && $0.limit == 60
-        }))
+        XCTAssertTrue(repository.fetchedSparklines.isEmpty)
         XCTAssertEqual(vm.displayedMarketRows.first?.sparklinePayload.detailLevel, .refinedMini)
     }
 
     @MainActor
-    func testVisibleSparklineHydrationTargetsOnlyDerivedOrPlaceholderRows() async {
+    func testTopCardSparklinePrefetchIsDisabledForInitialListRender() async {
+        let repository = SpyMarketRepository()
+        let entries = [
+            (marketId: "KRW-BTC", symbol: "BTC", price: 100.0, volume: 50_000.0),
+            (marketId: "KRW-ETH", symbol: "ETH", price: 90.0, volume: 40_000.0),
+            (marketId: "KRW-BIO", symbol: "BIO", price: 80.0, volume: 30_000.0),
+            (marketId: "KRW-XRP", symbol: "XRP", price: 70.0, volume: 20_000.0),
+            (marketId: "KRW-SOL", symbol: "SOL", price: 60.0, volume: 10_000.0)
+        ]
+        repository.marketCatalogSnapshots[.upbit] = makeCatalogSnapshot(
+            exchange: .upbit,
+            entries: entries.map { (marketId: $0.marketId, symbol: $0.symbol, imageURL: Optional<String>.none) }
+        )
+        repository.tickerSnapshots[.upbit] = MarketTickerSnapshot(
+            exchange: .upbit,
+            coins: entries.map { makeMarketCoin(exchange: .upbit, marketId: $0.marketId, symbol: $0.symbol, imageURL: nil) },
+            tickers: Dictionary(uniqueKeysWithValues: entries.map {
+                ($0.symbol, TickerData(price: $0.price, change: 1, volume: $0.volume, high24: $0.price + 1, low24: $0.price - 1))
+            }),
+            meta: .empty
+        )
+        repository.sparklineSnapshot = MarketSparklineSnapshot(
+            exchange: .upbit,
+            symbol: "KRW-BTC",
+            interval: "1m",
+            points: (0..<60).map { 100 + sin(Double($0)) },
+            pointCount: 60,
+            source: "sparkline_endpoint",
+            quality: "provider_candle_1m",
+            isDerived: false,
+            realSeries: true,
+            graphDisplayAllowed: true,
+            meta: .empty
+        )
+        let vm = CryptoViewModel(
+            marketRepository: repository,
+            tradingRepository: SpyTradingRepository(),
+            portfolioRepository: SpyPortfolioRepository(),
+            kimchiPremiumRepository: StubKimchiPremiumRepository(),
+            exchangeConnectionsRepository: SpyExchangeConnectionsRepository(),
+            authService: StubAuthenticationService(),
+            publicWebSocketService: NoOpPublicWebSocketService(),
+            privateWebSocketService: NoOpPrivateWebSocketService()
+        )
+
+        vm.onAppear()
+        try? await Task.sleep(for: .milliseconds(300))
+
+        let fetchedSymbols = Set(repository.fetchedSparklines.map(\.symbol))
+        XCTAssertTrue(fetchedSymbols.isEmpty, "Initial list render should not start visible sparkline batch requests: \(repository.fetchedSparklines)")
+    }
+
+    @MainActor
+    func testPartialRealSparklineRendersBeforeFullSixtyPoints() async {
+        let repository = SpyMarketRepository()
+        repository.marketCatalogSnapshots[.upbit] = makeCatalogSnapshot(
+            exchange: .upbit,
+            entries: [(marketId: "KRW-BIO", symbol: "BIO", imageURL: nil)]
+        )
+        let partialPoints = [
+            100.0, 102.0, 101.0, 104.0, 103.0, 106.0,
+            105.0, 108.0, 107.0, 110.0, 109.0, 112.0
+        ]
+        repository.tickerSnapshots[.upbit] = MarketTickerSnapshot(
+            exchange: .upbit,
+            coins: [makeMarketCoin(exchange: .upbit, marketId: "KRW-BIO", symbol: "BIO", imageURL: nil)],
+            tickers: [
+                "BIO": TickerData(
+                    price: 105,
+                    change: 5,
+                    volume: 10_000,
+                    high24: 110,
+                    low24: 95,
+                    sparkline: partialPoints,
+                    sparklinePointCount: partialPoints.count,
+                    hasServerSparkline: true,
+                    sparklineSource: "provider_sparkline"
+                )
+            ],
+            meta: .empty
+        )
+        repository.sparklineSnapshot = MarketSparklineSnapshot(
+            exchange: .upbit,
+            symbol: "KRW-BIO",
+            interval: "1m",
+            points: partialPoints,
+            pointCount: partialPoints.count,
+            source: "sparkline_endpoint",
+            quality: "provider_partial_real",
+            isDerived: false,
+            realSeries: true,
+            graphDisplayAllowed: true,
+            meta: .empty
+        )
+        let vm = CryptoViewModel(
+            marketRepository: repository,
+            tradingRepository: SpyTradingRepository(),
+            portfolioRepository: SpyPortfolioRepository(),
+            kimchiPremiumRepository: StubKimchiPremiumRepository(),
+            exchangeConnectionsRepository: SpyExchangeConnectionsRepository(),
+            authService: StubAuthenticationService(),
+            publicWebSocketService: NoOpPublicWebSocketService(),
+            privateWebSocketService: NoOpPrivateWebSocketService()
+        )
+
+        vm.onAppear()
+        await waitUntil(timeoutNanoseconds: 2_000_000_000) {
+            vm.displayedMarketRows.first?.sparklinePointCount == partialPoints.count
+                && vm.displayedMarketRows.first?.graphState.keepsVisibleGraph == true
+        }
+
+        XCTAssertEqual(vm.displayedMarketRows.first?.sparklineSource, "listSparkline24")
+        XCTAssertEqual(vm.displayedMarketRows.first?.sparklinePointCount, 12)
+    }
+
+    @MainActor
+    func testReadyFullGraphIgnoresUnavailableSparklineResponse() async throws {
+        let repository = SpyMarketRepository()
+        repository.marketCatalogSnapshots[.upbit] = makeCatalogSnapshot(
+            exchange: .upbit,
+            entries: [(marketId: "KRW-BTC", symbol: "BTC", imageURL: nil)]
+        )
+        repository.tickerSnapshots[.upbit] = MarketTickerSnapshot(
+            exchange: .upbit,
+            coins: [makeMarketCoin(exchange: .upbit, marketId: "KRW-BTC", symbol: "BTC", imageURL: nil)],
+            tickers: ["BTC": TickerData(price: 100, change: 1, volume: 10_000, high24: 110, low24: 90)],
+            meta: .empty
+        )
+        let vm = CryptoViewModel(
+            marketRepository: repository,
+            tradingRepository: SpyTradingRepository(),
+            portfolioRepository: SpyPortfolioRepository(),
+            kimchiPremiumRepository: StubKimchiPremiumRepository(),
+            exchangeConnectionsRepository: SpyExchangeConnectionsRepository(),
+            authService: StubAuthenticationService(),
+            publicWebSocketService: NoOpPublicWebSocketService(),
+            privateWebSocketService: NoOpPrivateWebSocketService()
+        )
+
+        vm.onAppear()
+        vm.updateExchange(.upbit, source: "test_ready_partial")
+        await vm.refreshMarketData(forceRefresh: true, reason: "test_ready_partial")
+        await waitUntil(timeoutNanoseconds: 2_000_000_000) {
+            vm.displayedMarketRows.first?.symbol == "BTC"
+        }
+        let identity = try XCTUnwrap(vm.displayedMarketRows.first?.marketIdentity)
+        let fullPoints = (0..<60).map { 100.0 + sin(Double($0) / 3.0) + Double($0 % 5) }
+
+        XCTAssertTrue(vm.applySparklinePatchForTesting(
+            marketIdentity: identity,
+            exchange: .upbit,
+            interval: "1m",
+            points: fullPoints,
+            graphState: .liveVisible,
+            reason: "test_ready_full",
+            sourceName: "sparkline_endpoint|provider_candle_1m",
+            quality: "provider_candle_1m",
+            realSeries: true,
+            graphDisplayAllowed: true
+        ))
+        await waitUntil {
+            vm.displayedMarketRows.first?.sparklinePointCount == fullPoints.count
+                && vm.displayedMarketRows.first?.graphState.keepsVisibleGraph == true
+        }
+
+        _ = vm.applySparklinePatchForTesting(
+            marketIdentity: identity,
+            exchange: .upbit,
+            interval: "1m",
+            points: [],
+            graphState: .unavailable,
+            reason: "test_unavailable_response",
+            sourceName: "unavailable",
+            quality: "unavailable",
+            realSeries: false,
+            graphDisplayAllowed: false
+        )
+        await Task.yield()
+
+        let row = try XCTUnwrap(vm.displayedMarketRows.first)
+        XCTAssertTrue(row.graphState.keepsVisibleGraph)
+        XCTAssertNotEqual(row.graphState, .placeholder)
+        XCTAssertNotEqual(row.graphState, .unavailable)
+        XCTAssertEqual(row.sparkline, fullPoints)
+    }
+
+    @MainActor
+    func testReadyPartialGraphIgnoresRefreshFailurePatch() async throws {
+        let repository = SpyMarketRepository()
+        repository.marketCatalogSnapshots[.upbit] = makeCatalogSnapshot(
+            exchange: .upbit,
+            entries: [(marketId: "KRW-BTC", symbol: "BTC", imageURL: nil)]
+        )
+        repository.tickerSnapshots[.upbit] = MarketTickerSnapshot(
+            exchange: .upbit,
+            coins: [makeMarketCoin(exchange: .upbit, marketId: "KRW-BTC", symbol: "BTC", imageURL: nil)],
+            tickers: ["BTC": TickerData(price: 100, change: 1, volume: 10_000, high24: 110, low24: 90)],
+            meta: .empty
+        )
+        let vm = CryptoViewModel(
+            marketRepository: repository,
+            tradingRepository: SpyTradingRepository(),
+            portfolioRepository: SpyPortfolioRepository(),
+            kimchiPremiumRepository: StubKimchiPremiumRepository(),
+            exchangeConnectionsRepository: SpyExchangeConnectionsRepository(),
+            authService: StubAuthenticationService(),
+            publicWebSocketService: NoOpPublicWebSocketService(),
+            privateWebSocketService: NoOpPrivateWebSocketService()
+        )
+
+        vm.onAppear()
+        await waitUntil { vm.displayedMarketRows.first?.symbol == "BTC" }
+        let identity = try XCTUnwrap(vm.displayedMarketRows.first?.marketIdentity)
+        let partialPoints = [100.0, 102.0, 101.0, 104.0, 103.0, 106.0, 105.0, 108.0, 107.0, 110.0, 109.0, 112.0]
+
+        XCTAssertTrue(vm.applySparklinePatchForTesting(
+            marketIdentity: identity,
+            exchange: .upbit,
+            interval: "1m",
+            points: partialPoints,
+            graphState: .liveVisible,
+            reason: "test_ready_partial",
+            sourceName: "sparkline_endpoint|provider_partial_real",
+            quality: "provider_partial_real",
+            realSeries: true,
+            graphDisplayAllowed: true
+        ))
+        await waitUntil { vm.displayedMarketRows.first?.sparklinePointCount == partialPoints.count }
+
+        _ = vm.applySparklineFailurePatchForTesting(
+            marketIdentity: identity,
+            exchange: .upbit,
+            graphState: .unavailable,
+            reason: "test_timeout_failure"
+        )
+        await Task.yield()
+
+        let row = try XCTUnwrap(vm.displayedMarketRows.first)
+        XCTAssertTrue(row.graphState.keepsVisibleGraph)
+        XCTAssertNotEqual(row.graphState, .placeholder)
+        XCTAssertEqual(row.sparkline, partialPoints)
+    }
+
+    @MainActor
+    func testLowerQualityResponseDoesNotReplaceReadyFullGraph() async throws {
+        let repository = SpyMarketRepository()
+        repository.marketCatalogSnapshots[.upbit] = makeCatalogSnapshot(
+            exchange: .upbit,
+            entries: [(marketId: "KRW-BTC", symbol: "BTC", imageURL: nil)]
+        )
+        repository.tickerSnapshots[.upbit] = MarketTickerSnapshot(
+            exchange: .upbit,
+            coins: [makeMarketCoin(exchange: .upbit, marketId: "KRW-BTC", symbol: "BTC", imageURL: nil)],
+            tickers: ["BTC": TickerData(price: 100, change: 1, volume: 10_000, high24: 110, low24: 90)],
+            meta: .empty
+        )
+        let vm = CryptoViewModel(
+            marketRepository: repository,
+            tradingRepository: SpyTradingRepository(),
+            portfolioRepository: SpyPortfolioRepository(),
+            kimchiPremiumRepository: StubKimchiPremiumRepository(),
+            exchangeConnectionsRepository: SpyExchangeConnectionsRepository(),
+            authService: StubAuthenticationService(),
+            publicWebSocketService: NoOpPublicWebSocketService(),
+            privateWebSocketService: NoOpPrivateWebSocketService()
+        )
+
+        vm.onAppear()
+        await waitUntil { vm.displayedMarketRows.first?.symbol == "BTC" }
+        let identity = try XCTUnwrap(vm.displayedMarketRows.first?.marketIdentity)
+        let fullPoints = (0..<60).map { 100.0 + sin(Double($0) / 4.0) + Double($0 % 7) }
+        let partialPoints = [100.0, 101.0, 100.5, 102.0, 101.5, 103.0, 102.5, 104.0]
+
+        XCTAssertTrue(vm.applySparklinePatchForTesting(
+            marketIdentity: identity,
+            exchange: .upbit,
+            interval: "1m",
+            points: fullPoints,
+            graphState: .liveVisible,
+            reason: "test_ready_full",
+            sourceName: "sparkline_endpoint|provider_candle_1m",
+            quality: "provider_candle_1m",
+            realSeries: true,
+            graphDisplayAllowed: true
+        ))
+        await waitUntil { vm.displayedMarketRows.first?.sparklinePointCount == fullPoints.count }
+
+        _ = vm.applySparklinePatchForTesting(
+            marketIdentity: identity,
+            exchange: .upbit,
+            interval: "1m",
+            points: partialPoints,
+            graphState: .liveVisible,
+            reason: "test_lower_quality_response",
+            sourceName: "sparkline_endpoint|provider_partial_real",
+            quality: "provider_partial_real",
+            realSeries: true,
+            graphDisplayAllowed: true
+        )
+        await Task.yield()
+
+        XCTAssertEqual(vm.displayedMarketRows.first?.sparklinePointCount, fullPoints.count)
+        XCTAssertEqual(vm.displayedMarketRows.first?.sparkline, fullPoints)
+    }
+
+    @MainActor
+    func testCoinoneReadyGraphSurvivesTickerAndVisibleRefresh() async throws {
+        try await assertDomesticExchangeReadyGraphSurvivesTickerAndVisibleRefresh(exchange: .coinone)
+    }
+
+    @MainActor
+    func testKorbitReadyGraphSurvivesTickerAndVisibleRefresh() async throws {
+        try await assertDomesticExchangeReadyGraphSurvivesTickerAndVisibleRefresh(exchange: .korbit)
+    }
+
+    @MainActor
+    private func assertDomesticExchangeReadyGraphSurvivesTickerAndVisibleRefresh(exchange: Exchange) async throws {
+        let repository = SpyMarketRepository()
+        repository.marketCatalogSnapshots[exchange] = makeCatalogSnapshot(
+            exchange: exchange,
+            entries: [(marketId: "KRW-BTC", symbol: "BTC", imageURL: nil)]
+        )
+        repository.tickerSnapshots[exchange] = MarketTickerSnapshot(
+            exchange: exchange,
+            coins: [makeMarketCoin(exchange: exchange, marketId: "KRW-BTC", symbol: "BTC", imageURL: nil)],
+            tickers: ["BTC": TickerData(price: 100, change: 1, volume: 10_000, high24: 110, low24: 90)],
+            meta: .empty
+        )
+        repository.sparklineSnapshot = MarketSparklineSnapshot(
+            exchange: exchange,
+            symbol: "KRW-BTC",
+            interval: "1m",
+            points: [],
+            pointCount: 0,
+            source: "unavailable",
+            quality: "unavailable",
+            isDerived: false,
+            realSeries: false,
+            graphDisplayAllowed: false,
+            meta: .empty
+        )
+        let vm = CryptoViewModel(
+            marketRepository: repository,
+            tradingRepository: SpyTradingRepository(),
+            portfolioRepository: SpyPortfolioRepository(),
+            kimchiPremiumRepository: StubKimchiPremiumRepository(),
+            exchangeConnectionsRepository: SpyExchangeConnectionsRepository(),
+            authService: StubAuthenticationService(),
+            publicWebSocketService: NoOpPublicWebSocketService(),
+            privateWebSocketService: NoOpPrivateWebSocketService()
+        )
+
+        vm.onAppear()
+        vm.updateExchange(exchange, source: "test")
+        await waitUntil(timeoutNanoseconds: 2_000_000_000) {
+            vm.selectedExchange == exchange
+                && vm.displayedMarketRows.first?.marketIdentity.marketId == "KRW-BTC"
+        }
+        let identity = try XCTUnwrap(vm.displayedMarketRows.first?.marketIdentity)
+        let readyPoints = [100.0, 102.0, 101.0, 104.0, 103.0, 106.0, 105.0, 108.0, 107.0, 110.0, 109.0, 112.0]
+
+        XCTAssertTrue(vm.applySparklinePatchForTesting(
+            marketIdentity: identity,
+            exchange: exchange,
+            interval: "1m",
+            points: readyPoints,
+            graphState: .liveVisible,
+            reason: "test_ready_domestic_graph",
+            sourceName: "sparkline_endpoint|provider_partial_real",
+            quality: "provider_partial_real",
+            realSeries: true,
+            graphDisplayAllowed: true
+        ))
+        await waitUntil { vm.displayedMarketRows.first?.sparklinePointCount == readyPoints.count }
+
+        repository.tickerSnapshots[exchange] = MarketTickerSnapshot(
+            exchange: exchange,
+            coins: [makeMarketCoin(exchange: exchange, marketId: "KRW-BTC", symbol: "BTC", imageURL: nil)],
+            tickers: ["BTC": TickerData(price: 101, change: -0.5, volume: 11_000, high24: 111, low24: 91)],
+            meta: .empty
+        )
+        await vm.refreshMarketData(forceRefresh: true, reason: "test_ticker_refresh")
+        vm.markMarketRowVisible(marketIdentity: identity)
+        await Task.yield()
+
+        let row = try XCTUnwrap(vm.displayedMarketRows.first)
+        XCTAssertEqual(row.marketIdentity.marketId, "KRW-BTC")
+        XCTAssertEqual(row.marketIdentity.quoteCurrency, .krw)
+        XCTAssertTrue(row.graphState.keepsVisibleGraph)
+        XCTAssertNotEqual(row.graphState, .placeholder)
+        XCTAssertEqual(row.sparkline, readyPoints)
+    }
+
+    @MainActor
+    func testVisibleSparklineHydrationDoesNotRunDuringInitialListRender() async {
         let repository = SpyMarketRepository()
         let entries = [
             (marketId: "KRW-BIO", symbol: "BIO", imageURL: Optional<String>.none),
@@ -6042,19 +6487,13 @@ final class ViewModelStateTests: XCTestCase {
 
         vm.onAppear()
         await waitUntil(timeoutNanoseconds: 2_000_000_000) {
-            let fetchedSymbols = Set(repository.fetchedSparklines.map(\.symbol))
-            return fetchedSymbols.contains("KRW-BIO")
-                && fetchedSymbols.contains("KRW-ORCA")
-        }
-        await waitUntil(timeoutNanoseconds: 2_000_000_000) {
-            vm.displayedMarketRows.first(where: { $0.symbol == "BIO" })?.sparklineSource == "sparkline_endpoint"
+            vm.displayedMarketRows.count == entries.count
         }
 
         let fetchedSymbols = Set(repository.fetchedSparklines.map(\.symbol))
-        XCTAssertTrue(fetchedSymbols.contains("KRW-BIO"))
-        XCTAssertTrue(fetchedSymbols.contains("KRW-ORCA"))
+        XCTAssertTrue(fetchedSymbols.isEmpty, "Initial list render should rely on ticker sparklines or empty state: \(repository.fetchedSparklines)")
         XCTAssertFalse(fetchedSymbols.contains("KRW-AKT"), "Fetched sparklines: \(repository.fetchedSparklines)")
-        XCTAssertEqual(vm.displayedMarketRows.first(where: { $0.symbol == "BIO" })?.sparklinePayload.detailLevel, .refinedMini)
+        XCTAssertEqual(vm.displayedMarketRows.first(where: { $0.symbol == "AKT" })?.sparklinePayload.detailLevel, .refinedMini)
         XCTAssertTrue(repository.fetchedCandles.isEmpty)
         XCTAssertTrue(repository.fetchedCandleQuotes.isEmpty)
         XCTAssertTrue(repository.fetchedTrades.isEmpty)

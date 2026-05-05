@@ -167,6 +167,10 @@ final class SpyMarketRepository: MarketRepositoryProtocol {
             points: sparklineSnapshot.points,
             pointCount: sparklineSnapshot.pointCount,
             source: sparklineSnapshot.source,
+            quality: sparklineSnapshot.quality,
+            isDerived: sparklineSnapshot.isDerived,
+            realSeries: sparklineSnapshot.realSeries,
+            graphDisplayAllowed: sparklineSnapshot.graphDisplayAllowed,
             meta: sparklineSnapshot.meta
         )
     }

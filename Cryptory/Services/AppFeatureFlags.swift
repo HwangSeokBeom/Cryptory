@@ -14,6 +14,7 @@ struct AppFeatureFlags: Equatable {
     let isDepositWithdrawEnabled: Bool
     let isWalletEnabled: Bool
     let isPrivateExchangeTradingAPIEnabled: Bool
+    let isListSparklineSecondaryHydrationEnabled: Bool
 
     static var current: AppFeatureFlags {
         resolve(environment: ProcessInfo.processInfo.environment)
@@ -40,7 +41,8 @@ struct AppFeatureFlags: Equatable {
             isTransferEnabled: isAppStoreChannel ? false : environment.boolFlag("CRYPTORY_TRANSFER_ENABLED", defaultValue: false),
             isDepositWithdrawEnabled: isAppStoreChannel ? false : environment.boolFlag("CRYPTORY_DEPOSIT_WITHDRAW_ENABLED", defaultValue: false),
             isWalletEnabled: isAppStoreChannel ? false : environment.boolFlag("CRYPTORY_WALLET_ENABLED", defaultValue: false),
-            isPrivateExchangeTradingAPIEnabled: isAppStoreChannel ? false : environment.boolFlag("CRYPTORY_PRIVATE_TRADING_API_ENABLED", defaultValue: true)
+            isPrivateExchangeTradingAPIEnabled: isAppStoreChannel ? false : environment.boolFlag("CRYPTORY_PRIVATE_TRADING_API_ENABLED", defaultValue: true),
+            isListSparklineSecondaryHydrationEnabled: environment.boolFlag("CRYPTORY_LIST_SPARKLINE_SECONDARY_HYDRATION_ENABLED", defaultValue: true)
         )
     }
 }

@@ -741,6 +741,7 @@ struct MarketSparklineSnapshot {
     let quality: String?
     let isDerived: Bool?
     let realSeries: Bool?
+    let graphDisplayAllowed: Bool?
     let rangeRatio: Double?
     let minPointCount: Int?
     let maxPointCount: Int?
@@ -758,6 +759,7 @@ struct MarketSparklineSnapshot {
         quality: String? = nil,
         isDerived: Bool? = nil,
         realSeries: Bool? = nil,
+        graphDisplayAllowed: Bool? = nil,
         rangeRatio: Double? = nil,
         minPointCount: Int? = nil,
         maxPointCount: Int? = nil,
@@ -774,6 +776,7 @@ struct MarketSparklineSnapshot {
         self.quality = quality
         self.isDerived = isDerived
         self.realSeries = realSeries
+        self.graphDisplayAllowed = graphDisplayAllowed
         self.rangeRatio = rangeRatio
         self.minPointCount = minPointCount
         self.maxPointCount = maxPointCount
@@ -839,6 +842,17 @@ final class UserDefaultsMarketSnapshotCacheStore: MarketSnapshotCacheStoring {
             var sanitizedTicker = ticker
             sanitizedTicker.flash = nil
             sanitizedTicker.delivery = .snapshot
+            let source = (ticker.sparklineSource ?? "").lowercased()
+            if source.contains("derived")
+                || source.contains("linear_preview")
+                || source.contains("unavailable")
+                || source.contains("flat_current") {
+                sanitizedTicker.sparkline = []
+                sanitizedTicker.sparklinePoints = []
+                sanitizedTicker.sparklinePointCount = nil
+                sanitizedTicker.hasServerSparkline = false
+                sanitizedTicker.sparklineSource = nil
+            }
             return sanitizedTicker
         }
         encode(
@@ -1080,6 +1094,7 @@ protocol MarketRepositoryProtocol {
     func fetchCandles(symbol: String, exchange: Exchange, quoteCurrency: MarketQuoteCurrency, interval: String, limit: Int) async throws -> CandleSnapshot
     func fetchSparkline(symbol: String, exchange: Exchange, quoteCurrency: MarketQuoteCurrency, interval: String, limit: Int) async throws -> MarketSparklineSnapshot
     func fetchSparklines(marketIdentities: [MarketIdentity], exchange: Exchange, quoteCurrency: MarketQuoteCurrency, interval: String, limit: Int) async throws -> [MarketIdentity: MarketSparklineSnapshot]
+    func fetchSparklines(marketIdentities: [MarketIdentity], exchange: Exchange, quoteCurrency: MarketQuoteCurrency, interval: String, limit: Int, priority: String?, timeout: TimeInterval?) async throws -> [MarketIdentity: MarketSparklineSnapshot]
 }
 
 extension MarketRepositoryProtocol {
@@ -1105,6 +1120,26 @@ extension MarketRepositoryProtocol {
         quoteCurrency: MarketQuoteCurrency,
         interval: String,
         limit: Int
+    ) async throws -> [MarketIdentity: MarketSparklineSnapshot] {
+        try await fetchSparklines(
+            marketIdentities: marketIdentities,
+            exchange: exchange,
+            quoteCurrency: quoteCurrency,
+            interval: interval,
+            limit: limit,
+            priority: nil,
+            timeout: nil
+        )
+    }
+
+    func fetchSparklines(
+        marketIdentities: [MarketIdentity],
+        exchange: Exchange,
+        quoteCurrency: MarketQuoteCurrency,
+        interval: String,
+        limit: Int,
+        priority: String?,
+        timeout: TimeInterval?
     ) async throws -> [MarketIdentity: MarketSparklineSnapshot] {
         var snapshots = [MarketIdentity: MarketSparklineSnapshot]()
         for marketIdentity in marketIdentities where marketIdentity.exchange == exchange && marketIdentity.quoteCurrency == quoteCurrency {
@@ -1163,7 +1198,8 @@ final class APIClient {
         queryItems: [URLQueryItem] = [],
         body: JSONObject? = nil,
         accessRequirement: RequestAccessRequirement,
-        accessToken: String? = nil
+        accessToken: String? = nil,
+        timeout: TimeInterval? = nil
     ) throws -> URLRequest {
         guard var components = URLComponents(string: configuration.baseURL) else {
             throw NetworkServiceError.invalidURL(configuration.baseURL)
@@ -1180,6 +1216,9 @@ final class APIClient {
 
         var request = URLRequest(url: url)
         request.httpMethod = method
+        if let timeout {
+            request.timeoutInterval = timeout
+        }
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         applyConfiguredCommonHeaders(to: &request)
 
@@ -1234,7 +1273,8 @@ final class APIClient {
         queryItems: [URLQueryItem] = [],
         body: JSONObject? = nil,
         accessRequirement: RequestAccessRequirement,
-        accessToken: String? = nil
+        accessToken: String? = nil,
+        timeout: TimeInterval? = nil
     ) async throws -> Any {
         let request = try makeRequest(
             path: path,
@@ -1242,7 +1282,8 @@ final class APIClient {
             queryItems: queryItems,
             body: body,
             accessRequirement: accessRequirement,
-            accessToken: accessToken
+            accessToken: accessToken,
+            timeout: timeout
         )
 
         if let body {
@@ -2148,6 +2189,7 @@ final class LiveMarketRepository: MarketRepositoryProtocol {
                 quality: snapshot.quality,
                 isDerived: snapshot.isDerived,
                 realSeries: snapshot.realSeries,
+                graphDisplayAllowed: snapshot.graphDisplayAllowed,
                 rangeRatio: snapshot.rangeRatio,
                 minPointCount: snapshot.minPointCount,
                 maxPointCount: snapshot.maxPointCount,
@@ -2164,7 +2206,9 @@ final class LiveMarketRepository: MarketRepositoryProtocol {
         exchange: Exchange,
         quoteCurrency: MarketQuoteCurrency,
         interval: String,
-        limit: Int
+        limit: Int,
+        priority: String?,
+        timeout: TimeInterval?
     ) async throws -> [MarketIdentity: MarketSparklineSnapshot] {
         let requestedIdentities = marketIdentities.filter {
             $0.exchange == exchange && $0.quoteCurrency == quoteCurrency
@@ -2174,7 +2218,7 @@ final class LiveMarketRepository: MarketRepositoryProtocol {
         }
 
         let marketIds = requestedIdentities.compactMap(\.marketId)
-        let symbolFallbacks = requestedIdentities.filter { $0.marketId == nil }.map(\.symbol)
+        let symbolFallbacks = requestedIdentities.map(\.symbol)
         var queryItems = [
             URLQueryItem(name: "exchange", value: exchange.rawValue),
             URLQueryItem(name: "quoteCurrency", value: quoteCurrency.apiValue),
@@ -2192,19 +2236,24 @@ final class LiveMarketRepository: MarketRepositoryProtocol {
                 queryItems.append(URLQueryItem(name: "symbol", value: symbols))
             }
         }
+        if let priority, priority.isEmpty == false {
+            queryItems.append(URLQueryItem(name: "priority", value: priority))
+        }
         let requestURL = (try? client.makeRequest(
             path: client.configuration.marketSparklinePath,
             queryItems: queryItems,
-            accessRequirement: .publicAccess
+            accessRequirement: .publicAccess,
+            timeout: timeout
         ).url?.absoluteString) ?? client.configuration.marketSparklinePath
         AppLogger.debug(
             .network,
-            "[SparklineREST] request url=\(requestURL) exchange=\(exchange.rawValue) marketIds=\(marketIds.joined(separator: ",")) symbols=\(symbolFallbacks.joined(separator: ",")) quote=\(quoteCurrency.rawValue) timeframe=\(interval.uppercased()) limit=\(limit)"
+            "[SparklineREST] request url=\(requestURL) exchange=\(exchange.rawValue) marketIds=\(marketIds.joined(separator: ",")) symbols=\(symbolFallbacks.joined(separator: ",")) quote=\(quoteCurrency.rawValue) timeframe=\(interval.uppercased()) limit=\(limit) priority=\(priority ?? "-") timeoutMs=\(timeout.map { Int($0 * 1000) } ?? 0)"
         )
         let json = try await client.requestJSON(
             path: client.configuration.marketSparklinePath,
             queryItems: queryItems,
-            accessRequirement: .publicAccess
+            accessRequirement: .publicAccess,
+            timeout: timeout
         )
 
         let container = splitPayload(json)
@@ -2221,8 +2270,8 @@ final class LiveMarketRepository: MarketRepositoryProtocol {
         var byMarketId = [String: MarketIdentity]()
         var bySymbol = [String: MarketIdentity]()
         for identity in requestedIdentities {
-            if let marketId = identity.marketId {
-                byMarketId[marketId.uppercased()] = identity
+            for alias in identity.graphRequestAliases {
+                byMarketId[alias.uppercased()] = identity
             }
             bySymbol[identity.symbol.uppercased()] = identity
         }
@@ -2239,21 +2288,37 @@ final class LiveMarketRepository: MarketRepositoryProtocol {
                 AppLogger.debug(.network, "[SparklineREST] response_drop reason=quote_mismatch requested=\(quoteCurrency.rawValue) itemQuote=\(itemQuote)")
                 continue
             }
-            let candidateMarketId = item.string(["marketId", "market_id", "market", "code", "id"])?.uppercased()
-            let candidateSymbol = marketRawSymbol(from: item)?.uppercased()
-                ?? item.string(["symbol", "baseAsset", "base_asset", "baseCurrency", "base_currency"])?.uppercased()
+            let rawCandidateMarketId = item.string(["marketId", "market_id", "market", "code", "id"])?.uppercased()
+            let candidateSymbol = normalizeMarketSymbol(from: item)?.uppercased()
+                ?? marketRawSymbol(from: item)?.uppercased()
+                ?? item.string(["symbol", "baseAsset", "base_asset", "baseCurrency", "base_currency"]).map(normalizeMarketSymbol)
+            let candidateMarketId = rawCandidateMarketId.flatMap {
+                MarketIdentity.canonicalMarketId(
+                    exchange: exchange,
+                    marketId: $0,
+                    symbol: candidateSymbol ?? $0,
+                    quoteCurrency: quoteCurrency
+                )
+            } ?? rawCandidateMarketId
             let identity: MarketIdentity?
             if let candidateMarketId {
                 identity = byMarketId[candidateMarketId]
-            } else if marketIds.isEmpty {
+                    ?? rawCandidateMarketId.flatMap { byMarketId[$0] }
+                    ?? candidateSymbol.flatMap { bySymbol[$0] }
+                if identity == nil {
+                    AppLogger.debug(
+                        .network,
+                        "[GraphMarketIdMismatch] exchange=\(exchange.rawValue) quoteCurrency=\(quoteCurrency.rawValue) rowMarketId=\(marketIds.joined(separator: ",")) responseMarketId=\(candidateMarketId) rawResponseMarketId=\(rawCandidateMarketId ?? "-") displayPair=\(item.string(["displayPair", "display_pair", "pair"]) ?? "-") symbol=\(candidateSymbol ?? "-") source=sparkline_response"
+                    )
+                }
+            } else {
                 identity = candidateSymbol.flatMap { bySymbol[$0] }
                     ?? (requestedIdentities.count == 1 ? requestedIdentities[0] : nil)
-            } else {
-                identity = nil
             }
             guard let identity else { continue }
             let points = parseSparklinePoints(from: item)
-            guard points.count >= 2 else { continue }
+            let graphDisplayAllowed = item.bool(["graphDisplayAllowed", "graph_display_allowed", "displayAllowed", "display_allowed"])
+            guard points.count >= 2 || graphDisplayAllowed == false else { continue }
             let quality = item.string(["quality", "graphQuality", "graph_quality", "detailLevel", "detail_level"])
             let source = item.string(["sparklineSource", "sparkline_source", "source", "provider"])
             snapshots[identity] = MarketSparklineSnapshot(
@@ -2266,6 +2331,7 @@ final class LiveMarketRepository: MarketRepositoryProtocol {
                 quality: quality,
                 isDerived: item.bool(["isDerived", "is_derived", "derived"]),
                 realSeries: item.bool(["realSeries", "real_series", "isRealSeries", "is_real_series"]),
+                graphDisplayAllowed: graphDisplayAllowed,
                 rangeRatio: item.double(["rangeRatio", "range_ratio", "changePercentRange", "change_percent_range"]),
                 minPointCount: item.int(["minPointCount", "min_point_count"]),
                 maxPointCount: item.int(["maxPointCount", "max_point_count"]),
@@ -2279,6 +2345,24 @@ final class LiveMarketRepository: MarketRepositoryProtocol {
             throw NetworkServiceError.parsingFailed("sparkline data is empty")
         }
         return snapshots
+    }
+
+    func fetchSparklines(
+        marketIdentities: [MarketIdentity],
+        exchange: Exchange,
+        quoteCurrency: MarketQuoteCurrency,
+        interval: String,
+        limit: Int
+    ) async throws -> [MarketIdentity: MarketSparklineSnapshot] {
+        try await fetchSparklines(
+            marketIdentities: marketIdentities,
+            exchange: exchange,
+            quoteCurrency: quoteCurrency,
+            interval: interval,
+            limit: limit,
+            priority: nil,
+            timeout: nil
+        )
     }
 }
 

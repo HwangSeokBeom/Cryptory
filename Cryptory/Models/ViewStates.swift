@@ -219,6 +219,23 @@ enum MarketRowGraphState: Equatable {
     case staleVisible
     case unavailable
 
+    nonisolated var lifecycleLogValue: String {
+        switch self {
+        case .none:
+            return "idle"
+        case .placeholder:
+            return "loadingNoCache"
+        case .cachedVisible:
+            return "loadingWithCache"
+        case .staleVisible:
+            return "readyStale"
+        case .liveVisible:
+            return "readyFull"
+        case .unavailable:
+            return "unavailableCompact"
+        }
+    }
+
     nonisolated var chartPresentation: MarketRowChartPresentation {
         switch self {
         case .none:
@@ -308,18 +325,34 @@ struct MarketSparklineShapeQuality: Equatable {
             && isVeryLowAmplitude
             && (hasLittleValueInformation || isMostlyStraight)
     }
+
+    nonisolated var isLowInformationListSparkline: Bool {
+        guard finitePointCount >= MarketSparklineRenderPolicy.degradedListSparklinePointCount else {
+            return true
+        }
+
+        let hasTinyRange = relativeRange <= 0.0015 || normalizedAmplitude <= 0.012
+        let hasTooFewInflections = directionChangeCount <= 1
+        let hasLittleValueInformation = uniqueValueBucketCount <= 3
+        return hasTinyRange && (hasTooFewInflections || hasLittleValueInformation)
+    }
 }
 
 enum MarketSparklineRenderPolicy {
     nonisolated static let minimumRenderablePointCount = 2
+    nonisolated static let listSparklinePointCount = 24
+    nonisolated static let degradedListSparklinePointCount = 12
     nonisolated static let hydratedPointCount = 4
     nonisolated static let coarseUpperBoundPointCount = 8
+    nonisolated static let partialRealPointCountThreshold = 8
     nonisolated static let promotedGraphPointCountThreshold = 30
 
     private nonisolated static let blockedQualityFragments = [
         "derived_preview",
         "derivedpreview",
         "derived_interpolated",
+        "linear_preview",
+        "linearpreview",
         "unavailable",
         "insufficient_variation",
         "flat_current",
@@ -333,10 +366,17 @@ enum MarketSparklineRenderPolicy {
         "provider_mini_real",
         "prepared_cache_real",
         "refined_mini_real",
+        "refined_mini",
         "prepared_cache",
         "sparkline_endpoint",
         "provider_sparkline",
-        "real_series"
+        "live_buffer_partial",
+        "provider_partial_real",
+        "graph_display_allowed",
+        "real_series",
+        "listsparkline24",
+        "providercandle24",
+        "stalelistsparkline24"
     ]
 
     nonisolated static func hasRenderableGraph(points: [Double], pointCount: Int) -> Bool {
@@ -356,26 +396,20 @@ enum MarketSparklineRenderPolicy {
         }
 
         let normalizedSource = (sourceName ?? "").lowercased()
-        let shapeQuality = shapeQuality(points: finitePoints, pointCount: pointCount)
-        guard shapeQuality.hasEnoughValueVariation else {
+        if normalizedSource.contains("unavailable")
+            || normalizedSource.contains("unsupported")
+            || normalizedSource.contains("not_available")
+            || normalizedSource.contains("no_data") {
             return false
         }
-        if pointCount <= 6 {
+        if isDerived == true || blockedQualityFragments.contains(where: { normalizedSource.contains($0) }) {
             return false
         }
-        if isDerived == true && isRealSeriesSource(sourceName) == false {
-            return false
+        if normalizedSource.contains("fallbacklistsparkline")
+            || normalizedSource.contains("fallback_list_sparkline") {
+            return pointCount >= degradedListSparklinePointCount
         }
-        if blockedQualityFragments.contains(where: { normalizedSource.contains($0) }) {
-            return false
-        }
-        if shapeQuality.isLikelyLinearPreview {
-            return false
-        }
-        if pointCount >= promotedGraphPointCountThreshold {
-            return true
-        }
-        return isRealSeriesSource(sourceName)
+        return true
     }
 
     nonisolated static func isRealSeriesSource(_ sourceName: String?) -> Bool {
@@ -412,11 +446,8 @@ enum MarketSparklineRenderPolicy {
     }
 
     nonisolated static func hasHydratedGraph(points: [Double], pointCount: Int) -> Bool {
-        hasVisibleRenderableGraph(
-            points: points,
-            pointCount: pointCount,
-            sourceName: nil
-        )
+        points.filter { $0.isFinite && $0 > 0 }.count >= hydratedPointCount
+            && pointCount >= hydratedPointCount
     }
 
     nonisolated static func sourceQualityRank(
@@ -437,8 +468,29 @@ enum MarketSparklineRenderPolicy {
         if source.contains("live_detailed") || source.contains("livedetailed") {
             return 6
         }
+        if source.contains("listsparkline24") || source.contains("list_sparkline_24") {
+            return pointCount >= degradedListSparklinePointCount ? 5 : 3
+        }
+        if source.contains("providercandle24") || source.contains("provider_candle_24") {
+            return pointCount >= degradedListSparklinePointCount ? 5 : 3
+        }
+        if source.contains("stalelistsparkline24") || source.contains("stale_list_sparkline_24") {
+            return pointCount >= degradedListSparklinePointCount ? 4 : 3
+        }
+        if source.contains("fallbacklistsparkline") || source.contains("fallback_list_sparkline") {
+            return pointCount >= minimumRenderablePointCount ? 2 : 0
+        }
+        if source.contains("provider_candle") || source.contains("candle_snapshot") {
+            if pointCount >= 60 {
+                return 5
+            }
+            return pointCount >= partialRealPointCountThreshold ? 4 : 3
+        }
         if source.contains("prepared_cache") || source.contains("refined_mini") || source.contains("refinedmini") {
             return pointCount >= 12 ? 5 : 3
+        }
+        if source.contains("live_buffer_partial") || source.contains("provider_partial_real") {
+            return pointCount >= partialRealPointCountThreshold ? 4 : 2
         }
         if source.contains("sparkline_endpoint") {
             return pointCount >= 12 ? 5 : 3
@@ -568,7 +620,10 @@ enum MarketSparklineRenderPolicy {
     }
 
     nonisolated static func isLowInformationFirstPaintCandidate(points: [Double], pointCount: Int) -> Bool {
-        pointCount <= 3 || isFlatLookingLowInformation(points: points, pointCount: pointCount)
+        let quality = shapeQuality(points: points, pointCount: pointCount)
+        return pointCount <= 3
+            || quality.isFlatLookingLowInformation
+            || quality.isLowInformationListSparkline
     }
 }
 
@@ -717,6 +772,7 @@ struct MarketSparklineQuality: Equatable {
     let graphPathVersion: Int
     let renderVersion: Int
     let sourceVersion: Int
+    let pointsHash: Int
     let sourceName: String?
     let shapeQuality: MarketSparklineShapeQuality
 
@@ -728,6 +784,7 @@ struct MarketSparklineQuality: Equatable {
         graphPathVersion: Int,
         renderVersion: Int,
         sourceVersion: Int = 0,
+        pointsHash: Int? = nil,
         sourceName: String? = nil,
         shapeQuality: MarketSparklineShapeQuality? = nil
     ) {
@@ -739,6 +796,7 @@ struct MarketSparklineQuality: Equatable {
         self.graphPathVersion = graphPathVersion
         self.renderVersion = renderVersion
         self.sourceVersion = sourceVersion
+        self.pointsHash = pointsHash ?? graphPathVersion
         self.sourceName = sourceName
         self.shapeQuality = shapeQuality ?? MarketSparklineRenderPolicy.shapeQuality(points: [], pointCount: pointCount)
     }
@@ -781,6 +839,7 @@ struct MarketSparklineQuality: Equatable {
                 graphPathVersion: graphPathVersion
             ),
             sourceVersion: sourceVersion,
+            pointsHash: Self.makePointsHash(points: points, pointCount: pointCount),
             sourceName: sourceName,
             shapeQuality: shapeQuality
         )
@@ -808,6 +867,29 @@ struct MarketSparklineQuality: Equatable {
         return max(rank, detailLevel.pathDetailRank)
     }
 
+    nonisolated var applyPriority: Int {
+        guard isUsableGraph else {
+            return graphState == .unavailable ? 2 : 1
+        }
+        if pointCount >= 60 && qualityRank >= 5 {
+            return 8
+        }
+        if pointCount >= 60 && qualityRank >= 4 {
+            return 7
+        }
+        if pointCount >= MarketSparklineRenderPolicy.partialRealPointCountThreshold && qualityRank >= 4 {
+            return 6
+        }
+        if graphState == .staleVisible && qualityRank >= 4 {
+            return 5
+        }
+        return max(3, qualityRank)
+    }
+
+    nonisolated var isFullQualityGraph: Bool {
+        isUsableGraph && pointCount >= 60 && qualityRank >= 4
+    }
+
     private nonisolated var normalizedSourceName: String {
         (sourceName ?? "").lowercased()
     }
@@ -828,7 +910,7 @@ struct MarketSparklineQuality: Equatable {
     }
 
     nonisolated var isFlatLookingLowInformation: Bool {
-        isUsableGraph && shapeQuality.isFlatLookingLowInformation
+        isUsableGraph && (shapeQuality.isFlatLookingLowInformation || shapeQuality.isLowInformationListSparkline)
     }
 
     nonisolated var isLowInformationFirstPaintCandidate: Bool {
@@ -906,6 +988,11 @@ struct MarketSparklineQuality: Equatable {
         }
         if detailLevel == existing.detailLevel,
            pointCount == existing.pointCount,
+           pointsHash != existing.pointsHash {
+            return "same_count_new_points"
+        }
+        if detailLevel == existing.detailLevel,
+           pointCount == existing.pointCount,
            graphPathVersion != existing.graphPathVersion {
             return "same_count_new_points"
         }
@@ -929,9 +1016,23 @@ struct MarketSparklineQuality: Equatable {
             return .accept("quality_upgrade")
         }
 
+        if existing.isUsableGraph == false,
+           isUsableGraph == false {
+            if graphState == .unavailable, existing.graphState != .unavailable {
+                return .accept("server_declared_unavailable")
+            }
+            if existing.graphState == .unavailable, graphState != .unavailable {
+                return .accept("retry_pending_after_unavailable")
+            }
+            if pointCount == 0, existing.pointCount == 0 {
+                return .accept("empty_pending")
+            }
+        }
+
         if existing.detailLevel == detailLevel,
            existing.graphState == graphState,
            existing.pointCount == pointCount,
+           existing.pointsHash == pointsHash,
            existing.graphPathVersion == graphPathVersion,
            existing.renderVersion == renderVersion,
            existing.hasRenderableGraph == hasRenderableGraph,
@@ -939,7 +1040,36 @@ struct MarketSparklineQuality: Equatable {
             return .reject("same_quality_skip")
         }
 
+        if existing.detailLevel == detailLevel,
+           existing.pointCount == pointCount,
+           pointsHash != existing.pointsHash,
+           detailLevel.pathDetailRank >= existing.detailLevel.pathDetailRank,
+           qualityRank >= existing.qualityRank {
+            return .accept("same_quality_new_points")
+        }
+
+        if existing.detailLevel == detailLevel,
+           sourceVersion > existing.sourceVersion,
+           qualityRank >= existing.qualityRank {
+            return .accept("newer_source_version")
+        }
+
         if existing.isUsableGraph && isUsableGraph == false {
+            return .reject("quality_downgrade_blocked")
+        }
+
+        if existing.isFullQualityGraph,
+           isFullQualityGraph == false {
+            return .reject("full_graph_downgrade_blocked")
+        }
+
+        if isFullQualityGraph,
+           existing.isFullQualityGraph == false {
+            return .accept("upgrade_to_full_graph")
+        }
+
+        if existing.applyPriority > applyPriority,
+           existing.isUsableGraph {
             return .reject("quality_downgrade_blocked")
         }
 
@@ -997,7 +1127,9 @@ struct MarketSparklineQuality: Equatable {
             return .accept("quality_upgrade")
         }
 
-        return .reject("same_quality_skip")
+        return pointsHash == existing.pointsHash
+            ? .reject("same_quality_skip")
+            : .accept("same_quality_new_points")
     }
 
     nonisolated static func graphQualityDecision(
@@ -1020,14 +1152,19 @@ struct MarketSparklineQuality: Equatable {
         points: [Double],
         pointCount: Int
     ) -> Int {
-        var pointHash = pointCount
-        for point in points {
-            let component = point.isFinite ? Int(truncatingIfNeeded: point.bitPattern) : 0
-            pointHash = pointHash &* 31 &+ component
-        }
+        let pointHash = makePointsHash(points: points, pointCount: pointCount)
         return detailLevel.rawValue * 100_000_000
             + graphStateOrdinal(graphState) * 10_000_000
             + abs(pointHash % 10_000_000)
+    }
+
+    nonisolated static func makePointsHash(points: [Double], pointCount: Int) -> Int {
+        var pointHash = pointCount &* 31 &+ points.count
+        for point in points {
+            let component = point.isFinite ? Int(truncatingIfNeeded: point.bitPattern) : 0
+            pointHash = pointHash &* 16777619 &+ component
+        }
+        return pointHash
     }
 
     private nonisolated static func makeRenderVersion(
@@ -1354,7 +1491,8 @@ private final class MarketSparklineGeometryCache {
         let overrideKey = MarketSparklineRenderPolicy.validRangeRatioOverride(rangeRatioOverride)
             .map { String(format: "%.8f", $0) }
             ?? "computed"
-        let cacheKey = "\(graphRenderIdentity)|detail=\(graphDetailLevel.cacheComponent)|\(graphPathVersion)|range=\(overrideKey)"
+        let pointsHash = MarketSparklineQuality.makePointsHash(points: points, pointCount: pointCount)
+        let cacheKey = "\(graphRenderIdentity)|detail=\(graphDetailLevel.cacheComponent)|\(graphPathVersion)|points=\(pointsHash)|range=\(overrideKey)"
 
         lock.lock()
         if let cached = geometries[cacheKey] {
@@ -1432,6 +1570,7 @@ struct MarketSparklineRenderPayload: Equatable {
     let renderToken: String
     let renderVersion: Int
     let sourceVersion: Int
+    let pointsHash: Int
     let sourceName: String?
     let graphState: MarketRowGraphState
     let pointCount: Int
@@ -1482,6 +1621,7 @@ struct MarketSparklineRenderPayload: Equatable {
             graphPathVersion: self.graphPathVersion
         )
         self.sourceVersion = sourceVersion
+        self.pointsHash = Self.sparklinePointsHash(points: points, pointCount: pointCount)
         self.sourceName = sourceName
         self.graphState = graphState
         self.pointCount = pointCount
@@ -1524,14 +1664,14 @@ struct MarketSparklineRenderPayload: Equatable {
         points: [Double],
         pointCount: Int
     ) -> Int {
-        var pointHash = pointCount
-        for point in points {
-            let component = point.isFinite ? Int(truncatingIfNeeded: point.bitPattern) : 0
-            pointHash = pointHash &* 31 &+ component
-        }
+        let pointHash = sparklinePointsHash(points: points, pointCount: pointCount)
         return detailLevel.rawValue * 100_000_000
             + graphStateOrdinal(graphState) * 10_000_000
             + abs(pointHash % 10_000_000)
+    }
+
+    private nonisolated static func sparklinePointsHash(points: [Double], pointCount: Int) -> Int {
+        MarketSparklineQuality.makePointsHash(points: points, pointCount: pointCount)
     }
 
     private nonisolated static func sparklineRenderVersion(
@@ -1797,6 +1937,40 @@ struct MarketRowViewState: Identifiable, Equatable {
         )
     }
 
+    func replacingFavorite(
+        isFavorite: Bool
+    ) -> MarketRowViewState {
+        MarketRowViewState(
+            selectedExchange: selectedExchange,
+            exchange: exchange,
+            sourceExchange: sourceExchange,
+            quoteCurrency: marketIdentity.quoteCurrency,
+            coin: coin,
+            priceText: priceText,
+            changeText: changeText,
+            volumeText: volumeText,
+            sparkline: sparkline,
+            sparklinePointCount: sparklinePointCount,
+            sparklineSource: sparklineSource,
+            sparklineRangeRatio: sparklineRangeRatio,
+            sparklineTimeframe: sparklineTimeframe,
+            hasEnoughSparklineData: hasEnoughSparklineData,
+            chartPresentation: chartPresentation,
+            baseFreshnessState: baseFreshnessState,
+            graphState: graphState,
+            symbolImageState: symbolImageState,
+            isPricePlaceholder: isPricePlaceholder,
+            isChangePlaceholder: isChangePlaceholder,
+            isVolumePlaceholder: isVolumePlaceholder,
+            isUp: isUp,
+            flash: flash,
+            isFavorite: isFavorite,
+            dataState: dataState,
+            suppressesCoarseRetainedReuse: sparklinePayload.suppressesCoarseRetainedReuse,
+            sparklineSourceVersion: sparklinePayload.sourceVersion
+        )
+    }
+
     func replacingTickerDisplay(
         sourceExchange: Exchange,
         priceText: String,
@@ -1855,11 +2029,7 @@ struct MarketRowViewState: Identifiable, Equatable {
         graphState: MarketRowGraphState,
         detailLevel: MarketSparklineDetailLevel
     ) -> Int {
-        var pointHash = pointCount
-        for point in points {
-            let component = point.isFinite ? Int(truncatingIfNeeded: point.bitPattern) : 0
-            pointHash = pointHash &* 31 &+ component
-        }
+        let pointHash = MarketSparklineQuality.makePointsHash(points: points, pointCount: pointCount)
         return detailLevel.rawValue * 100_000_000
             + graphStateOrdinal(graphState) * 10_000_000
             + abs(pointHash % 10_000_000)
