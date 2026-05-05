@@ -5,6 +5,7 @@ struct CryptoryApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     init() {
+        FirebaseBootstrapper.configureIfNeeded()
         AppTabBarAppearance.configure()
         _ = AppConfig.current
     }

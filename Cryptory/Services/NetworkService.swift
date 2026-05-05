@@ -742,6 +742,8 @@ struct MarketSparklineSnapshot {
     let isDerived: Bool?
     let realSeries: Bool?
     let graphDisplayAllowed: Bool?
+    let unavailableReason: String?
+    let lowInformationReason: String?
     let rangeRatio: Double?
     let minPointCount: Int?
     let maxPointCount: Int?
@@ -760,6 +762,8 @@ struct MarketSparklineSnapshot {
         isDerived: Bool? = nil,
         realSeries: Bool? = nil,
         graphDisplayAllowed: Bool? = nil,
+        unavailableReason: String? = nil,
+        lowInformationReason: String? = nil,
         rangeRatio: Double? = nil,
         minPointCount: Int? = nil,
         maxPointCount: Int? = nil,
@@ -777,6 +781,8 @@ struct MarketSparklineSnapshot {
         self.isDerived = isDerived
         self.realSeries = realSeries
         self.graphDisplayAllowed = graphDisplayAllowed
+        self.unavailableReason = unavailableReason
+        self.lowInformationReason = lowInformationReason
         self.rangeRatio = rangeRatio
         self.minPointCount = minPointCount
         self.maxPointCount = maxPointCount
@@ -1304,9 +1310,10 @@ final class APIClient {
             (data, response) = try await session.data(for: request)
         } catch {
             let failure = TransportFailureMapper.map(error)
+            let urlLogValue = path == configuration.marketSparklinePath ? "<redacted>" : (request.url?.absoluteString ?? path)
             AppLogger.debug(
                 .network,
-                "Transport error <- route=\(path) url=\(request.url?.absoluteString ?? path) kind=\(failure.kind.rawValue) category=\(failure.category) message=\(failure.message)"
+                "Transport error <- route=\(path) url=\(urlLogValue) kind=\(failure.kind.rawValue) category=\(failure.category) message=\(failure.message)"
             )
             throw NetworkServiceError.transportError(failure.message, failure.category)
         }
@@ -2194,6 +2201,8 @@ final class LiveMarketRepository: MarketRepositoryProtocol {
                 isDerived: snapshot.isDerived,
                 realSeries: snapshot.realSeries,
                 graphDisplayAllowed: snapshot.graphDisplayAllowed,
+                unavailableReason: snapshot.unavailableReason,
+                lowInformationReason: snapshot.lowInformationReason,
                 rangeRatio: snapshot.rangeRatio,
                 minPointCount: snapshot.minPointCount,
                 maxPointCount: snapshot.maxPointCount,
@@ -2223,13 +2232,17 @@ final class LiveMarketRepository: MarketRepositoryProtocol {
 
         let marketIds = requestedIdentities.compactMap(\.marketId)
         let symbolFallbacks = requestedIdentities.map(\.symbol)
+        let isListSparklineRequest = limit == 24
+        let requestTimeframe = isListSparklineRequest ? "1H" : interval.uppercased()
         var queryItems = [
             URLQueryItem(name: "exchange", value: exchange.rawValue),
             URLQueryItem(name: "quoteCurrency", value: quoteCurrency.apiValue),
-            URLQueryItem(name: "timeframe", value: interval.uppercased()),
-            URLQueryItem(name: "interval", value: interval.lowercased()),
+            URLQueryItem(name: "timeframe", value: requestTimeframe),
             URLQueryItem(name: "limit", value: String(limit))
         ]
+        if isListSparklineRequest == false {
+            queryItems.append(URLQueryItem(name: "interval", value: interval.lowercased()))
+        }
         if marketIds.isEmpty == false {
             queryItems.append(URLQueryItem(name: "marketIds", value: marketIds.joined(separator: ",")))
         }
@@ -2243,15 +2256,9 @@ final class LiveMarketRepository: MarketRepositoryProtocol {
         if let priority, priority.isEmpty == false {
             queryItems.append(URLQueryItem(name: "priority", value: priority))
         }
-        let requestURL = (try? client.makeRequest(
-            path: client.configuration.marketSparklinePath,
-            queryItems: queryItems,
-            accessRequirement: .publicAccess,
-            timeout: timeout
-        ).url?.absoluteString) ?? client.configuration.marketSparklinePath
         AppLogger.debug(
             .network,
-            "[SparklineREST] request url=\(requestURL) exchange=\(exchange.rawValue) marketIds=\(marketIds.joined(separator: ",")) symbols=\(symbolFallbacks.joined(separator: ",")) quote=\(quoteCurrency.rawValue) timeframe=\(interval.uppercased()) limit=\(limit) priority=\(priority ?? "-") timeoutMs=\(timeout.map { Int($0 * 1000) } ?? 0)"
+            "[SparklineREST] request path=\(client.configuration.marketSparklinePath) exchange=\(exchange.rawValue) quote=\(quoteCurrency.rawValue) marketIdsCount=\(marketIds.count) firstMarketIds=\(marketIds.prefix(8).joined(separator: ",")) symbolsCount=\(symbolFallbacks.count) firstSymbols=\(symbolFallbacks.prefix(8).joined(separator: ",")) timeframe=\(requestTimeframe) interval=\(isListSparklineRequest ? "-" : interval.lowercased()) limit=\(limit) priority=\(priority ?? "-") timeoutMs=\(timeout.map { Int($0 * 1000) } ?? 0)"
         )
         let json = try await client.requestJSON(
             path: client.configuration.marketSparklinePath,
@@ -2322,9 +2329,21 @@ final class LiveMarketRepository: MarketRepositoryProtocol {
             guard let identity else { continue }
             let points = parseSparklinePoints(from: item)
             let graphDisplayAllowed = item.bool(["graphDisplayAllowed", "graph_display_allowed", "displayAllowed", "display_allowed"])
-            guard points.count >= 2 || graphDisplayAllowed == false else { continue }
             let quality = item.string(["quality", "graphQuality", "graph_quality", "detailLevel", "detail_level"])
             let source = item.string(["sparklineSource", "sparkline_source", "source", "provider"])
+            let unavailableReason = item.string([
+                "sparklineUnavailableReason",
+                "sparkline_unavailable_reason",
+                "unavailableReason",
+                "unavailable_reason"
+            ])
+            let lowInformationReason = item.string([
+                "sparklineLowInformationReason",
+                "sparkline_low_information_reason",
+                "lowInformationReason",
+                "low_information_reason"
+            ])
+            guard points.count >= 2 || graphDisplayAllowed == false || unavailableReason != nil || lowInformationReason != nil else { continue }
             snapshots[identity] = MarketSparklineSnapshot(
                 exchange: exchange,
                 symbol: identity.marketId ?? identity.symbol,
@@ -2336,6 +2355,8 @@ final class LiveMarketRepository: MarketRepositoryProtocol {
                 isDerived: item.bool(["isDerived", "is_derived", "derived"]),
                 realSeries: item.bool(["realSeries", "real_series", "isRealSeries", "is_real_series"]),
                 graphDisplayAllowed: graphDisplayAllowed,
+                unavailableReason: unavailableReason,
+                lowInformationReason: lowInformationReason,
                 rangeRatio: item.double(["rangeRatio", "range_ratio", "changePercentRange", "change_percent_range"]),
                 minPointCount: item.int(["minPointCount", "min_point_count"]),
                 maxPointCount: item.int(["maxPointCount", "max_point_count"]),
@@ -2862,6 +2883,7 @@ private struct MarketTickerDTO {
     let sparklineQuality: String?
     let graphDisplayAllowed: Bool?
     let sparklineUnavailableReason: String?
+    let sparklineLowInformationReason: String?
     let previousPrice24h: Double?
     let timestamp: Date?
     let isStale: Bool
@@ -2984,6 +3006,12 @@ private struct MarketTickerDTO {
             "unavailableReason",
             "unavailable_reason"
         ])
+        self.sparklineLowInformationReason = dictionary.string([
+            "sparklineLowInformationReason",
+            "sparkline_low_information_reason",
+            "lowInformationReason",
+            "low_information_reason"
+        ])
         self.previousPrice24h = dictionary.double([
             "previousPrice24h",
             "previous_price_24h",
@@ -3017,6 +3045,7 @@ private struct MarketTickerDTO {
             sparklineQuality: sparklineQuality,
             graphDisplayAllowed: graphDisplayAllowed,
             sparklineUnavailableReason: sparklineUnavailableReason,
+            sparklineLowInformationReason: sparklineLowInformationReason,
             previousPrice24h: previousPrice24h,
             timestamp: timestamp ?? meta.fetchedAt,
             isStale: isStale || meta.isStale,

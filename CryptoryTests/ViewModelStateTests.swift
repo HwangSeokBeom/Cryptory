@@ -6369,6 +6369,7 @@ final class ViewModelStateTests: XCTestCase {
         )
 
         vm.onAppear()
+        vm.updateExchange(.upbit, source: "test_ready_partial")
         await waitUntil { vm.displayedMarketRows.first?.symbol == "BTC" }
         let identity = try XCTUnwrap(vm.displayedMarketRows.first?.marketIdentity)
         let partialPoints = [100.0, 102.0, 101.0, 104.0, 103.0, 106.0, 105.0, 108.0, 107.0, 110.0, 109.0, 112.0]

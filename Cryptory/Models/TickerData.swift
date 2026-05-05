@@ -29,6 +29,7 @@ struct TickerData: Codable {
     var sparklineQuality: String? = nil
     var graphDisplayAllowed: Bool? = nil
     var sparklineUnavailableReason: String? = nil
+    var sparklineLowInformationReason: String? = nil
     var previousPrice24h: Double? = nil
     var flash: FlashType? = nil
     var timestamp: Date? = nil

@@ -4,6 +4,37 @@ import UserNotifications
 import FirebaseCore
 import FirebaseMessaging
 
+enum FirebaseBootstrapper {
+    private static let lock = NSLock()
+    private static var didAttemptConfigure = false
+
+    @discardableResult
+    static func configureIfNeeded() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+
+        if FirebaseApp.app() != nil {
+            didAttemptConfigure = true
+            return true
+        }
+
+        guard didAttemptConfigure == false else {
+            return FirebaseApp.app() != nil
+        }
+        didAttemptConfigure = true
+
+        guard Bundle.main.path(forResource: "GoogleService-Info", ofType: "plist") != nil else {
+            AppLogger.debug(.network, "[Firebase] configure skipped reason=missing_google_service_info")
+            return false
+        }
+
+        FirebaseApp.configure()
+        let configured = FirebaseApp.app() != nil
+        AppLogger.debug(.network, "[Firebase] configure status=\(configured ? "configured" : "failed")")
+        return configured
+    }
+}
+
 protocol FCMTokenRegistrarProtocol {
     func register(token: String, session: AuthSession) async throws
     func delete(token: String, session: AuthSession) async throws
@@ -51,14 +82,20 @@ final class PushNotificationService: NSObject {
     }
 
     func configure() {
-        if FirebaseApp.app() == nil {
-            FirebaseApp.configure()
+        guard FirebaseBootstrapper.configureIfNeeded() else {
+            UNUserNotificationCenter.current().delegate = self
+            AppLogger.debug(.network, "[Push] firebase_unavailable messaging_skipped=true")
+            return
         }
         UNUserNotificationCenter.current().delegate = self
         Messaging.messaging().delegate = self
     }
 
     func requestAuthorizationAndRegister() {
+        guard FirebaseApp.app() != nil else {
+            AppLogger.debug(.network, "[Push] registration skipped reason=firebase_unconfigured")
+            return
+        }
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .badge, .sound]) { granted, _ in
             UNUserNotificationCenter.current().getNotificationSettings { settings in
                 AppLogger.debug(.network, "[Push] permission status=\(settings.authorizationStatus.debugName)")
@@ -72,6 +109,7 @@ final class PushNotificationService: NSObject {
     }
 
     func updateAPNSToken(_ deviceToken: Data) {
+        guard FirebaseApp.app() != nil else { return }
         Messaging.messaging().apnsToken = deviceToken
     }
 

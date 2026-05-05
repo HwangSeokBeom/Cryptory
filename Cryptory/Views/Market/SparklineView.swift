@@ -502,7 +502,7 @@ final class SparklineRenderView: UIView {
         placeholderBorderLayer.contentsScale = displayScale
         placeholderBorderLayer.fillColor = UIColor.clear.cgColor
         placeholderBorderLayer.lineWidth = 1
-        placeholderBorderLayer.lineDashPattern = [3, 2]
+        placeholderBorderLayer.lineDashPattern = nil
     }
 
     private func renderCurrentConfiguration(reason: String) {
@@ -660,7 +660,7 @@ final class SparklineRenderView: UIView {
             }
             strokeLayer.strokeColor = (currentConfiguration.isUp ? UIColor(Color.up) : UIColor(Color.down)).cgColor
             strokeLayer.opacity = currentConfiguration.lowConfidenceStrokeOpacity
-            strokeLayer.lineDashPattern = currentConfiguration.lowConfidenceStrokeOpacity < currentConfiguration.visualState.strokeOpacity ? [3, 3] : nil
+            strokeLayer.lineDashPattern = nil
             strokeLayer.isHidden = false
             placeholderFillLayer.isHidden = true
             placeholderBorderLayer.isHidden = true
@@ -886,7 +886,7 @@ final class SparklineRenderView: UIView {
             placeholderBorderLayer.strokeColor = UIColor(Color.themeBorder.opacity(0.35)).cgColor
             placeholderBorderLayer.lineWidth = 1
             placeholderBorderLayer.lineCap = .butt
-            placeholderBorderLayer.lineDashPattern = [3, 2]
+            placeholderBorderLayer.lineDashPattern = nil
         }
     }
 
