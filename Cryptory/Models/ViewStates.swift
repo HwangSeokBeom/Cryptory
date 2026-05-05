@@ -351,7 +351,7 @@ enum MarketSparklineRenderPolicy {
     nonisolated static let degradedListSparklinePointCount = 12
     nonisolated static let hydratedPointCount = 4
     nonisolated static let coarseUpperBoundPointCount = 8
-    nonisolated static let partialRealPointCountThreshold = 8
+    nonisolated static let partialRealPointCountThreshold = 12
     nonisolated static let promotedGraphPointCountThreshold = 24
 
     private nonisolated static let blockedQualityFragments = [
@@ -361,8 +361,14 @@ enum MarketSparklineRenderPolicy {
         "linear_preview",
         "linearpreview",
         "unavailable",
+        "insufficient_history",
+        "insufficienthistory",
         "insufficient_points",
         "insufficientpoints",
+        "low_information",
+        "lowinformation",
+        "provider_candle_unavailable",
+        "providercandleunavailable",
         "insufficient_variation",
         "flat_current",
         "derived_change24h",
@@ -406,8 +412,14 @@ enum MarketSparklineRenderPolicy {
 
         let normalizedSource = (sourceName ?? "").lowercased()
         if normalizedSource.contains("unavailable")
+            || normalizedSource.contains("insufficient_history")
+            || normalizedSource.contains("insufficienthistory")
             || normalizedSource.contains("insufficient_points")
             || normalizedSource.contains("insufficientpoints")
+            || normalizedSource.contains("low_information")
+            || normalizedSource.contains("lowinformation")
+            || normalizedSource.contains("provider_candle_unavailable")
+            || normalizedSource.contains("providercandleunavailable")
             || normalizedSource.contains("unsupported")
             || normalizedSource.contains("not_available")
             || normalizedSource.contains("no_data") {
@@ -418,7 +430,7 @@ enum MarketSparklineRenderPolicy {
         }
         if normalizedSource.contains("fallbacklistsparkline")
             || normalizedSource.contains("fallback_list_sparkline") {
-            return pointCount >= degradedListSparklinePointCount
+            return false
         }
         return true
     }
@@ -887,10 +899,10 @@ struct MarketSparklineQuality: Equatable {
         guard isUsableGraph else {
             return graphState == .unavailable ? 2 : 1
         }
-        if pointCount >= 60 && qualityRank >= 5 {
+        if pointCount >= MarketSparklineRenderPolicy.promotedGraphPointCountThreshold && qualityRank >= 5 {
             return 8
         }
-        if pointCount >= 60 && qualityRank >= 4 {
+        if pointCount >= MarketSparklineRenderPolicy.promotedGraphPointCountThreshold && qualityRank >= 4 {
             return 7
         }
         if pointCount >= MarketSparklineRenderPolicy.partialRealPointCountThreshold && qualityRank >= 4 {
@@ -903,7 +915,7 @@ struct MarketSparklineQuality: Equatable {
     }
 
     nonisolated var isFullQualityGraph: Bool {
-        isUsableGraph && pointCount >= 60 && qualityRank >= 4
+        isUsableGraph && pointCount >= MarketSparklineRenderPolicy.promotedGraphPointCountThreshold && qualityRank >= 4
     }
 
     private nonisolated var normalizedSourceName: String {

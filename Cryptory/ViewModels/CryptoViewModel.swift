@@ -385,6 +385,8 @@ private struct SparklineLayerSnapshot: Equatable, Codable {
     let isDerived: Bool
     let realSeries: Bool
     let graphDisplayAllowed: Bool?
+    let unavailableReason: String?
+    let lowInformationReason: String?
     let rangeRatio: Double?
     let minPointCount: Int?
     let maxPointCount: Int?
@@ -392,7 +394,7 @@ private struct SparklineLayerSnapshot: Equatable, Codable {
     let lastTimestamp: Date?
 
     var qualityDescriptor: String? {
-        let descriptor = [sourceName, quality, realSeries ? "real_series" : nil, isDerived ? "derived_series" : nil, graphDisplayAllowed == true ? "graph_display_allowed" : nil]
+        let descriptor = [sourceName, quality, unavailableReason, lowInformationReason, realSeries ? "real_series" : nil, isDerived ? "derived_series" : nil, graphDisplayAllowed == true ? "graph_display_allowed" : nil]
             .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { $0.isEmpty == false }
             .joined(separator: "|")
@@ -410,6 +412,8 @@ private struct SparklineLayerSnapshot: Equatable, Codable {
         isDerived: Bool = false,
         realSeries: Bool = false,
         graphDisplayAllowed: Bool? = nil,
+        unavailableReason: String? = nil,
+        lowInformationReason: String? = nil,
         rangeRatio: Double? = nil,
         minPointCount: Int? = nil,
         maxPointCount: Int? = nil,
@@ -426,6 +430,8 @@ private struct SparklineLayerSnapshot: Equatable, Codable {
         self.isDerived = isDerived
         self.realSeries = realSeries
         self.graphDisplayAllowed = graphDisplayAllowed
+        self.unavailableReason = unavailableReason
+        self.lowInformationReason = lowInformationReason
         self.rangeRatio = rangeRatio
         self.minPointCount = minPointCount
         self.maxPointCount = maxPointCount
@@ -434,7 +440,16 @@ private struct SparklineLayerSnapshot: Equatable, Codable {
     }
 
     nonisolated func graphState(staleInterval: TimeInterval, now: Date) -> MarketRowGraphState {
-        if graphDisplayAllowed == false {
+        let descriptor = qualityDescriptor?.lowercased() ?? ""
+        if graphDisplayAllowed == false
+            || unavailableReason != nil
+            || lowInformationReason != nil
+            || descriptor.contains("insufficient_points")
+            || descriptor.contains("insufficientpoints")
+            || descriptor.contains("insufficient_history")
+            || descriptor.contains("insufficienthistory")
+            || descriptor.contains("provider_candle_unavailable")
+            || descriptor.contains("providercandleunavailable") {
             return .unavailable
         }
         guard MarketSparklineRenderPolicy.hasVisibleRenderableGraph(
@@ -476,6 +491,7 @@ private struct PersistedSparklineCacheEnvelope: Codable {
 }
 
 private struct SparklineBatchFetchGroupKey: Hashable, Equatable {
+    let exchange: Exchange
     let quoteCurrency: MarketQuoteCurrency
     let interval: String
 }
@@ -1174,11 +1190,11 @@ final class CryptoViewModel: ObservableObject {
     private let chartSnapshotStaleInterval: TimeInterval = 5
     private let sparklineCacheStaleInterval: TimeInterval = 60
     private let sparklineSchedulerDebounceNanoseconds: UInt64 = 100_000_000
-    private let sparklineVisibleBatchSize = 24
-    private let sparklineBackgroundBatchSize = 24
-    private let sparklineRepresentativeLimit = 20
-    private let sparklineFailureCooldownInterval: TimeInterval = 4
-    private let sparklineRefreshThrottleInterval: TimeInterval = 1.2
+    private let sparklineVisibleBatchSize = 10
+    private let sparklineBackgroundBatchSize = 10
+    private let sparklineRepresentativeLimit = 12
+    private let sparklineFailureCooldownInterval: TimeInterval = 45
+    private let sparklineRefreshThrottleInterval: TimeInterval = 30
     private let sparklineStaleRenderableInterval: TimeInterval = 60 * 5
     private let topCardSparklineTimeout: TimeInterval = 1.2
     private let visibleSparklineTimeout: TimeInterval = 2.0
@@ -1300,8 +1316,10 @@ final class CryptoViewModel: ObservableObject {
     private var unsupportedSparklineMarketIdentitiesByExchange: [Exchange: Set<MarketIdentity>] = [:]
     private var sparklineFetchTasksByKey: [SparklineCacheKey: Task<SparklineLayerSnapshot, Error>] = [:]
     private var sparklineFetchPriorityByKey: [SparklineCacheKey: String] = [:]
+    private var sparklineBatchFetchTasksByGroupKey: [SparklineBatchFetchGroupKey: Task<[String: SparklineLayerSnapshot], Error>] = [:]
     private var scheduledSparklineRequestsByKey: [SparklineCacheKey: ScheduledSparklineRequestState] = [:]
     private var sparklineFailureCooldownUntilByKey: [SparklineCacheKey: Date] = [:]
+    private var sparklineTimeoutLoggedBatchKeys: Set<String> = []
     private var lastSparklineRefreshAttemptAtByKey: [SparklineCacheKey: Date] = [:]
     private var lastPriorityVisibleSparklineEnqueueAtByKey: [SparklineCacheKey: Date] = [:]
     private var sparklineNoImprovementUntilByKey: [SparklineCacheKey: Date] = [:]
@@ -4161,6 +4179,25 @@ final class CryptoViewModel: ObservableObject {
         }
     }
 
+    private func isSparklineTimeoutError(_ error: Error) -> Bool {
+        if (error as NSError).domain == NSURLErrorDomain,
+           (error as NSError).code == URLError.timedOut.rawValue {
+            return true
+        }
+        guard let networkError = error as? NetworkServiceError else {
+            return false
+        }
+        switch networkError {
+        case .transportError(let message, _):
+            let normalized = message.lowercased()
+            return normalized.contains("지연")
+                || normalized.contains("timed out")
+                || normalized.contains("timeout")
+        case .invalidURL, .invalidResponse, .httpError, .authenticationRequired, .parsingFailed:
+            return false
+        }
+    }
+
     private func fetchOrderbookSnapshot(for key: ChartResourceKey) async -> Result<OrderbookSnapshot, Error> {
         if let task = orderbookFetchTasksByKey[key] {
             do {
@@ -4585,6 +4622,10 @@ final class CryptoViewModel: ObservableObject {
                 .network,
                 "[GraphRequestDedupe] key=\(graphCacheLogKey(for: key.marketIdentity)) source=quote_changed action=cancel priority=cancel generation=\(marketPresentationGeneration)"
             )
+        }
+        for key in Array(sparklineBatchFetchTasksByGroupKey.keys).filter({ $0.exchange == selectedExchange }) {
+            sparklineBatchFetchTasksByGroupKey[key]?.cancel()
+            sparklineBatchFetchTasksByGroupKey[key] = nil
         }
         for (key, task) in candleFetchTasksByKey where key.exchange == selectedExchange {
             task.cancel()
@@ -11463,9 +11504,9 @@ final class CryptoViewModel: ObservableObject {
         }
 
         if let cooldownUntil = sparklineFailureCooldownUntilByKey[key],
-           cooldownUntil > now,
-           hasUsableSparklineGraph(marketIdentity: marketIdentity) {
+           cooldownUntil > now {
             if isVisibleTarget,
+               hasUsableSparklineGraph(marketIdentity: marketIdentity),
                hasPotentialSparklineQualityGain(for: marketIdentity, now: now) {
                 AppLogger.debug(
                     .network,
@@ -11474,7 +11515,7 @@ final class CryptoViewModel: ObservableObject {
             } else {
                 AppLogger.debug(
                     .network,
-                    "[GraphRequestDebug] \(marketIdentity.logFields) action=skip_refresh reason=stale_usable_within_cooldown"
+                    "[GraphRequestDebug] \(marketIdentity.logFields) action=sparkline_batch_skipped_due_to_cooldown cooldownMs=\(Int(cooldownUntil.timeIntervalSince(now) * 1000))"
                 )
                 return false
             }
@@ -11826,9 +11867,9 @@ final class CryptoViewModel: ObservableObject {
             let key = SparklineCacheKey(marketIdentity: marketIdentity, interval: interval)
 
             if let cooldownUntil = sparklineFailureCooldownUntilByKey[key],
-               cooldownUntil > now,
-               hasUsableSparklineGraph(marketIdentity: marketIdentity) {
+               cooldownUntil > now {
                 let canBypassCooldown = (isTopPriority || source == "visible_batch" || source == "visible_refine_batch" || source == "priority_visible_batch")
+                    && hasUsableSparklineGraph(marketIdentity: marketIdentity)
                     && hasPotentialSparklineQualityGain(for: marketIdentity, now: now)
                 if canBypassCooldown {
                     AppLogger.debug(
@@ -11838,7 +11879,7 @@ final class CryptoViewModel: ObservableObject {
                 } else {
                     AppLogger.debug(
                         .network,
-                        "[GraphRequestDebug] \(marketIdentity.logFields) action=skip_refresh reason=stale_usable_within_cooldown"
+                        "[GraphRequestDebug] \(marketIdentity.logFields) action=sparkline_batch_skipped_due_to_cooldown cooldownMs=\(Int(cooldownUntil.timeIntervalSince(now) * 1000))"
                     )
                     continue
                 }
@@ -11869,14 +11910,23 @@ final class CryptoViewModel: ObservableObject {
                 "[GraphRequestPriority] key=\(graphCacheLogKey(for: marketIdentity)) oldPriority=\(sparklineFetchPriorityByKey[key] ?? "none") newPriority=\(requestPriority) action=start"
             )
             let groupKey = SparklineBatchFetchGroupKey(
+                exchange: exchange,
                 quoteCurrency: marketIdentity.quoteCurrency,
                 interval: interval
             )
             groupedRequests[groupKey, default: []].append(marketIdentity)
         }
 
+        var startedGroupKeys = Set<SparklineBatchFetchGroupKey>()
         for (groupKey, groupIdentities) in groupedRequests {
             let requestIdentities = Self.deduplicatedMarketIdentities(groupIdentities)
+            if sparklineBatchFetchTasksByGroupKey[groupKey] != nil {
+                AppLogger.debug(
+                    .network,
+                    "[GraphRequestDedupe] exchange=\(exchange.rawValue) quoteCurrency=\(groupKey.quoteCurrency.rawValue) source=\(source) action=skip reason=batch_inflight interval=\(groupKey.interval) requestedCount=\(requestIdentities.count)"
+                )
+                continue
+            }
             let batchTask = Task<[String: SparklineLayerSnapshot], Error> { [marketRepository] in
                 let snapshots = try await marketRepository.fetchSparklines(
                     marketIdentities: requestIdentities,
@@ -11890,7 +11940,10 @@ final class CryptoViewModel: ObservableObject {
                 return try snapshots.reduce(into: [String: SparklineLayerSnapshot]()) { partialResult, element in
                     let (identity, snapshot) = element
                     let points = Self.densifiedMiniSparkline(points: snapshot.points)
-                    guard points.count >= MarketSparklineRenderPolicy.minimumRenderablePointCount || snapshot.graphDisplayAllowed == false else {
+                    guard points.count >= MarketSparklineRenderPolicy.minimumRenderablePointCount
+                        || snapshot.graphDisplayAllowed == false
+                        || snapshot.unavailableReason != nil
+                        || snapshot.lowInformationReason != nil else {
                         throw NetworkServiceError.parsingFailed("sparkline data is empty")
                     }
                     partialResult[identity.cacheKey] = SparklineLayerSnapshot(
@@ -11908,6 +11961,8 @@ final class CryptoViewModel: ObservableObject {
                         realSeries: snapshot.realSeries
                             ?? MarketSparklineRenderPolicy.isRealSeriesSource([snapshot.source, snapshot.quality].compactMap { $0 }.joined(separator: "|")),
                         graphDisplayAllowed: snapshot.graphDisplayAllowed,
+                        unavailableReason: snapshot.unavailableReason,
+                        lowInformationReason: snapshot.lowInformationReason,
                         rangeRatio: snapshot.rangeRatio,
                         minPointCount: snapshot.minPointCount,
                         maxPointCount: snapshot.maxPointCount,
@@ -11916,6 +11971,8 @@ final class CryptoViewModel: ObservableObject {
                     )
                 }
             }
+            sparklineBatchFetchTasksByGroupKey[groupKey] = batchTask
+            startedGroupKeys.insert(groupKey)
             for marketIdentity in requestIdentities {
                 let interval = groupKey.interval
                 let key = SparklineCacheKey(marketIdentity: marketIdentity, interval: interval)
@@ -11975,6 +12032,27 @@ final class CryptoViewModel: ObservableObject {
                     sparklineFetchTasksByKey[key] = nil
                     sparklineFetchPriorityByKey[key] = nil
                     sparklineFailureCooldownUntilByKey[key] = Date().addingTimeInterval(sparklineFailureCooldownInterval)
+                    sparklineBatchFetchTasksByGroupKey.removeValue(
+                        forKey: SparklineBatchFetchGroupKey(
+                            exchange: exchange,
+                            quoteCurrency: marketIdentity.quoteCurrency,
+                            interval: key.interval
+                        )
+                    )
+                    if isSparklineTimeoutError(error) {
+                        let timeoutLogKey = "\(exchange.rawValue)|\(marketIdentity.quoteCurrency.rawValue)|\(key.interval)|\(source)"
+                        if sparklineTimeoutLoggedBatchKeys.insert(timeoutLogKey).inserted {
+                            let requestedMarketIds = marketIdentities
+                                .filter { $0.exchange == exchange && $0.quoteCurrency == marketIdentity.quoteCurrency }
+                                .prefix(8)
+                                .map { $0.marketId ?? $0.symbol }
+                                .joined(separator: ",")
+                            AppLogger.debug(
+                                .network,
+                                "[sparkline_batch_timeout] exchange=\(exchange.rawValue) quoteCurrency=\(marketIdentity.quoteCurrency.rawValue) requestedCount=\(marketIdentities.count) firstMarketIds=\(requestedMarketIds) timeoutMs=\(Int(requestTimeout * 1000)) cooldownMs=\(Int(sparklineFailureCooldownInterval * 1000))"
+                            )
+                        }
+                    }
                     if isUnsupportedSparklineError(error) {
                         unsupportedSparklineMarketIdentitiesByExchange[marketIdentity.exchange, default: []].insert(marketIdentity)
                         AppLogger.debug(
@@ -11990,6 +12068,9 @@ final class CryptoViewModel: ObservableObject {
                     results.append((marketIdentity, .failure(error)))
                 }
             }
+        }
+        for groupKey in startedGroupKeys {
+            sparklineBatchFetchTasksByGroupKey[groupKey] = nil
         }
         return results
     }
@@ -13564,8 +13645,18 @@ final class CryptoViewModel: ObservableObject {
         if graphDisplayAllowed == false {
             return ("render_empty", "graph_display_disallowed")
         }
-        if quality.contains("insufficient_points") || quality.contains("insufficientpoints") {
-            return ("render_empty", "insufficient_points")
+        if quality.contains("graph_display_disallowed") {
+            return ("render_empty", "graph_display_disallowed")
+        }
+        if quality.contains("insufficient_points") || quality.contains("insufficientpoints")
+            || quality.contains("insufficient_history") || quality.contains("insufficienthistory") {
+            return ("render_empty", "insufficient_points_or_history")
+        }
+        if quality.contains("low_information") || quality.contains("lowinformation") {
+            return ("render_empty", "low_information")
+        }
+        if quality.contains("provider_candle_unavailable") || quality.contains("providercandleunavailable") {
+            return ("render_empty", "provider_candle_unavailable")
         }
         if serverPointCount < MarketSparklineRenderPolicy.degradedListSparklinePointCount {
             return ("render_empty", "insufficient_points")
@@ -13575,7 +13666,7 @@ final class CryptoViewModel: ObservableObject {
         }
         if serverPointCount >= MarketSparklineRenderPolicy.listSparklinePointCount {
             if quality.contains("fallbacklistsparkline") || quality.contains("fallback_list_sparkline") {
-                return ("render_degraded", "fallback_quality_with_full_point_count")
+                return ("render_empty", "fallback_quality_not_trusted")
             }
             return ("render_normal", "server_24_point_list_sparkline")
         }
@@ -13623,8 +13714,15 @@ final class CryptoViewModel: ObservableObject {
         pointCount: Int
     ) -> String {
         let normalizedSource = (rawSource ?? "").lowercased()
-        if normalizedSource.contains("insufficient_points") || normalizedSource.contains("insufficientpoints") {
-            return "insufficient_points"
+        if normalizedSource.contains("insufficient_points") || normalizedSource.contains("insufficientpoints")
+            || normalizedSource.contains("insufficient_history") || normalizedSource.contains("insufficienthistory") {
+            return "insufficient_points_or_history"
+        }
+        if normalizedSource.contains("low_information") || normalizedSource.contains("lowinformation") {
+            return "low_information"
+        }
+        if normalizedSource.contains("provider_candle_unavailable") || normalizedSource.contains("providercandleunavailable") {
+            return "provider_candle_unavailable"
         }
         if normalizedSource.contains("unavailable") {
             return "unavailable"
@@ -13649,7 +13747,8 @@ final class CryptoViewModel: ObservableObject {
             ticker.sparklineSource,
             ticker.sparklineQuality,
             ticker.graphDisplayAllowed == false ? "graph_display_disallowed" : nil,
-            ticker.sparklineUnavailableReason
+            ticker.sparklineUnavailableReason,
+            ticker.sparklineLowInformationReason
         ]
             .compactMap { $0 }
         return components.isEmpty ? fallback : components.joined(separator: "|")
@@ -15080,7 +15179,7 @@ final class CryptoViewModel: ObservableObject {
                     .network,
                     "[GraphApplyDecision] exchange=\(patch.marketIdentity.exchange.rawValue) quoteCurrency=\(patch.marketIdentity.quoteCurrency.rawValue) marketId=\(patch.marketIdentity.marketId ?? patch.marketIdentity.symbol) generation=\(generation) oldState=\(graphLifecycleLogValue(state: previousRow.graphState, pointCount: previousRow.sparklinePointCount)) oldQuality=\(previousRow.sparklineSource ?? previousRow.sparklinePayload.detailLevel.cacheComponent) oldPointCount=\(previousRow.sparklinePointCount) newQuality=\(snapshot.qualityDescriptor ?? "empty_or_unavailable") newPointCount=\(snapshot.pointCount) graphDisplayAllowed=\(snapshot.graphDisplayAllowed.map { String(describing: $0) } ?? "-") realSeries=\(snapshot.realSeries) decision=keepExisting reason=low_quality_response_with_existing_graph"
                 )
-            } else if snapshot.graphDisplayAllowed == false {
+            } else if snapshot.graphDisplayAllowed == false || snapshot.graphState(staleInterval: sparklineCacheStaleInterval, now: Date()) == .unavailable {
                 nextGraphState = .unavailable
                 nextPoints = []
                 nextPointCount = 0
@@ -19512,6 +19611,10 @@ final class CryptoViewModel: ObservableObject {
                 .network,
                 "[GraphRequestDedupe] key=\(graphCacheLogKey(for: key.marketIdentity)) source=exchange_changed action=cancel priority=cancel generation=\(marketPresentationGeneration)"
             )
+        }
+        for key in Array(sparklineBatchFetchTasksByGroupKey.keys).filter({ $0.exchange != exchange }) {
+            sparklineBatchFetchTasksByGroupKey[key]?.cancel()
+            sparklineBatchFetchTasksByGroupKey[key] = nil
         }
     }
 
