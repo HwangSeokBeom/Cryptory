@@ -846,12 +846,16 @@ final class UserDefaultsMarketSnapshotCacheStore: MarketSnapshotCacheStoring {
             if source.contains("derived")
                 || source.contains("linear_preview")
                 || source.contains("unavailable")
+                || source.contains("insufficient_points")
                 || source.contains("flat_current") {
                 sanitizedTicker.sparkline = []
                 sanitizedTicker.sparklinePoints = []
                 sanitizedTicker.sparklinePointCount = nil
                 sanitizedTicker.hasServerSparkline = false
                 sanitizedTicker.sparklineSource = nil
+                sanitizedTicker.sparklineQuality = nil
+                sanitizedTicker.graphDisplayAllowed = nil
+                sanitizedTicker.sparklineUnavailableReason = nil
             }
             return sanitizedTicker
         }
@@ -2855,6 +2859,9 @@ private struct MarketTickerDTO {
     let sparklinePoints: [SparklinePoint]
     let sparklinePointCount: Int?
     let sparklineSource: String?
+    let sparklineQuality: String?
+    let graphDisplayAllowed: Bool?
+    let sparklineUnavailableReason: String?
     let previousPrice24h: Double?
     let timestamp: Date?
     let isStale: Bool
@@ -2969,6 +2976,14 @@ private struct MarketTickerDTO {
         self.sparkline = parseSparklinePoints(from: dictionary)
         self.sparklinePointCount = parseSparklinePointCount(from: dictionary)
         self.sparklineSource = dictionary.string(["sparklineSource", "sparkline_source", "sparklineProvider", "sparkline_provider"])
+        self.sparklineQuality = dictionary.string(["sparklineQuality", "sparkline_quality", "quality"])
+        self.graphDisplayAllowed = dictionary.bool(["graphDisplayAllowed", "graph_display_allowed", "displayAllowed", "display_allowed"])
+        self.sparklineUnavailableReason = dictionary.string([
+            "sparklineUnavailableReason",
+            "sparkline_unavailable_reason",
+            "unavailableReason",
+            "unavailable_reason"
+        ])
         self.previousPrice24h = dictionary.double([
             "previousPrice24h",
             "previous_price_24h",
@@ -2999,6 +3014,9 @@ private struct MarketTickerDTO {
             sparklinePointCount: sparklinePointCount,
             hasServerSparkline: sparklinePoints.count >= 2 || sparkline.count >= 2,
             sparklineSource: sparklineSource ?? (sparklinePoints.count >= 2 ? "ticker_sparkline_points" : (sparkline.count >= 2 ? "ticker_sparkline" : nil)),
+            sparklineQuality: sparklineQuality,
+            graphDisplayAllowed: graphDisplayAllowed,
+            sparklineUnavailableReason: sparklineUnavailableReason,
             previousPrice24h: previousPrice24h,
             timestamp: timestamp ?? meta.fetchedAt,
             isStale: isStale || meta.isStale,
