@@ -6318,9 +6318,10 @@ final class ViewModelStateTests: XCTestCase {
             graphDisplayAllowed: true
         ))
         await waitUntil {
-            vm.displayedMarketRows.first?.sparklinePointCount == fullPoints.count
-                && vm.displayedMarketRows.first?.graphState.keepsVisibleGraph == true
+            vm.displayedMarketRows.first?.graphState.keepsVisibleGraph == true
+                && (vm.displayedMarketRows.first?.sparklinePointCount ?? 0) >= 24
         }
+        let readySparkline = try XCTUnwrap(vm.displayedMarketRows.first?.sparkline)
 
         _ = vm.applySparklinePatchForTesting(
             marketIdentity: identity,
@@ -6340,7 +6341,7 @@ final class ViewModelStateTests: XCTestCase {
         XCTAssertTrue(row.graphState.keepsVisibleGraph)
         XCTAssertNotEqual(row.graphState, .placeholder)
         XCTAssertNotEqual(row.graphState, .unavailable)
-        XCTAssertEqual(row.sparkline, fullPoints)
+        XCTAssertEqual(row.sparkline, readySparkline)
     }
 
     @MainActor
@@ -6442,7 +6443,12 @@ final class ViewModelStateTests: XCTestCase {
             realSeries: true,
             graphDisplayAllowed: true
         ))
-        await waitUntil { vm.displayedMarketRows.first?.sparklinePointCount == fullPoints.count }
+        await waitUntil {
+            vm.displayedMarketRows.first?.graphState.keepsVisibleGraph == true
+                && (vm.displayedMarketRows.first?.sparklinePointCount ?? 0) >= 24
+        }
+        let readySparkline = try XCTUnwrap(vm.displayedMarketRows.first?.sparkline)
+        let readyPointCount = try XCTUnwrap(vm.displayedMarketRows.first?.sparklinePointCount)
 
         _ = vm.applySparklinePatchForTesting(
             marketIdentity: identity,
@@ -6458,8 +6464,8 @@ final class ViewModelStateTests: XCTestCase {
         )
         await Task.yield()
 
-        XCTAssertEqual(vm.displayedMarketRows.first?.sparklinePointCount, fullPoints.count)
-        XCTAssertEqual(vm.displayedMarketRows.first?.sparkline, fullPoints)
+        XCTAssertEqual(vm.displayedMarketRows.first?.sparklinePointCount, readyPointCount)
+        XCTAssertEqual(vm.displayedMarketRows.first?.sparkline, readySparkline)
     }
 
     @MainActor

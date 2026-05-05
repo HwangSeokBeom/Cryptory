@@ -361,6 +361,8 @@ enum MarketSparklineRenderPolicy {
         "linear_preview",
         "linearpreview",
         "unavailable",
+        "insufficient_points",
+        "insufficientpoints",
         "insufficient_variation",
         "flat_current",
         "derived_change24h",
@@ -397,13 +399,15 @@ enum MarketSparklineRenderPolicy {
         isDerived: Bool? = nil
     ) -> Bool {
         let finitePoints = points.filter { $0.isFinite && $0 > 0 }
-        guard finitePoints.count >= minimumRenderablePointCount,
-              pointCount >= minimumRenderablePointCount else {
+        guard finitePoints.count >= degradedListSparklinePointCount,
+              pointCount >= degradedListSparklinePointCount else {
             return false
         }
 
         let normalizedSource = (sourceName ?? "").lowercased()
         if normalizedSource.contains("unavailable")
+            || normalizedSource.contains("insufficient_points")
+            || normalizedSource.contains("insufficientpoints")
             || normalizedSource.contains("unsupported")
             || normalizedSource.contains("not_available")
             || normalizedSource.contains("no_data") {

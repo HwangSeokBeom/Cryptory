@@ -10029,10 +10029,15 @@ final class CryptoViewModel: ObservableObject {
     ) {
         let listPoints = Self.normalizedListSparklinePoints(Self.listSparklineRawPoints(from: ticker))
         let qualityName = Self.listSparklineQualityName(
-            rawSource: ticker.sparklineSource ?? (source == .stream ? "ticker_stream" : "ticker_snapshot"),
+            rawSource: Self.tickerListSparklineDescriptor(ticker, fallback: source == .stream ? "ticker_stream" : "ticker_snapshot"),
             pointCount: listPoints.count
         )
-        guard Self.shouldRenderListSparkline(points: listPoints, sourceName: qualityName) else {
+        guard Self.shouldRenderListSparkline(
+            points: listPoints,
+            sourceName: qualityName,
+            graphDisplayAllowed: ticker.graphDisplayAllowed,
+            rawSource: ticker.sparklineSource
+        ) else {
             return
         }
 
@@ -13398,13 +13403,14 @@ final class CryptoViewModel: ObservableObject {
         let serverSparklinePoints = ticker.map { normalizedListSparklinePoints(listSparklineRawPoints(from: $0)) } ?? []
         let serverSparklineQuality = ticker.map {
             listSparklineQualityName(
-                rawSource: $0.sparklineSource ?? "ticker_sparkline",
+                rawSource: tickerListSparklineDescriptor($0, fallback: "ticker_sparkline"),
                 pointCount: serverSparklinePoints.count
             )
         }
         let serverSparklinePolicy = listSparklinePolicy(
             serverPointCount: serverSparklinePoints.count,
-            serverQuality: serverSparklineQuality
+            serverQuality: serverSparklineQuality,
+            graphDisplayAllowed: ticker?.graphDisplayAllowed
         )
         AppLogger.debug(
             .network,
@@ -13482,10 +13488,15 @@ final class CryptoViewModel: ObservableObject {
             listSparklineRawPoints(from: ticker, preferPointItems: true)
         )
         let serverPointItemsSource = listSparklineQualityName(
-            rawSource: ticker.sparklineSource ?? "ticker_sparkline_points",
+            rawSource: tickerListSparklineDescriptor(ticker, fallback: "ticker_sparkline_points"),
             pointCount: serverPointItems.count
         )
-        if shouldRenderListSparkline(points: serverPointItems, sourceName: serverPointItemsSource) {
+        if shouldRenderListSparkline(
+            points: serverPointItems,
+            sourceName: serverPointItemsSource,
+            graphDisplayAllowed: ticker.graphDisplayAllowed,
+            rawSource: ticker.sparklineSource
+        ) {
             return (
                 serverPointItems,
                 serverPointItemsSource
@@ -13496,10 +13507,15 @@ final class CryptoViewModel: ObservableObject {
             listSparklineRawPoints(from: ticker, preferPointItems: false)
         )
         let serverPointsSource = listSparklineQualityName(
-            rawSource: ticker.sparklineSource ?? "ticker_sparkline",
+            rawSource: tickerListSparklineDescriptor(ticker, fallback: "ticker_sparkline"),
             pointCount: serverPoints.count
         )
-        if shouldRenderListSparkline(points: serverPoints, sourceName: serverPointsSource) {
+        if shouldRenderListSparkline(
+            points: serverPoints,
+            sourceName: serverPointsSource,
+            graphDisplayAllowed: ticker.graphDisplayAllowed,
+            rawSource: ticker.sparklineSource
+        ) {
             return (
                 serverPoints,
                 serverPointsSource
@@ -13509,13 +13525,27 @@ final class CryptoViewModel: ObservableObject {
         return nil
     }
 
-    private nonisolated static func shouldRenderListSparkline(points: [Double], sourceName: String?) -> Bool {
+    private nonisolated static func shouldRenderListSparkline(
+        points: [Double],
+        sourceName: String?,
+        graphDisplayAllowed: Bool? = nil,
+        rawSource: String? = nil
+    ) -> Bool {
         let pointCount = points.count
         let policy = listSparklinePolicy(
             serverPointCount: pointCount,
-            serverQuality: sourceName
+            serverQuality: sourceName,
+            graphDisplayAllowed: graphDisplayAllowed
         )
         guard policy.decision == "render_normal" || policy.decision == "render_degraded" else {
+            let source = (rawSource ?? sourceName ?? "-").lowercased()
+            if pointCount < MarketSparklineRenderPolicy.degradedListSparklinePointCount,
+               source.contains("ticker_ring_buffer") {
+                AppLogger.debug(
+                    .network,
+                    "[ListSparklineRejected] reason=insufficient_points source=ticker_ring_buffer pointCount=\(pointCount)"
+                )
+            }
             return false
         }
         return MarketSparklineRenderPolicy.hasVisibleRenderableGraph(
@@ -13527,9 +13557,19 @@ final class CryptoViewModel: ObservableObject {
 
     private nonisolated static func listSparklinePolicy(
         serverPointCount: Int,
-        serverQuality: String?
+        serverQuality: String?,
+        graphDisplayAllowed: Bool? = nil
     ) -> (decision: String, reason: String) {
         let quality = (serverQuality ?? "").lowercased()
+        if graphDisplayAllowed == false {
+            return ("render_empty", "graph_display_disallowed")
+        }
+        if quality.contains("insufficient_points") || quality.contains("insufficientpoints") {
+            return ("render_empty", "insufficient_points")
+        }
+        if serverPointCount < MarketSparklineRenderPolicy.degradedListSparklinePointCount {
+            return ("render_empty", "insufficient_points")
+        }
         if quality.contains("derived") {
             return ("render_empty", "derived_preview_disabled")
         }
@@ -13544,9 +13584,6 @@ final class CryptoViewModel: ObservableObject {
                 return ("render_low_info", "fallback_quality_not_trusted")
             }
             return ("render_degraded", "server_12_to_23_points")
-        }
-        if serverPointCount >= MarketSparklineRenderPolicy.minimumRenderablePointCount {
-            return ("render_low_info", "server_low_point_count_hydrate")
         }
         return ("render_empty", "ticker_missing_list_sparkline_hydrate")
     }
@@ -13585,11 +13622,16 @@ final class CryptoViewModel: ObservableObject {
         rawSource: String?,
         pointCount: Int
     ) -> String {
-        guard pointCount >= MarketSparklineRenderPolicy.degradedListSparklinePointCount else {
-            return "fallbackListSparkline"
-        }
-
         let normalizedSource = (rawSource ?? "").lowercased()
+        if normalizedSource.contains("insufficient_points") || normalizedSource.contains("insufficientpoints") {
+            return "insufficient_points"
+        }
+        if normalizedSource.contains("unavailable") {
+            return "unavailable"
+        }
+        guard pointCount >= MarketSparklineRenderPolicy.degradedListSparklinePointCount else {
+            return normalizedSource.contains("ticker_ring_buffer") ? "ticker_ring_buffer" : "fallbackListSparkline"
+        }
         if normalizedSource.contains("candle") || normalizedSource.contains("provider_candle") {
             return "providerCandle24"
         }
@@ -13597,6 +13639,20 @@ final class CryptoViewModel: ObservableObject {
             return "staleListSparkline24"
         }
         return "listSparkline24"
+    }
+
+    private nonisolated static func tickerListSparklineDescriptor(
+        _ ticker: TickerData,
+        fallback: String
+    ) -> String {
+        let components = [
+            ticker.sparklineSource,
+            ticker.sparklineQuality,
+            ticker.graphDisplayAllowed == false ? "graph_display_disallowed" : nil,
+            ticker.sparklineUnavailableReason
+        ]
+            .compactMap { $0 }
+        return components.isEmpty ? fallback : components.joined(separator: "|")
     }
 
     private nonisolated static func isDerivedSparklineSource(_ sourceName: String?) -> Bool {
