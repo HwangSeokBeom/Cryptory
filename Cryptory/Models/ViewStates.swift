@@ -169,6 +169,13 @@ struct MarketScreenPresentationState: Equatable {
     }
 }
 
+struct RecentMarketSearch: Identifiable, Codable, Equatable {
+    let keyword: String
+    let lastSearchedAt: Date
+
+    var id: String { keyword.lowercased() }
+}
+
 struct KimchiScreenPresentationState: Equatable {
     let selectedExchange: Exchange
     let representativeRowsState: ExchangeRowsState<KimchiPremiumCoinViewState>
@@ -345,7 +352,7 @@ enum MarketSparklineRenderPolicy {
     nonisolated static let hydratedPointCount = 4
     nonisolated static let coarseUpperBoundPointCount = 8
     nonisolated static let partialRealPointCountThreshold = 8
-    nonisolated static let promotedGraphPointCountThreshold = 30
+    nonisolated static let promotedGraphPointCountThreshold = 24
 
     private nonisolated static let blockedQualityFragments = [
         "derived_preview",
@@ -420,8 +427,13 @@ enum MarketSparklineRenderPolicy {
     nonisolated static func graphHeightUsage(
         rangeRatio: Double,
         width: CGFloat? = nil,
-        height: CGFloat? = nil
+        height: CGFloat? = nil,
+        isLowInformation: Bool = false
     ) -> Double {
+        if isLowInformation {
+            return 0.24
+        }
+
         let baseUsage: Double
         if rangeRatio < 0.002 {
             baseUsage = 0.26
@@ -446,8 +458,8 @@ enum MarketSparklineRenderPolicy {
     }
 
     nonisolated static func hasHydratedGraph(points: [Double], pointCount: Int) -> Bool {
-        points.filter { $0.isFinite && $0 > 0 }.count >= hydratedPointCount
-            && pointCount >= hydratedPointCount
+        points.filter { $0.isFinite && $0 > 0 }.count >= degradedListSparklinePointCount
+            && pointCount >= degradedListSparklinePointCount
     }
 
     nonisolated static func sourceQualityRank(
@@ -1281,7 +1293,8 @@ enum MarketListDisplayMode: String, CaseIterable, Codable {
                 sparklineColumnLeadingPadding: 8,
                 changeBadgeMinWidth: 0,
                 changeBadgeHeight: 0,
-                sparklineMinimumWidth: 58
+                sparklineMinimumWidth: 58,
+                compactQuoteMode: false
             )
         case .info:
             return MarketListDisplayConfiguration(
@@ -1306,7 +1319,8 @@ enum MarketListDisplayMode: String, CaseIterable, Codable {
                 sparklineColumnLeadingPadding: 0,
                 changeBadgeMinWidth: 0,
                 changeBadgeHeight: 0,
-                sparklineMinimumWidth: 0
+                sparklineMinimumWidth: 0,
+                compactQuoteMode: false
             )
         case .emphasis:
             return MarketListDisplayConfiguration(
@@ -1331,7 +1345,8 @@ enum MarketListDisplayMode: String, CaseIterable, Codable {
                 sparklineColumnLeadingPadding: 8,
                 changeBadgeMinWidth: 66,
                 changeBadgeHeight: 30,
-                sparklineMinimumWidth: 58
+                sparklineMinimumWidth: 58,
+                compactQuoteMode: false
             )
         }
     }
@@ -1360,6 +1375,94 @@ struct MarketListDisplayConfiguration: Equatable {
     let changeBadgeMinWidth: CGFloat
     let changeBadgeHeight: CGFloat
     let sparklineMinimumWidth: CGFloat
+    let compactQuoteMode: Bool
+
+    nonisolated func adapted(for quoteCurrency: MarketQuoteCurrency) -> MarketListDisplayConfiguration {
+        guard quoteCurrency == .btc || quoteCurrency == .eth else {
+            return self
+        }
+
+        switch mode {
+        case .chart:
+            return MarketListDisplayConfiguration(
+                mode: mode,
+                title: title,
+                subtitle: subtitle,
+                showsSparkline: showsSparkline,
+                sparklineWidth: 52,
+                sparklineHeight: sparklineHeight,
+                showsSymbolImage: showsSymbolImage,
+                emphasizesChangeRate: emphasizesChangeRate,
+                compactLayout: compactLayout,
+                showsVolume: showsVolume,
+                rowHeight: rowHeight,
+                rowVerticalPadding: rowVerticalPadding,
+                symbolColumnMinimumWidth: 64,
+                symbolImageSize: symbolImageSize,
+                priceWidth: 78,
+                changeWidth: 50,
+                volumeWidth: 52,
+                changeColumnLeadingPadding: 4,
+                sparklineColumnLeadingPadding: 4,
+                changeBadgeMinWidth: changeBadgeMinWidth,
+                changeBadgeHeight: changeBadgeHeight,
+                sparklineMinimumWidth: 52,
+                compactQuoteMode: true
+            )
+        case .info:
+            return MarketListDisplayConfiguration(
+                mode: mode,
+                title: title,
+                subtitle: subtitle,
+                showsSparkline: showsSparkline,
+                sparklineWidth: sparklineWidth,
+                sparklineHeight: sparklineHeight,
+                showsSymbolImage: showsSymbolImage,
+                emphasizesChangeRate: emphasizesChangeRate,
+                compactLayout: compactLayout,
+                showsVolume: showsVolume,
+                rowHeight: rowHeight,
+                rowVerticalPadding: rowVerticalPadding,
+                symbolColumnMinimumWidth: 80,
+                symbolImageSize: symbolImageSize,
+                priceWidth: 84,
+                changeWidth: 50,
+                volumeWidth: 58,
+                changeColumnLeadingPadding: 6,
+                sparklineColumnLeadingPadding: sparklineColumnLeadingPadding,
+                changeBadgeMinWidth: changeBadgeMinWidth,
+                changeBadgeHeight: changeBadgeHeight,
+                sparklineMinimumWidth: sparklineMinimumWidth,
+                compactQuoteMode: true
+            )
+        case .emphasis:
+            return MarketListDisplayConfiguration(
+                mode: mode,
+                title: title,
+                subtitle: subtitle,
+                showsSparkline: showsSparkline,
+                sparklineWidth: sparklineWidth,
+                sparklineHeight: sparklineHeight,
+                showsSymbolImage: showsSymbolImage,
+                emphasizesChangeRate: emphasizesChangeRate,
+                compactLayout: compactLayout,
+                showsVolume: showsVolume,
+                rowHeight: rowHeight,
+                rowVerticalPadding: rowVerticalPadding,
+                symbolColumnMinimumWidth: 78,
+                symbolImageSize: symbolImageSize,
+                priceWidth: 84,
+                changeWidth: changeWidth,
+                volumeWidth: volumeWidth,
+                changeColumnLeadingPadding: 6,
+                sparklineColumnLeadingPadding: 6,
+                changeBadgeMinWidth: changeBadgeMinWidth,
+                changeBadgeHeight: changeBadgeHeight,
+                sparklineMinimumWidth: sparklineMinimumWidth,
+                compactQuoteMode: true
+            )
+        }
+    }
 }
 
 enum MarketRowDataState: Equatable {
@@ -1532,7 +1635,14 @@ private final class MarketSparklineGeometryCache {
         let computedRelativeRange = range / scale
         let relativeRange = MarketSparklineRenderPolicy.validRangeRatioOverride(rangeRatioOverride)
             ?? computedRelativeRange
-        let graphHeightUsage = MarketSparklineRenderPolicy.graphHeightUsage(rangeRatio: relativeRange)
+        let shapeQuality = MarketSparklineRenderPolicy.shapeQuality(
+            points: finitePoints,
+            pointCount: finitePoints.count
+        )
+        let graphHeightUsage = MarketSparklineRenderPolicy.graphHeightUsage(
+            rangeRatio: relativeRange,
+            isLowInformation: shapeQuality.isLowInformationListSparkline
+        )
         let middleValue = (minValue + maxValue) / 2
         let normalizedPoints = finitePoints.enumerated().map { index, value -> CGPoint in
             let x = finitePoints.count == 1 ? 0 : CGFloat(index) / CGFloat(finitePoints.count - 1)
@@ -1655,7 +1765,9 @@ struct MarketSparklineRenderPayload: Equatable {
 
     nonisolated var isLowInformationFirstPaintCandidate: Bool {
         hasRenderableGraph
-            && (pointCount <= 3 || shapeQuality.isFlatLookingLowInformation)
+            && (pointCount < MarketSparklineRenderPolicy.degradedListSparklinePointCount
+                || shapeQuality.isFlatLookingLowInformation
+                || shapeQuality.isLowInformationListSparkline)
     }
 
     private nonisolated static func sparklinePathVersion(
@@ -1731,6 +1843,11 @@ struct MarketRowViewState: Identifiable, Equatable {
     let dataState: MarketRowDataState
 
     nonisolated var symbol: String { coin.symbol }
+    nonisolated var baseSymbol: String { coin.baseSymbol(quoteCurrency: marketIdentity.quoteCurrency) }
+    nonisolated var quoteCurrency: String { marketIdentity.quoteCurrency.rawValue }
+    nonisolated var pairDisplayName: String { coin.pairDisplayName(quoteCurrency: marketIdentity.quoteCurrency) }
+    nonisolated var listSymbolDisplayName: String { coin.listSymbolDisplayName(quoteCurrency: marketIdentity.quoteCurrency) }
+    nonisolated var detailSymbolDisplayName: String { coin.detailSymbolDisplayName(quoteCurrency: marketIdentity.quoteCurrency) }
     nonisolated var marketId: String? { marketIdentity.marketId }
     nonisolated var canonicalSymbol: String { coin.canonicalSymbol }
     nonisolated var displaySymbol: String { coin.displaySymbol }

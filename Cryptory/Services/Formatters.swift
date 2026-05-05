@@ -43,13 +43,50 @@ struct PriceFormatter {
     nonisolated static func formatMarketPrice(_ value: Double, quoteCurrency: MarketQuoteCurrency) -> String {
         switch quoteCurrency {
         case .krw:
-            return formatPrice(value)
+            return formatKRWPrice(value)
         case .btc:
-            return formatBTC(value)
+            return "\(formatCryptoQuotePrice(value, maxFractionDigits: 8)) BTC"
         case .usdt:
-            return "\(formatPrice(value)) USDT"
+            return "\(formatUSDTPrice(value)) USDT"
         case .eth:
-            return "\(value.formatted(.number.precision(.fractionLength(0...8)))) ETH"
+            return "\(formatCryptoQuotePrice(value, maxFractionDigits: 8)) ETH"
+        }
+    }
+
+    nonisolated static func formatMarketListPrice(_ value: Double, quoteCurrency: MarketQuoteCurrency) -> String {
+        let formattedPrice: String
+        let rule: String
+        switch quoteCurrency {
+        case .krw:
+            formattedPrice = formatKRWPrice(value)
+            rule = "krw_integer_or_2_fraction"
+        case .usdt:
+            formattedPrice = formatUSDTPrice(value)
+            rule = value >= 1 ? "usdt_2_to_4_decimals" : "usdt_significant_4_to_6"
+        case .btc:
+            formattedPrice = formatCryptoQuotePrice(value, maxFractionDigits: 8)
+            rule = "btc_significant_4_to_6_max_8_fraction"
+        case .eth:
+            formattedPrice = formatCryptoQuotePrice(value, maxFractionDigits: 8)
+            rule = "eth_significant_4_to_6_max_8_fraction"
+        }
+        AppLogger.debug(
+            .lifecycle,
+            "[PriceFormatDebug] quoteCurrency=\(quoteCurrency.rawValue) rawPrice=\(value) formattedPrice=\(formattedPrice) formatterRule=\(rule) symbol=\(quoteCurrency.rawValue)"
+        )
+        return formattedPrice
+    }
+
+    nonisolated static func formatMarketVolume(_ value: Double, quoteCurrency: MarketQuoteCurrency) -> String {
+        switch quoteCurrency {
+        case .krw:
+            return formatVolume(value)
+        case .usdt:
+            return formatCompactDecimalAmount(value)
+        case .btc:
+            return formatCryptoVolume(value)
+        case .eth:
+            return formatCryptoVolume(value)
         }
     }
 
@@ -79,6 +116,96 @@ struct PriceFormatter {
             return "₩" + formatInteger(value)
         }
         return formatKRW(value)
+    }
+
+    nonisolated private static func formatKRWPrice(_ value: Double) -> String {
+        if value >= 1_000 {
+            return value.formatted(.number.precision(.fractionLength(0)))
+        }
+        if value >= 1 {
+            return value.formatted(.number.precision(.fractionLength(0...2)))
+        }
+        return value.formatted(.number.precision(.fractionLength(0...4)))
+    }
+
+    nonisolated private static func formatUSDTPrice(_ value: Double) -> String {
+        if value >= 1 {
+            return value.formatted(.number.precision(.fractionLength(0...4)))
+        }
+        return formatSignificantDecimal(value, significantDigits: 5, maxFractionDigits: 8)
+    }
+
+    nonisolated private static func formatCryptoQuotePrice(_ value: Double, maxFractionDigits: Int) -> String {
+        guard value.isFinite else { return "—" }
+        if value == 0 { return "0" }
+        let absoluteValue = abs(value)
+        if absoluteValue < 0.000_000_01 {
+            return formatScientific(value, significantDigits: 2)
+        }
+        return formatSignificantDecimal(value, significantDigits: 5, maxFractionDigits: maxFractionDigits)
+    }
+
+    nonisolated private static func formatCryptoVolume(_ value: Double) -> String {
+        let absoluteValue = abs(value)
+        if absoluteValue >= 1_000 {
+            return formatCompactDecimalAmount(value)
+        }
+        if absoluteValue >= 0.1 {
+            return String(format: "%.2f", value)
+        }
+        return formatSignificantDecimal(value, significantDigits: 3, maxFractionDigits: 4)
+    }
+
+    nonisolated private static func formatCompactDecimalAmount(_ value: Double) -> String {
+        let absoluteValue = abs(value)
+        if absoluteValue >= 1_000_000_000 {
+            return formatCompactSuffixed(value / 1_000_000_000, suffix: "B")
+        }
+        if absoluteValue >= 1_000_000 {
+            return formatCompactSuffixed(value / 1_000_000, suffix: "M")
+        }
+        if absoluteValue >= 1_000 {
+            return formatCompactSuffixed(value / 1_000, suffix: "K")
+        }
+        return formatSignificantDecimal(value, significantDigits: 4, maxFractionDigits: 4)
+    }
+
+    nonisolated private static func formatSignificantDecimal(
+        _ value: Double,
+        significantDigits: Int,
+        maxFractionDigits: Int
+    ) -> String {
+        guard value.isFinite else { return "—" }
+        guard value != 0 else { return "0" }
+
+        let absoluteValue = abs(value)
+        let exponent = Int(floor(log10(absoluteValue)))
+        let fractionDigits = min(max(significantDigits - exponent - 1, 0), maxFractionDigits)
+        return trimTrailingZeros(String(format: "%.\(fractionDigits)f", value))
+    }
+
+    nonisolated private static func trimTrailingZeros(_ value: String) -> String {
+        var trimmed = value
+        while trimmed.contains(".") && trimmed.last == "0" {
+            trimmed.removeLast()
+        }
+        if trimmed.last == "." {
+            trimmed.removeLast()
+        }
+        return trimmed
+    }
+
+    nonisolated private static func formatCompactSuffixed(_ value: Double, suffix: String) -> String {
+        "\(trimTrailingZeros(String(format: "%.2f", value)))\(suffix)"
+    }
+
+    nonisolated private static func formatScientific(_ value: Double, significantDigits: Int) -> String {
+        let fractionDigits = max(significantDigits - 1, 0)
+        let parts = String(format: "%.\(fractionDigits)e", value).split(separator: "e", maxSplits: 1)
+        guard parts.count == 2, let exponent = Int(parts[1]) else {
+            return String(format: "%.\(fractionDigits)e", value)
+        }
+        return "\(trimTrailingZeros(String(parts[0])))e\(exponent)"
     }
 
     nonisolated static func formatPercent(_ value: Double) -> String {

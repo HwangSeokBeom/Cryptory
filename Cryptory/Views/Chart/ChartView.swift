@@ -119,7 +119,7 @@ struct ChartView: View {
 
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 8) {
-                        Text(coin.displaySymbol)
+                        Text(coin.detailSymbolDisplayName(quoteCurrency: vm.selectedQuoteCurrency))
                             .font(.system(size: 18, weight: .heavy))
                             .foregroundColor(.themeText)
                         Text(coin.name)
@@ -486,7 +486,7 @@ struct ChartView: View {
             }
 
             if info == nil {
-                Text("\(coin.displaySymbol) 시장 정보를 불러오는 중입니다. 제공되지 않는 항목은 준비 상태로 표시됩니다.")
+                Text("\(coin.detailSymbolDisplayName(quoteCurrency: vm.selectedQuoteCurrency)) 시장 정보를 불러오는 중입니다. 제공되지 않는 항목은 준비 상태로 표시됩니다.")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundColor(.textMuted)
                     .lineSpacing(2)

@@ -3165,15 +3165,27 @@ private func marketQuoteMatches(_ coin: CoinInfo, quoteCurrency: MarketQuoteCurr
         let separators = CharacterSet(charactersIn: "-_/:")
         let components = marketId.components(separatedBy: separators).filter { !$0.isEmpty }
         let knownQuotes = Set(MarketQuoteCurrency.allCases.map(\.rawValue))
-        if let first = components.first, knownQuotes.contains(first) {
-            return first == quote
+        if components.first == quote || components.last == quote {
+            return true
         }
-        return components.last == quote
+        if let first = components.first, knownQuotes.contains(first) {
+            return false
+        }
+        if let last = components.last, knownQuotes.contains(last) {
+            return false
+        }
+        return quoteCurrency == .krw
     }
-    if quote == "USDT" || quote == "KRW" || quote == "BTC" || quote == "ETH" {
-        return marketId.hasPrefix(quote) || marketId.hasSuffix(quote)
+    let knownQuotesByPriority = ["FDUSD", "USDT", "USDC"] + MarketQuoteCurrency.allCases.map(\.rawValue)
+    for knownQuote in knownQuotesByPriority.sorted(by: { $0.count > $1.count }) {
+        if marketId.hasPrefix(knownQuote), marketId.count > knownQuote.count {
+            return knownQuote == quote
+        }
+        if marketId.hasSuffix(knownQuote), marketId.count > knownQuote.count {
+            return knownQuote == quote
+        }
     }
-    return true
+    return quoteCurrency == .krw
 }
 
 private func deduplicatedSymbols(_ symbols: [String]) -> [String] {

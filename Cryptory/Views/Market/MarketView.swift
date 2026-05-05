@@ -44,7 +44,16 @@ struct MarketView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            SearchBar(text: $vm.searchQuery)
+            SearchBar(
+                text: $vm.searchQuery,
+                onFocusChanged: { isFocused in
+                    vm.setMarketSearchFocused(isFocused)
+                },
+                onSubmit: {
+                    vm.submitMarketSearch()
+                }
+            )
+            recentSearchSection
             MarketSegmentedControl(selection: $vm.marketFilter)
                 .padding(.bottom, 10)
             if !vm.supportedQuoteCurrencies.isEmpty {
@@ -132,7 +141,7 @@ struct MarketView: View {
                 subtitle: "거래대금 상위 종목부터 즉시 반응하게 보여줍니다.",
                 representativeTitle: "대표 종목",
                 listTitle: quoteMarketName,
-                volumeTitle: "거래대금",
+                volumeTitle: volumeTitle(for: vm.selectedQuoteCurrency),
                 accentStart: vm.selectedExchange.color.opacity(0.92),
                 accentEnd: vm.selectedExchange.color.opacity(0.58)
             )
@@ -142,7 +151,7 @@ struct MarketView: View {
                 subtitle: "빗썸 체감에 맞춰 강한 변동 종목을 먼저 보여줍니다.",
                 representativeTitle: "주요 종목",
                 listTitle: quoteMarketName,
-                volumeTitle: "거래량",
+                volumeTitle: volumeTitle(for: vm.selectedQuoteCurrency),
                 accentStart: vm.selectedExchange.color.opacity(0.88),
                 accentEnd: Color(hex: "#F8C86A")
             )
@@ -152,7 +161,7 @@ struct MarketView: View {
                 subtitle: "대표 종목과 전체 리스트가 순차적으로 채워집니다.",
                 representativeTitle: "랭킹 보드",
                 listTitle: quoteMarketName,
-                volumeTitle: "거래량",
+                volumeTitle: volumeTitle(for: vm.selectedQuoteCurrency),
                 accentStart: vm.selectedExchange.color.opacity(0.9),
                 accentEnd: Color(hex: "#8DE4DB")
             )
@@ -162,7 +171,7 @@ struct MarketView: View {
                 subtitle: "선택 직후 대표 종목부터 먼저 보여드리고 전체를 확장합니다.",
                 representativeTitle: "주요 페어",
                 listTitle: quoteMarketName,
-                volumeTitle: "거래량",
+                volumeTitle: volumeTitle(for: vm.selectedQuoteCurrency),
                 accentStart: vm.selectedExchange.color.opacity(0.9),
                 accentEnd: Color(hex: "#90B8EA")
             )
@@ -172,10 +181,23 @@ struct MarketView: View {
                 subtitle: "국내 김프 비교용 글로벌 기준가 흐름을 빠르게 확인합니다.",
                 representativeTitle: "대표 마켓",
                 listTitle: quoteMarketName,
-                volumeTitle: "거래량",
+                volumeTitle: volumeTitle(for: vm.selectedQuoteCurrency),
                 accentStart: vm.selectedExchange.color.opacity(0.88),
                 accentEnd: Color(hex: "#F7D55B")
             )
+        }
+    }
+
+    private func volumeTitle(for quoteCurrency: MarketQuoteCurrency) -> String {
+        switch quoteCurrency {
+        case .krw:
+            return "거래대금"
+        case .usdt:
+            return "거래대금(USDT)"
+        case .btc:
+            return "거래대금(BTC)"
+        case .eth:
+            return "거래대금(ETH)"
         }
     }
 
@@ -207,6 +229,68 @@ struct MarketView: View {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .fill(Color.bgTertiary.opacity(0.85))
         )
+    }
+
+    @ViewBuilder
+    private var recentSearchSection: some View {
+        if vm.isMarketSearchFocused && vm.searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && vm.recentMarketSearches.isEmpty == false {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Text("최근 검색")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundColor(.textSecondary)
+                    Spacer()
+                    Button {
+                        vm.clearRecentMarketSearches()
+                    } label: {
+                        Text("전체 삭제")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(.textMuted)
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                ForEach(vm.recentMarketSearches) { item in
+                    HStack(spacing: 10) {
+                        Button {
+                            vm.selectRecentMarketSearch(item.keyword)
+                        } label: {
+                            HStack(spacing: 8) {
+                                Image(systemName: "clock")
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundColor(.textMuted)
+                                Text(item.keyword)
+                                    .font(.system(size: 13, weight: .medium))
+                                    .foregroundColor(.themeText)
+                                    .lineLimit(1)
+                                Spacer()
+                            }
+                        }
+                        .buttonStyle(.plain)
+
+                        Button {
+                            vm.deleteRecentMarketSearch(item.keyword)
+                        } label: {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 11, weight: .bold))
+                                .foregroundColor(.textMuted)
+                                .frame(width: 24, height: 24)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .background(Color.bgSecondary.opacity(0.96))
+            .overlay(
+                Rectangle()
+                    .fill(Color.themeBorder.opacity(0.32))
+                    .frame(height: 1),
+                alignment: .bottom
+            )
+            .padding(.bottom, 10)
+        }
     }
 
     private var exchangeHero: some View {
@@ -390,6 +474,7 @@ struct MarketView: View {
             if displayConfiguration.showsVolume {
                 Text(marketStyle.volumeTitle)
                     .frame(width: displayConfiguration.volumeWidth, alignment: .trailing)
+                    .padding(.leading, 6)
             }
             if displayConfiguration.showsSparkline {
                 Text("추이")
@@ -400,8 +485,11 @@ struct MarketView: View {
                     .padding(.leading, displayConfiguration.sparklineColumnLeadingPadding)
             }
         }
-        .font(.system(size: 11, weight: .medium))
+        .font(.system(size: displayConfiguration.compactQuoteMode ? 10 : 11, weight: .medium))
         .foregroundColor(.textMuted)
+        .lineLimit(1)
+        .minimumScaleFactor(0.72)
+        .allowsTightening(true)
         .padding(.horizontal, 16)
         .padding(.top, 4)
         .padding(.bottom, 8)
@@ -496,12 +584,12 @@ struct MarketView: View {
             VStack(alignment: .leading, spacing: 12) {
                 HStack(alignment: .top) {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(row.symbol)
+                        Text(row.listSymbolDisplayName)
                             .font(.system(size: 14, weight: .heavy))
                             .foregroundColor(.themeText)
                             .lineLimit(1)
-                            .minimumScaleFactor(0.9)
-                            .fixedSize(horizontal: true, vertical: false)
+                            .minimumScaleFactor(0.85)
+                            .truncationMode(.tail)
                         Text(row.displayName)
                             .font(.system(size: 11))
                             .foregroundColor(.textSecondary)

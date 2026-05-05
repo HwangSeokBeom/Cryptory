@@ -834,4 +834,41 @@ final class PublicContentRepositoryTests: XCTestCase {
         XCTAssertEqual(PriceFormatter.formatPercent(2.97), "+2.97%")
         XCTAssertEqual(PriceFormatter.formatPercent(-1.2), "-1.20%")
     }
+
+    func testMarketListPriceFormatterUsesQuoteSpecificCompactDisplay() {
+        XCTAssertEqual(PriceFormatter.formatMarketListPrice(119_430_000, quoteCurrency: .krw), "119,430,000")
+        XCTAssertEqual(PriceFormatter.formatMarketListPrice(0.0093, quoteCurrency: .krw), "0.0093")
+        XCTAssertEqual(PriceFormatter.formatMarketListPrice(79_904, quoteCurrency: .usdt), "79,904")
+        XCTAssertEqual(PriceFormatter.formatMarketListPrice(0.1101, quoteCurrency: .usdt), "0.1101")
+        XCTAssertEqual(PriceFormatter.formatMarketListPrice(0.000_000_19, quoteCurrency: .btc), "0.00000019")
+        XCTAssertEqual(PriceFormatter.formatMarketListPrice(0.000_002_02, quoteCurrency: .btc), "0.00000202")
+        XCTAssertEqual(PriceFormatter.formatMarketListPrice(0.000_012_26, quoteCurrency: .btc), "0.00001226")
+        XCTAssertEqual(PriceFormatter.formatMarketListPrice(0.000_000_001_2, quoteCurrency: .btc), "1.2e-9")
+        XCTAssertEqual(PriceFormatter.formatMarketListPrice(0.000_031, quoteCurrency: .eth), "0.000031")
+        XCTAssertEqual(PriceFormatter.formatMarketListPrice(0.000_000_45, quoteCurrency: .eth), "0.00000045")
+    }
+
+    func testMarketListVolumeFormatterMovesQuoteUnitOutOfRows() {
+        XCTAssertEqual(PriceFormatter.formatMarketVolume(2.47, quoteCurrency: .btc), "2.47")
+        XCTAssertEqual(PriceFormatter.formatMarketVolume(0.9025, quoteCurrency: .btc), "0.90")
+        XCTAssertEqual(PriceFormatter.formatMarketVolume(0.4432, quoteCurrency: .eth), "0.44")
+        XCTAssertEqual(PriceFormatter.formatMarketVolume(2_400_000, quoteCurrency: .usdt), "2.4M")
+        XCTAssertEqual(PriceFormatter.formatMarketPrice(0.000_000_19, quoteCurrency: .btc), "0.00000019 BTC")
+    }
+
+    func testCryptoQuoteMarketListConfigurationAllocatesCompactMetricColumns() {
+        let configuration = MarketListDisplayMode.chart.configuration.adapted(for: .btc)
+        let fixedMetricWidth = configuration.priceWidth
+            + configuration.changeWidth
+            + configuration.changeColumnLeadingPadding
+            + configuration.volumeWidth
+            + 6
+            + max(configuration.sparklineWidth, configuration.sparklineMinimumWidth)
+            + configuration.sparklineColumnLeadingPadding
+
+        XCTAssertTrue(configuration.compactQuoteMode)
+        XCTAssertGreaterThan(configuration.priceWidth, MarketListDisplayMode.chart.configuration.priceWidth)
+        XCTAssertEqual(configuration.volumeWidth, 58)
+        XCTAssertLessThanOrEqual(configuration.symbolColumnMinimumWidth + fixedMetricWidth, 311)
+    }
 }

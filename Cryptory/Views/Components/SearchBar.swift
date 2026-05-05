@@ -2,6 +2,8 @@ import SwiftUI
 
 struct SearchBar: View {
     @Binding var text: String
+    var onFocusChanged: (Bool) -> Void = { _ in }
+    var onSubmit: () -> Void = {}
     @FocusState private var isFocused: Bool
 
     var body: some View {
@@ -23,6 +25,7 @@ struct SearchBar: View {
                 .textInputAutocapitalization(.never)
                 .submitLabel(.search)
                 .focused($isFocused)
+                .onSubmit(onSubmit)
 
             if !text.isEmpty {
                 Button {
@@ -52,5 +55,8 @@ struct SearchBar: View {
         .padding(.horizontal, 16)
         .padding(.top, 12)
         .padding(.bottom, 10)
+        .onChange(of: isFocused) { _, newValue in
+            onFocusChanged(newValue)
+        }
     }
 }

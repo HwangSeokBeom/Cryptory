@@ -246,6 +246,141 @@ final class ViewModelStateTests: XCTestCase {
         )
     }
 
+    func testMarketSymbolDisplaySeparatesBaseAndPairNames() {
+        XCTAssertEqual(
+            SymbolNormalization.baseAssetCode(rawSymbol: "BTC", marketId: "KRW-BTC", quoteAsset: "KRW"),
+            "BTC"
+        )
+        XCTAssertEqual(
+            SymbolNormalization.baseAssetCode(rawSymbol: "BABY", marketId: "BTC-BABY", quoteAsset: "BTC"),
+            "BABY"
+        )
+        XCTAssertEqual(
+            SymbolNormalization.baseAssetCode(rawSymbol: "BABY/BTC", marketId: "BABY/BTC", quoteAsset: "BTC"),
+            "BABY"
+        )
+        XCTAssertEqual(
+            SymbolNormalization.baseAssetCode(rawSymbol: "BABYBTC", marketId: "BABYBTC", quoteAsset: "BTC"),
+            "BABY"
+        )
+        XCTAssertEqual(
+            SymbolNormalization.baseAssetCode(rawSymbol: "USDT_KRW", marketId: "USDT_KRW", quoteAsset: "KRW"),
+            "USDT"
+        )
+        XCTAssertEqual(
+            SymbolNormalization.baseAssetCode(rawSymbol: "USDT", marketId: "USDT", quoteAsset: "KRW"),
+            "USDT"
+        )
+
+        let baby = CoinCatalog.coin(
+            symbol: "BABY/BTC",
+            exchange: .upbit,
+            marketId: "BTC-BABY",
+            displaySymbol: "BABY/BTC",
+            displayName: "Baby",
+            englishName: "Baby"
+        )
+        let row = MarketRowViewState(
+            selectedExchange: .upbit,
+            exchange: .upbit,
+            sourceExchange: .upbit,
+            quoteCurrency: .btc,
+            coin: baby,
+            priceText: "0.00000001",
+            changeText: "+1.00%",
+            volumeText: "10",
+            sparkline: [],
+            sparklinePointCount: 0,
+            sparklineTimeframe: "1m",
+            hasEnoughSparklineData: false,
+            chartPresentation: .none,
+            baseFreshnessState: .live,
+            graphState: .none,
+            symbolImageState: .missing,
+            isPricePlaceholder: false,
+            isChangePlaceholder: false,
+            isVolumePlaceholder: false,
+            isUp: true,
+            flash: nil,
+            isFavorite: false,
+            dataState: .live
+        )
+
+        XCTAssertEqual(row.baseSymbol, "BABY")
+        XCTAssertEqual(row.quoteCurrency, "BTC")
+        XCTAssertEqual(row.pairDisplayName, "BABY/BTC")
+        XCTAssertEqual(row.listSymbolDisplayName, "BABY")
+        XCTAssertEqual(row.detailSymbolDisplayName, "BABY/BTC")
+        XCTAssertEqual(row.marketIdentity.marketId, "BTC-BABY")
+    }
+
+    @MainActor
+    func testMarketSearchMatchesBaseAndPairDisplayNamesWithinSelectedQuote() async {
+        let repository = SpyMarketRepository()
+        let baby = CoinCatalog.coin(
+            symbol: "BABY/BTC",
+            exchange: .upbit,
+            marketId: "BTC-BABY",
+            displaySymbol: "BABY/BTC",
+            displayName: "Baby",
+            englishName: "Baby"
+        )
+        repository.marketCatalogSnapshots[.upbit] = MarketCatalogSnapshot(
+            exchange: .upbit,
+            markets: [baby],
+            supportedIntervalsBySymbol: ["BABY": ["1m"]],
+            meta: .empty,
+            supportedQuotes: [.krw, .btc],
+            defaultQuoteCurrency: .krw
+        )
+        repository.tickerSnapshots[.upbit] = MarketTickerSnapshot(
+            exchange: .upbit,
+            coins: [baby],
+            tickers: [
+                "BABY": TickerData(
+                    price: 0.00000001,
+                    change: 1,
+                    volume: 10,
+                    high24: 0.00000002,
+                    low24: 0.00000001
+                )
+            ],
+            meta: .empty,
+            supportedQuotes: [.krw, .btc],
+            defaultQuoteCurrency: .krw
+        )
+        let vm = CryptoViewModel(
+            marketRepository: repository,
+            tradingRepository: SpyTradingRepository(),
+            portfolioRepository: SpyPortfolioRepository(),
+            kimchiPremiumRepository: StubKimchiPremiumRepository(),
+            exchangeConnectionsRepository: SpyExchangeConnectionsRepository(),
+            authService: StubAuthenticationService(),
+            publicWebSocketService: NoOpPublicWebSocketService(),
+            privateWebSocketService: NoOpPrivateWebSocketService(),
+            userDefaults: makeIsolatedDefaults()
+        )
+
+        vm.onAppear()
+        vm.updateQuoteCurrency(.btc, source: "unit_symbol_search")
+        await waitUntil {
+            vm.displayedMarketRows.first?.listSymbolDisplayName == "BABY"
+        }
+
+        vm.searchQuery = "BABY/BTC"
+        await waitUntil {
+            vm.displayedMarketRows.count == 1
+        }
+        XCTAssertEqual(vm.displayedMarketRows.first?.listSymbolDisplayName, "BABY")
+        XCTAssertEqual(vm.displayedMarketRows.first?.detailSymbolDisplayName, "BABY/BTC")
+
+        vm.searchQuery = "BABY"
+        await waitUntil {
+            vm.displayedMarketRows.count == 1
+        }
+        XCTAssertEqual(vm.displayedMarketRows.first?.pairDisplayName, "BABY/BTC")
+    }
+
     private func makeTemporaryPNGURL(color: UIColor = .systemBlue) throws -> URL {
         let renderer = UIGraphicsImageRenderer(size: CGSize(width: 24, height: 24))
         let image = renderer.image { context in
@@ -6558,13 +6693,13 @@ final class ViewModelStateTests: XCTestCase {
         let repository = SpyMarketRepository()
         repository.marketCatalogSnapshots[.upbit] = MarketCatalogSnapshot(
             exchange: .upbit,
-            markets: [makeMarketCoin(exchange: .upbit, marketId: "USDT_KRW", symbol: "USDT_KRW", imageURL: nil)],
-            supportedIntervalsBySymbol: ["USDT_KRW": []],
+            markets: [makeMarketCoin(exchange: .upbit, marketId: "USDT_KRW", symbol: "USDT", imageURL: nil)],
+            supportedIntervalsBySymbol: ["USDT": []],
             meta: .empty
         )
         repository.tickerSnapshots[.upbit] = makeTickerSnapshot(
             exchange: .upbit,
-            entries: [(marketId: "USDT_KRW", symbol: "USDT_KRW", price: 1_400, imageURL: nil, sparkline: [])]
+            entries: [(marketId: "USDT_KRW", symbol: "USDT", price: 1_400, imageURL: nil, sparkline: [])]
         )
         let vm = CryptoViewModel(
             marketRepository: repository,
@@ -6579,7 +6714,7 @@ final class ViewModelStateTests: XCTestCase {
 
         vm.onAppear()
         await waitUntil {
-            vm.displayedMarketRows.first?.symbol == "USDT_KRW"
+            vm.displayedMarketRows.first?.symbol == "USDT"
         }
 
         guard let marketIdentity = vm.displayedMarketRows.first?.marketIdentity else {

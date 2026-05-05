@@ -249,7 +249,8 @@ private final class MarketSparklinePathCache {
         let graphHeightUsage = MarketSparklineRenderPolicy.graphHeightUsage(
             rangeRatio: geometry.relativeRange,
             width: size.width,
-            height: size.height
+            height: size.height,
+            isLowInformation: geometry.normalizedPoints.count < MarketSparklineRenderPolicy.degradedListSparklinePointCount
         )
         let usageScale = geometry.graphHeightUsage > 0
             ? graphHeightUsage / geometry.graphHeightUsage
@@ -350,11 +351,12 @@ struct SparklineCanvasConfiguration: Equatable {
     var lowConfidenceStrokeOpacity: Float {
         let source = (payload.sourceName ?? "").lowercased()
         let isLowConfidence = source.contains("fallbacklistsparkline")
+            || payload.pointCount < MarketSparklineRenderPolicy.degradedListSparklinePointCount
             || payload.shapeQuality.isLowInformationListSparkline
         guard isLowConfidence else {
             return visualState.strokeOpacity
         }
-        return min(visualState.strokeOpacity, MarketSparklineVisualState.stale.strokeOpacity)
+        return min(visualState.strokeOpacity, 0.42)
     }
 }
 
@@ -658,6 +660,7 @@ final class SparklineRenderView: UIView {
             }
             strokeLayer.strokeColor = (currentConfiguration.isUp ? UIColor(Color.up) : UIColor(Color.down)).cgColor
             strokeLayer.opacity = currentConfiguration.lowConfidenceStrokeOpacity
+            strokeLayer.lineDashPattern = currentConfiguration.lowConfidenceStrokeOpacity < currentConfiguration.visualState.strokeOpacity ? [3, 3] : nil
             strokeLayer.isHidden = false
             placeholderFillLayer.isHidden = true
             placeholderBorderLayer.isHidden = true
@@ -683,7 +686,7 @@ final class SparklineRenderView: UIView {
                 }
                 AppLogger.debug(
                     .network,
-	                    "[GraphRender] exchange=\(currentConfiguration.marketIdentity.exchange.rawValue) quoteCurrency=\(currentConfiguration.marketIdentity.quoteCurrency.rawValue) marketId=\(currentConfiguration.marketIdentity.marketId ?? currentConfiguration.marketIdentity.symbol) state=\(currentConfiguration.payload.graphState) pointCount=\(currentConfiguration.payload.pointCount) quality=\(currentConfiguration.payload.sourceName ?? currentConfiguration.payload.detailLevel.cacheComponent) isDerived=\(currentConfiguration.payload.detailLevel == .derivedPreview) realSeries=\(MarketSparklineRenderPolicy.isRealSeriesSource(currentConfiguration.payload.sourceName)) width=\(Int(renderSize.width.rounded(.toNearestOrEven))) height=\(Int(renderSize.height.rounded(.toNearestOrEven))) min=\(currentConfiguration.payload.shapeQuality.minValue) max=\(currentConfiguration.payload.shapeQuality.maxValue) mean=\(currentConfiguration.payload.geometry?.meanValue ?? 0) range=\(currentConfiguration.payload.shapeQuality.rawRange) rangeRatio=\(currentConfiguration.payload.geometry?.relativeRange ?? currentConfiguration.payload.shapeQuality.relativeRange) graphHeightUsage=\(MarketSparklineRenderPolicy.graphHeightUsage(rangeRatio: currentConfiguration.payload.geometry?.relativeRange ?? currentConfiguration.payload.shapeQuality.relativeRange, width: renderSize.width, height: renderSize.height)) flat=\(currentConfiguration.payload.shapeQuality.rawRange == 0) directionChanges=\(currentConfiguration.payload.shapeQuality.directionChangeCount) sampledCount=\(currentConfiguration.payload.geometry?.normalizedPoints.count ?? 0) clipped=false lowConfidence=\(currentConfiguration.lowConfidenceStrokeOpacity < currentConfiguration.visualState.strokeOpacity) lowConfidenceReason=\(currentConfiguration.lowConfidenceReason)"
+            "[GraphRender] exchange=\(currentConfiguration.marketIdentity.exchange.rawValue) quoteCurrency=\(currentConfiguration.marketIdentity.quoteCurrency.rawValue) marketId=\(currentConfiguration.marketIdentity.marketId ?? currentConfiguration.marketIdentity.symbol) state=\(currentConfiguration.payload.graphState) pointCount=\(currentConfiguration.payload.pointCount) quality=\(currentConfiguration.payload.sourceName ?? currentConfiguration.payload.detailLevel.cacheComponent) isDerived=\(currentConfiguration.payload.detailLevel == .derivedPreview) realSeries=\(MarketSparklineRenderPolicy.isRealSeriesSource(currentConfiguration.payload.sourceName)) width=\(Int(renderSize.width.rounded(.toNearestOrEven))) height=\(Int(renderSize.height.rounded(.toNearestOrEven))) min=\(currentConfiguration.payload.shapeQuality.minValue) max=\(currentConfiguration.payload.shapeQuality.maxValue) mean=\(currentConfiguration.payload.geometry?.meanValue ?? 0) range=\(currentConfiguration.payload.shapeQuality.rawRange) rangeRatio=\(currentConfiguration.payload.geometry?.relativeRange ?? currentConfiguration.payload.shapeQuality.relativeRange) graphHeightUsage=\(MarketSparklineRenderPolicy.graphHeightUsage(rangeRatio: currentConfiguration.payload.geometry?.relativeRange ?? currentConfiguration.payload.shapeQuality.relativeRange, width: renderSize.width, height: renderSize.height, isLowInformation: currentConfiguration.payload.shapeQuality.isLowInformationListSparkline)) flat=\(currentConfiguration.payload.shapeQuality.rawRange == 0) directionChanges=\(currentConfiguration.payload.shapeQuality.directionChangeCount) sampledCount=\(currentConfiguration.payload.geometry?.normalizedPoints.count ?? 0) clipped=false lowConfidence=\(currentConfiguration.lowConfidenceStrokeOpacity < currentConfiguration.visualState.strokeOpacity) lowConfidenceReason=\(currentConfiguration.lowConfidenceReason)"
                 )
                 if effectiveReason == "detail_upgrade" {
                     AppLogger.debug(
@@ -1017,7 +1020,7 @@ struct SparklineView: View, Equatable {
             .onAppear {
                 AppLogger.debug(
                     .network,
-	                    "[GraphRender] exchange=\(marketIdentity.exchange.rawValue) quoteCurrency=\(marketIdentity.quoteCurrency.rawValue) marketId=\(marketIdentity.marketId ?? marketIdentity.symbol) state=\(resolvedConfiguration.payload.graphState) pointCount=\(resolvedConfiguration.payload.pointCount) quality=\(resolvedConfiguration.payload.sourceName ?? resolvedConfiguration.payload.detailLevel.cacheComponent) isDerived=\(resolvedConfiguration.payload.detailLevel == .derivedPreview) realSeries=\(MarketSparklineRenderPolicy.isRealSeriesSource(resolvedConfiguration.payload.sourceName)) width=\(Int(width)) height=\(Int(height)) min=\(resolvedConfiguration.payload.shapeQuality.minValue) max=\(resolvedConfiguration.payload.shapeQuality.maxValue) mean=\(resolvedConfiguration.payload.geometry?.meanValue ?? 0) range=\(resolvedConfiguration.payload.shapeQuality.rawRange) rangeRatio=\(resolvedConfiguration.payload.geometry?.relativeRange ?? resolvedConfiguration.payload.shapeQuality.relativeRange) graphHeightUsage=\(MarketSparklineRenderPolicy.graphHeightUsage(rangeRatio: resolvedConfiguration.payload.geometry?.relativeRange ?? resolvedConfiguration.payload.shapeQuality.relativeRange, width: width, height: height)) flat=\(resolvedConfiguration.payload.shapeQuality.rawRange == 0) directionChanges=\(resolvedConfiguration.payload.shapeQuality.directionChangeCount) sampledCount=\(resolvedConfiguration.payload.geometry?.normalizedPoints.count ?? 0) clipped=false lowConfidence=\(resolvedConfiguration.lowConfidenceStrokeOpacity < resolvedConfiguration.visualState.strokeOpacity) lowConfidenceReason=\(resolvedConfiguration.lowConfidenceReason)"
+                    "[GraphRender] exchange=\(marketIdentity.exchange.rawValue) quoteCurrency=\(marketIdentity.quoteCurrency.rawValue) marketId=\(marketIdentity.marketId ?? marketIdentity.symbol) state=\(resolvedConfiguration.payload.graphState) pointCount=\(resolvedConfiguration.payload.pointCount) quality=\(resolvedConfiguration.payload.sourceName ?? resolvedConfiguration.payload.detailLevel.cacheComponent) isDerived=\(resolvedConfiguration.payload.detailLevel == .derivedPreview) realSeries=\(MarketSparklineRenderPolicy.isRealSeriesSource(resolvedConfiguration.payload.sourceName)) width=\(Int(width)) height=\(Int(height)) min=\(resolvedConfiguration.payload.shapeQuality.minValue) max=\(resolvedConfiguration.payload.shapeQuality.maxValue) mean=\(resolvedConfiguration.payload.geometry?.meanValue ?? 0) range=\(resolvedConfiguration.payload.shapeQuality.rawRange) rangeRatio=\(resolvedConfiguration.payload.geometry?.relativeRange ?? resolvedConfiguration.payload.shapeQuality.relativeRange) graphHeightUsage=\(MarketSparklineRenderPolicy.graphHeightUsage(rangeRatio: resolvedConfiguration.payload.geometry?.relativeRange ?? resolvedConfiguration.payload.shapeQuality.relativeRange, width: width, height: height, isLowInformation: resolvedConfiguration.payload.shapeQuality.isLowInformationListSparkline)) flat=\(resolvedConfiguration.payload.shapeQuality.rawRange == 0) directionChanges=\(resolvedConfiguration.payload.shapeQuality.directionChangeCount) sampledCount=\(resolvedConfiguration.payload.geometry?.normalizedPoints.count ?? 0) clipped=false lowConfidence=\(resolvedConfiguration.lowConfidenceStrokeOpacity < resolvedConfiguration.visualState.strokeOpacity) lowConfidenceReason=\(resolvedConfiguration.lowConfidenceReason)"
                 )
             }
     }
