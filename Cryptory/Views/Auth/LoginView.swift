@@ -22,7 +22,6 @@ struct LoginView: View {
         .privacyPolicy,
         .communityPolicy,
         .support,
-        .deleteAccount,
         .investmentDisclaimer,
         .home
     ]

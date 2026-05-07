@@ -68,6 +68,7 @@ final class NetworkAndAuthTests: XCTestCase {
         XCTAssertEqual(configuration.portfolioHistoryPath, "/portfolio/history")
         XCTAssertEqual(configuration.kimchiPremiumPath, "/kimchi-premium")
         XCTAssertEqual(configuration.exchangeConnectionsPath, "/exchange-connections")
+        XCTAssertEqual(configuration.deleteAccountPath, "/account")
     }
 
     func testSocialAuthConfigurationUsesContractPaths() throws {
@@ -267,6 +268,35 @@ final class NetworkAndAuthTests: XCTestCase {
         XCTAssertEqual(body["fullName"] as? String, "Apple User")
         XCTAssertEqual(body["email"] as? String, "apple@example.com")
         XCTAssertNil(body["idToken"])
+    }
+
+    func testDeleteAccountUsesAccountEndpointAndBearerToken() async throws {
+        URLProtocolSpy.reset()
+        URLProtocolSpy.responseData = Data(
+            """
+            {
+              "success": true,
+              "data": {
+                "deleted": true
+              }
+            }
+            """.utf8
+        )
+        let service = makeAuthenticationService()
+
+        try await service.deleteAccount(
+            session: AuthSession(
+                accessToken: "delete-access-token",
+                refreshToken: "refresh-token",
+                userID: "user-1",
+                email: "user@example.com"
+            )
+        )
+
+        XCTAssertEqual(URLProtocolSpy.lastRequest?.url?.path, "/account")
+        XCTAssertEqual(URLProtocolSpy.lastRequest?.httpMethod, "DELETE")
+        XCTAssertEqual(URLProtocolSpy.lastRequest?.value(forHTTPHeaderField: "Authorization"), "Bearer delete-access-token")
+        XCTAssertNil(URLProtocolSpy.lastRequestBody)
     }
 
     func testSignUpUsesServerAuthRegisterPathAndParsesNestedUserResponse() async throws {

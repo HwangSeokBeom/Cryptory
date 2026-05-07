@@ -271,6 +271,26 @@ final class DelayedMarketRepository: MarketRepositoryProtocol {
         if let snapshot = sparklineSnapshotsByKey[key] {
             return snapshot
         }
+        if let candleSnapshot = candleSnapshotsByKey[key] {
+            fetchedCandles.append((symbol, exchange, interval))
+            let points = candleSnapshot.candles
+                .sorted { $0.time < $1.time }
+                .map(\.close)
+                .filter { $0 > 0 }
+            return MarketSparklineSnapshot(
+                exchange: exchange,
+                symbol: symbol,
+                interval: interval,
+                points: points,
+                pointCount: points.count,
+                source: "candle_snapshot",
+                quality: "provider_candle",
+                isDerived: false,
+                realSeries: true,
+                graphDisplayAllowed: true,
+                meta: candleSnapshot.meta
+            )
+        }
         throw NetworkServiceError.httpError(404, "sparkline endpoint is unavailable", .maintenance)
     }
 }
@@ -348,6 +368,36 @@ final class SequencedCandleMarketRepository: MarketRepositoryProtocol {
         case .failure(let error):
             throw error
         }
+    }
+
+    func fetchSparkline(
+        symbol: String,
+        exchange: Exchange,
+        quoteCurrency: MarketQuoteCurrency,
+        interval: String,
+        limit: Int
+    ) async throws -> MarketSparklineSnapshot {
+        let snapshot = try await fetchCandles(
+            symbol: symbol,
+            exchange: exchange,
+            quoteCurrency: quoteCurrency,
+            interval: interval,
+            limit: limit
+        )
+        let points = snapshot.candles.map(\.close).filter { $0.isFinite && $0 > 0 }
+        return MarketSparklineSnapshot(
+            exchange: snapshot.exchange,
+            symbol: symbol,
+            interval: snapshot.interval,
+            points: Array(points.suffix(limit)),
+            pointCount: min(points.count, limit),
+            source: "provider_candle",
+            quality: "provider_candle",
+            isDerived: false,
+            realSeries: true,
+            graphDisplayAllowed: true,
+            meta: snapshot.meta
+        )
     }
 }
 
@@ -707,13 +757,16 @@ final class SpyAuthenticationService: AuthenticationServiceProtocol {
     var refreshResult: Result<AuthSession, Error> = .success(
         AuthSession(accessToken: "refreshed-token", refreshToken: "refresh-token", userID: "user-1", email: "user@example.com")
     )
+    var deleteAccountResult: Result<Void, Error> = .success(())
     private(set) var signInCallCount = 0
     private(set) var signUpCallCount = 0
     private(set) var refreshCallCount = 0
     private(set) var signOutCallCount = 0
     private(set) var deleteAccountCallCount = 0
     var shouldBlockSignUp = false
+    var shouldBlockDeleteAccount = false
     private var signUpContinuation: CheckedContinuation<Void, Never>?
+    private var deleteAccountContinuation: CheckedContinuation<Void, Never>?
 
     init(
         signInResult: Result<AuthSession, Error> = .success(
@@ -765,12 +818,24 @@ final class SpyAuthenticationService: AuthenticationServiceProtocol {
 
     func deleteAccount(session: AuthSession) async throws {
         deleteAccountCallCount += 1
+        if shouldBlockDeleteAccount {
+            await withCheckedContinuation { continuation in
+                deleteAccountContinuation = continuation
+            }
+        }
+        try deleteAccountResult.get()
     }
 
     func resumeSignUp() {
         shouldBlockSignUp = false
         signUpContinuation?.resume()
         signUpContinuation = nil
+    }
+
+    func resumeDeleteAccount() {
+        shouldBlockDeleteAccount = false
+        deleteAccountContinuation?.resume()
+        deleteAccountContinuation = nil
     }
 }
 

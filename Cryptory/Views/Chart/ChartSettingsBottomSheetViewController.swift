@@ -191,6 +191,7 @@ final class ChartSettingsBottomSheetViewController: UIViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .chartSheetBackground
+        view.accessibilityIdentifier = "chart_settings_sheet"
         setupRoot()
         buildHeader()
         buildContent()
@@ -393,7 +394,8 @@ final class ChartSettingsBottomSheetViewController: UIViewController {
 
         let comparisonRow = ChartSettingsNavigationRow(
             title: "종목 비교",
-            subtitle: "최대 5개 종목까지 동시에 비교해볼 수 있습니다."
+            subtitle: "최대 5개 종목까지 동시에 비교해볼 수 있습니다.",
+            accessibilityIdentifier: "chart_settings_compare_row"
         )
         comparisonRow.addTarget(self, action: #selector(compareSymbolsTapped), for: .touchUpInside)
 
@@ -820,6 +822,7 @@ private final class ChartSettingsTabButton: UIControl {
 
         accessibilityTraits = .button
         accessibilityLabel = tab.title
+        accessibilityIdentifier = tab.accessibilityIdentifier
         setActive(false)
     }
 
@@ -1076,10 +1079,11 @@ private final class ChartSettingsToggleRow: UIControl {
 
 private final class ChartSettingsNavigationRow: UIControl {
     private let subtitleLabel = UILabel()
+    private let tapButton = UIButton(type: .custom)
 
-    init(title: String, subtitle: String) {
+    init(title: String, subtitle: String, accessibilityIdentifier: String? = nil) {
         super.init(frame: .zero)
-        setup(title: title, subtitle: subtitle)
+        setup(title: title, subtitle: subtitle, accessibilityIdentifier: accessibilityIdentifier)
     }
 
     @available(*, unavailable)
@@ -1087,7 +1091,7 @@ private final class ChartSettingsNavigationRow: UIControl {
         fatalError("init(coder:) has not been implemented")
     }
 
-    private func setup(title: String, subtitle: String) {
+    private func setup(title: String, subtitle: String, accessibilityIdentifier: String?) {
         let textStack = UIStackView()
         textStack.axis = .vertical
         textStack.spacing = 7
@@ -1112,6 +1116,16 @@ private final class ChartSettingsNavigationRow: UIControl {
         addSubview(textStack)
         addSubview(chevron)
 
+        tapButton.backgroundColor = .clear
+        tapButton.translatesAutoresizingMaskIntoConstraints = false
+        tapButton.accessibilityLabel = title
+        tapButton.accessibilityHint = "상세 화면으로 이동"
+        tapButton.accessibilityIdentifier = accessibilityIdentifier
+        tapButton.addAction(UIAction { [weak self] _ in
+            self?.sendActions(for: .touchUpInside)
+        }, for: .touchUpInside)
+        addSubview(tapButton)
+
         NSLayoutConstraint.activate([
             heightAnchor.constraint(greaterThanOrEqualToConstant: 90),
             textStack.leadingAnchor.constraint(equalTo: leadingAnchor),
@@ -1122,12 +1136,19 @@ private final class ChartSettingsNavigationRow: UIControl {
             chevron.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
             chevron.centerYAnchor.constraint(equalTo: centerYAnchor),
             chevron.widthAnchor.constraint(equalToConstant: 18),
-            chevron.heightAnchor.constraint(equalToConstant: 24)
+            chevron.heightAnchor.constraint(equalToConstant: 24),
+            tapButton.topAnchor.constraint(equalTo: topAnchor),
+            tapButton.leadingAnchor.constraint(equalTo: leadingAnchor),
+            tapButton.trailingAnchor.constraint(equalTo: trailingAnchor),
+            tapButton.bottomAnchor.constraint(equalTo: bottomAnchor)
         ])
 
-        accessibilityTraits = .button
-        accessibilityLabel = title
-        accessibilityHint = "상세 화면으로 이동"
+        isAccessibilityElement = false
+    }
+
+    override func accessibilityActivate() -> Bool {
+        sendActions(for: .touchUpInside)
+        return true
     }
 
     func setSubtitle(_ subtitle: String) {
@@ -1157,6 +1178,7 @@ private final class ChartIndicatorSettingsListViewController: UIViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .chartSheetBackground
+        view.accessibilityIdentifier = "chart_settings_detail_list"
         navigationController?.setNavigationBarHidden(true, animated: false)
 
         let scrollView = UIScrollView()
@@ -1327,6 +1349,7 @@ private final class ChartIndicatorDetailEditorViewController: UIViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .chartSheetBackground
+        view.accessibilityIdentifier = "chart_settings_indicator_detail_editor"
         navigationController?.setNavigationBarHidden(true, animated: false)
 
         let scrollView = UIScrollView()
@@ -1577,6 +1600,7 @@ private final class ChartCompareSymbolsViewController: UIViewController, UITable
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .chartSheetBackground
+        view.accessibilityIdentifier = "chart_settings_compare_screen"
         navigationController?.setNavigationBarHidden(true, animated: false)
 
         let backButton = UIButton(type: .system)
@@ -1619,6 +1643,7 @@ private final class ChartCompareSymbolsViewController: UIViewController, UITable
         recommendationTitle.textColor = .chartTextPrimary
         recommendationTitle.font = .systemFont(ofSize: 17, weight: .heavy)
         recommendationTitle.translatesAutoresizingMaskIntoConstraints = false
+        recommendationTitle.accessibilityIdentifier = "quick_compare_section"
 
         recommendationStack.axis = .vertical
         recommendationStack.spacing = 8
@@ -1692,9 +1717,7 @@ private final class ChartCompareSymbolsViewController: UIViewController, UITable
     private func reloadRecommendations() {
         recommendationStack.removeAllArrangedSubviews()
 
-        let quickCandidates = effectiveCandidates
-            .filter { $0.symbol != currentSymbol && stateProvider().comparedSymbols.contains($0.symbol) == false }
-            .prefix(5)
+        let quickCandidates = quickRecommendationCandidates()
         AppLogger.debug(
             .route,
             "[ChartSettings] compare_quick_candidates current=\(currentSymbol ?? "nil") base=\(candidates.map(\.symbol).joined(separator: ",")) effective=\(effectiveCandidates.map(\.symbol).joined(separator: ",")) quick=\(quickCandidates.map(\.symbol).joined(separator: ","))"
@@ -1719,12 +1742,36 @@ private final class ChartCompareSymbolsViewController: UIViewController, UITable
             button.layer.cornerRadius = 12
             button.contentEdgeInsets = UIEdgeInsets(top: 12, left: 16, bottom: 12, right: 16)
             button.contentHorizontalAlignment = .left
-            button.accessibilityIdentifier = "quickCompare_\(candidate.symbol)"
+            button.accessibilityIdentifier = "quickCompare_\(candidate.symbol.uppercased())"
             button.addAction(UIAction { [weak self] _ in
                 self?.toggleCandidateSelection(candidate)
             }, for: .touchUpInside)
             recommendationStack.addArrangedSubview(button)
         }
+    }
+
+    private func quickRecommendationCandidates() -> ArraySlice<ChartComparisonCandidate> {
+        let selectedSymbols = stateProvider().comparedSymbols
+        let availableCandidates = effectiveCandidates.filter {
+            $0.symbol != currentSymbol && selectedSymbols.contains($0.symbol) == false
+        }
+        let preferredSymbols = ["BTC", "ETH", "XRP", "SOL"]
+        var orderedCandidates = [ChartComparisonCandidate]()
+
+        func append(_ candidate: ChartComparisonCandidate?) {
+            guard let candidate,
+                  orderedCandidates.contains(where: { $0.symbol == candidate.symbol }) == false else {
+                return
+            }
+            orderedCandidates.append(candidate)
+        }
+
+        preferredSymbols.forEach { symbol in
+            append(availableCandidates.first(where: { $0.symbol == symbol }))
+        }
+        availableCandidates.forEach { append($0) }
+
+        return orderedCandidates.prefix(5)
     }
 
     private func reloadSelectedSymbols() {

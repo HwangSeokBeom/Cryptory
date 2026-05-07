@@ -77,7 +77,7 @@ final class FormAndViewStateTests: XCTestCase {
             (.privacyPolicy, "개인정보처리방침", "https://hwangseokbeom.github.io/Cryptory-legal/privacy.html"),
             (.termsOfService, "이용약관", "https://hwangseokbeom.github.io/Cryptory-legal/terms.html"),
             (.support, "고객지원", "https://hwangseokbeom.github.io/Cryptory-legal/support.html"),
-            (.deleteAccount, "계정삭제 안내", "https://hwangseokbeom.github.io/Cryptory-legal/delete-account.html"),
+            (.deleteAccount, "계정 삭제", "https://hwangseokbeom.github.io/Cryptory-legal/delete-account.html"),
             (.investmentDisclaimer, "투자 유의 및 면책", "https://hwangseokbeom.github.io/Cryptory-legal/disclaimer.html"),
             (.communityPolicy, "커뮤니티 운영 정책", "https://hwangseokbeom.github.io/Cryptory-legal/community-policy.html")
         ]
@@ -142,7 +142,7 @@ final class FormAndViewStateTests: XCTestCase {
     func testProfilePolicyLinksContainCommunityPolicyRow() {
         XCTAssertEqual(
             AppExternalLink.profilePolicyLinks,
-            [.support, .privacyPolicy, .termsOfService, .communityPolicy, .deleteAccount, .investmentDisclaimer, .home]
+            [.support, .privacyPolicy, .termsOfService, .communityPolicy, .investmentDisclaimer, .home]
         )
         XCTAssertEqual(AppExternalLink.communityPolicy.profileSubtitle, "커뮤니티 게시글, 댓글, 신고 및 차단 처리 기준을 확인합니다.")
     }
@@ -572,7 +572,7 @@ final class FormAndViewStateTests: XCTestCase {
             graphState: .liveVisible
         )
 
-        XCTAssertEqual(coarseRow.sparklinePayload.detailLevel, .retainedCoarse)
+        XCTAssertEqual(coarseRow.sparklinePayload.detailLevel, .retainedDetailed)
         XCTAssertEqual(refinedRow.sparklinePayload.detailLevel, .liveDetailed)
         XCTAssertNotEqual(coarseRow.sparklinePayload.graphRenderIdentity, refinedRow.sparklinePayload.graphRenderIdentity)
         XCTAssertNotEqual(coarseRow.graphPathVersion, refinedRow.graphPathVersion)

@@ -121,9 +121,9 @@ final class PushNotificationService: NSObject {
     }
 
     func cleanupForLogout(previousSession: AuthSession?) {
+        currentSession = nil
         guard let token = pendingToken, let session = previousSession else { return }
         Task { try? await registrar.delete(token: token, session: session) }
-        currentSession = nil
     }
 
     private func handleFCMToken(_ token: String) {

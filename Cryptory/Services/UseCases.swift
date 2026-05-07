@@ -322,6 +322,18 @@ struct ExchangeConnectionsUseCase {
     }
 }
 
+struct DeleteAccountUseCase {
+    private let authenticationService: AuthenticationServiceProtocol
+
+    init(authenticationService: AuthenticationServiceProtocol) {
+        self.authenticationService = authenticationService
+    }
+
+    func execute(session: AuthSession) async throws {
+        try await authenticationService.deleteAccount(session: session)
+    }
+}
+
 struct ExchangeConnectionFormValidator {
     func validationMessage(
         exchange: Exchange,

@@ -826,6 +826,7 @@ private struct MarketPresentationBuildInput {
     let pricesByMarketIdentity: [MarketIdentity: TickerData]
     let sparklineSnapshotsByMarketIdentity: [MarketIdentity: SparklineLayerSnapshot]
     let stableSparklineDisplaysByMarketIdentity: [MarketIdentity: StableSparklineDisplay]
+    let supportedIntervalsByMarketIdentity: [MarketIdentity: [String]]
     let loadingSparklineMarketIdentities: Set<MarketIdentity>
     let unavailableSparklineMarketIdentities: Set<MarketIdentity>
     let filteredMarketIdentities: [MarketIdentity]
@@ -1162,6 +1163,7 @@ final class CryptoViewModel: ObservableObject {
     private let publicContentRepository: PublicContentRepositoryProtocol
     private let priceAlertRepository: PriceAlertRepositoryProtocol
     private let authService: AuthenticationServiceProtocol
+    private let deleteAccountUseCase: DeleteAccountUseCase
     private let authSessionStore: AuthSessionStoring?
     private let googleSignInProvider: GoogleSignInProviding
     private let publicWebSocketService: PublicWebSocketServicing
@@ -1450,7 +1452,9 @@ final class CryptoViewModel: ObservableObject {
         self.exchangeConnectionsRepository = exchangeConnectionsRepository ?? LiveExchangeConnectionsRepository()
         self.publicContentRepository = publicContentRepository ?? LivePublicContentRepository()
         self.priceAlertRepository = priceAlertRepository ?? LivePriceAlertRepository()
-        self.authService = authService ?? LiveAuthenticationService()
+        let resolvedAuthService = authService ?? LiveAuthenticationService()
+        self.authService = resolvedAuthService
+        self.deleteAccountUseCase = DeleteAccountUseCase(authenticationService: resolvedAuthService)
         self.authSessionStore = authSessionStore ?? Self.defaultAuthSessionStore()
         self.googleSignInProvider = googleSignInProvider ?? LiveGoogleSignInProvider.shared
         self.publicWebSocketService = publicWebSocketService ?? WebSocketService()
@@ -2171,7 +2175,12 @@ final class CryptoViewModel: ObservableObject {
 
         let normalizedSymbolCandidates = normalizedGraphSymbolCandidates(symbol: symbol, marketId: marketId)
         let matchingCandidates = candidates.filter { coin in
-            if coin.symbol == symbol || coin.marketId == marketId {
+            if coin.symbol == symbol {
+                return true
+            }
+            if let marketId,
+               marketId.isEmpty == false,
+               coin.marketId == marketId {
                 return true
             }
             if normalizedSymbolCandidates.contains(coin.symbol) {
@@ -2904,15 +2913,29 @@ final class CryptoViewModel: ObservableObject {
             return
         }
 
+        let rows = marketPresentationSnapshotsByExchange[exchange]?.rows ?? displayedMarketRows
+        let canonicalMarketIdentity = Self.presentationMarketIdentity(
+            matching: marketIdentity,
+            rows: rows
+        ) ?? marketIdentity
+        let canonicalSurroundingIdentities = surroundingMarketIdentities.compactMap {
+            Self.presentationMarketIdentity(matching: $0, rows: rows) ?? ($0.exchange == exchange ? $0 : nil)
+        }
+
         var orderedMarketIdentities = visibleMarketIdentitiesByExchange[exchange] ?? []
         let exposureBand = Self.deduplicatedMarketIdentities(
-            [marketIdentity] + surroundingMarketIdentities.filter { $0.exchange == exchange }
+            [canonicalMarketIdentity] + canonicalSurroundingIdentities
         )
         for exposedIdentity in exposureBand.reversed() {
-            orderedMarketIdentities.removeAll { $0 == exposedIdentity }
+            orderedMarketIdentities.removeAll { Self.marketIdentitiesMatch($0, exposedIdentity) }
             orderedMarketIdentities.insert(exposedIdentity, at: 0)
         }
-        visibleMarketIdentitiesByExchange[exchange] = Array(orderedMarketIdentities.prefix(48))
+        let rowIdentities = Set(rows.map(\.marketIdentity))
+        visibleMarketIdentitiesByExchange[exchange] = Array(
+            orderedMarketIdentities
+                .filter { rowIdentities.contains($0) }
+                .prefix(48)
+        )
         lastVisibleMarketRowAtByExchange[exchange] = Date()
         let visibleMarketIds = (visibleMarketIdentitiesByExchange[exchange] ?? []).map { $0.marketId ?? $0.symbol }
         AppLogger.debug(
@@ -2924,22 +2947,22 @@ final class CryptoViewModel: ObservableObject {
             reason: "first_visible_rows"
         )
         enqueueVisiblePriorityRefineIfNeeded(
-            for: marketIdentity,
+            for: canonicalMarketIdentity,
             exchange: exchange,
-            reason: "row_visible_priority_\(marketIdentity.cacheKey)"
+            reason: "row_visible_priority_\(canonicalMarketIdentity.cacheKey)"
         )
         scheduleVisibleSparklineHydration(
             for: exchange,
-            reason: "row_visible_\(marketIdentity.cacheKey)"
+            reason: "row_visible_\(canonicalMarketIdentity.cacheKey)"
         )
         prefetchNextMarketPageIfNeeded(
             exchange: exchange,
-            visibleMarketIdentity: marketIdentity,
-            reason: "row_visible_\(marketIdentity.cacheKey)"
+            visibleMarketIdentity: canonicalMarketIdentity,
+            reason: "row_visible_\(canonicalMarketIdentity.cacheKey)"
         )
         scheduleMarketImageHydration(
             for: exchange,
-            reason: "row_visible_\(marketIdentity.cacheKey)"
+            reason: "row_visible_\(canonicalMarketIdentity.cacheKey)"
         )
     }
 
@@ -3313,7 +3336,8 @@ final class CryptoViewModel: ObservableObject {
         }
 
         for marketIdentity in visibleMarketIdentitiesByExchange[exchange] ?? [] {
-            append(rowsByMarketIdentity[marketIdentity])
+            let rowIdentity = Self.presentationMarketIdentity(matching: marketIdentity, rows: rows)
+            append(rowIdentity.flatMap { rowsByMarketIdentity[$0] })
         }
         for row in rows.prefix(marketImageVisibleBatchSize) {
             append(row)
@@ -3559,7 +3583,9 @@ final class CryptoViewModel: ObservableObject {
             .map(\.marketIdentity)
         let representativeMarketIdentities = rows.prefix(marketRepresentativeRowLimit).map(\.marketIdentity)
         let selectedMarketIdentities = selectedExchange == exchange
-            ? [selectedCoin?.marketIdentity(exchange: exchange, quoteCurrency: selectedQuoteCurrency)].compactMap { $0 }
+            ? [selectedCoin?.marketIdentity(exchange: exchange, quoteCurrency: selectedQuoteCurrency)]
+                .compactMap { $0 }
+                .compactMap { Self.presentationMarketIdentity(matching: $0, rows: rows) }
             : []
 
         return Self.deduplicatedMarketIdentities(
@@ -3577,19 +3603,27 @@ final class CryptoViewModel: ObservableObject {
         guard activeTab == .market, selectedExchange == exchange else {
             return false
         }
-        if visibleMarketIdentitiesByExchange[exchange]?.contains(marketIdentity) == true {
+        if visibleMarketIdentitiesByExchange[exchange]?.contains(where: {
+            Self.marketIdentitiesMatch($0, marketIdentity)
+        }) == true {
             return true
         }
         if displayedMarketRows
             .filter({ $0.exchange == exchange })
             .prefix(sparklineRepresentativeLimit)
-            .contains(where: { $0.marketIdentity == marketIdentity }) {
+            .contains(where: { Self.marketIdentitiesMatch($0.marketIdentity, marketIdentity) }) {
             return true
         }
-        if representativeMarketRows.contains(where: { $0.marketIdentity == marketIdentity }) {
+        if representativeMarketRows.contains(where: { Self.marketIdentitiesMatch($0.marketIdentity, marketIdentity) }) {
             return true
         }
-        return selectedCoin?.marketIdentity(exchange: exchange, quoteCurrency: selectedQuoteCurrency) == marketIdentity
+        guard let selectedMarketIdentity = selectedCoin?.marketIdentity(
+            exchange: exchange,
+            quoteCurrency: selectedQuoteCurrency
+        ) else {
+            return false
+        }
+        return Self.marketIdentitiesMatch(selectedMarketIdentity, marketIdentity)
     }
 
     private func isActivelyScrollingMarketRows(
@@ -3607,10 +3641,14 @@ final class CryptoViewModel: ObservableObject {
         rows: [MarketRowViewState]
     ) -> [MarketIdentity] {
         let selectedMarketIdentities = selectedExchange == exchange
-            ? [selectedCoin?.marketIdentity(exchange: exchange, quoteCurrency: selectedQuoteCurrency)].compactMap { $0 }
+            ? [selectedCoin?.marketIdentity(exchange: exchange, quoteCurrency: selectedQuoteCurrency)]
+                .compactMap { $0 }
+                .compactMap { Self.presentationMarketIdentity(matching: $0, rows: rows) }
             : []
         let representativeMarketIdentities = rows.prefix(marketRepresentativeRowLimit).map(\.marketIdentity)
-        let visibleMarketIdentities = visibleMarketIdentitiesByExchange[exchange] ?? []
+        let visibleMarketIdentities = (visibleMarketIdentitiesByExchange[exchange] ?? []).compactMap {
+            Self.presentationMarketIdentity(matching: $0, rows: rows)
+        }
         let nearVisibleMarketIdentities = nearVisibleSparklineMarketIdentities(
             rows: rows,
             visibleMarketIdentities: visibleMarketIdentities,
@@ -3786,7 +3824,7 @@ final class CryptoViewModel: ObservableObject {
     ) -> Bool {
         switch response {
         case .success(let snapshot):
-            return snapshot.meta.isChartAvailable == false || snapshot.candles.isEmpty
+            return snapshot.meta.isChartAvailable == false
         case .failure:
             return true
         }
@@ -4044,8 +4082,7 @@ final class CryptoViewModel: ObservableObject {
         generation: Int,
         requestKey: ChartRequestKey
     ) -> Bool {
-        activeTab == .chart
-            && shouldApplyChartResult(generation: generation, key: requestKey)
+        shouldApplyChartResult(generation: generation, key: requestKey)
             && Task.isCancelled == false
     }
 
@@ -4060,38 +4097,83 @@ final class CryptoViewModel: ObservableObject {
         chartSecondaryResourcesTask = Task { @MainActor [weak self] in
             guard let self else { return }
             try? await Task.sleep(nanoseconds: self.chartSecondaryBootstrapDelayNanoseconds)
-            guard self.shouldRunChartSecondaryBootstrap(generation: generation, requestKey: requestKey) else {
-                return
-            }
-
-            self.chartSecondarySubscriptionsEnabled = true
-            self.updatePublicSubscriptions(reason: "\(reason)_chart_secondary_streaming")
-
-            async let orderbookResult: Result<OrderbookSnapshot, Error> = self.fetchOrderbookSnapshot(for: resourceKey)
-            async let tradesResult: Result<PublicTradesSnapshot, Error> = self.fetchTradesSnapshot(for: resourceKey)
-
-            let orderbookResponse = await orderbookResult
-            guard self.shouldRunChartSecondaryBootstrap(generation: generation, requestKey: requestKey) else {
-                return
-            }
-            self.applyChartOrderbookResponse(
-                orderbookResponse,
+            await self.runChartSecondaryBootstrap(
+                context: context,
+                requestKey: requestKey,
                 resourceKey: resourceKey,
-                context: context
+                generation: generation,
+                reason: reason
             )
-
-            let tradesResponse = await tradesResult
-            guard self.shouldRunChartSecondaryBootstrap(generation: generation, requestKey: requestKey) else {
-                return
-            }
-            self.applyChartTradesResponse(
-                tradesResponse,
-                resourceKey: resourceKey,
-                context: context
-            )
-
-            self.refreshPublicStatusViewStates()
         }
+    }
+
+    private func runChartSecondaryBootstrap(
+        context: ChartRequestContext,
+        requestKey: ChartRequestKey,
+        resourceKey: ChartResourceKey,
+        generation: Int,
+        reason: String
+    ) async {
+        guard shouldRunChartSecondaryBootstrap(generation: generation, requestKey: requestKey) else {
+            return
+        }
+
+        chartSecondarySubscriptionsEnabled = true
+        updatePublicSubscriptions(reason: "\(reason)_chart_secondary_streaming")
+
+        async let orderbookResult: Result<OrderbookSnapshot, Error> = fetchOrderbookSnapshot(for: resourceKey)
+        async let tradesResult: Result<PublicTradesSnapshot, Error> = fetchTradesSnapshot(for: resourceKey)
+
+        let orderbookResponse = await orderbookResult
+        guard shouldRunChartSecondaryBootstrap(generation: generation, requestKey: requestKey) else {
+            return
+        }
+        applyChartOrderbookResponse(
+            orderbookResponse,
+            resourceKey: resourceKey,
+            context: context
+        )
+
+        let tradesResponse = await tradesResult
+        guard shouldRunChartSecondaryBootstrap(generation: generation, requestKey: requestKey) else {
+            return
+        }
+        applyChartTradesResponse(
+            tradesResponse,
+            resourceKey: resourceKey,
+            context: context
+        )
+
+        refreshPublicStatusViewStates()
+    }
+
+    private func completeChartSecondaryBootstrap(
+        context: ChartRequestContext,
+        requestKey: ChartRequestKey,
+        resourceKey: ChartResourceKey,
+        generation: Int,
+        reason: String
+    ) async {
+        #if DEBUG
+        if AppTestEnvironment.isRunningUnitTests {
+            await runChartSecondaryBootstrap(
+                context: context,
+                requestKey: requestKey,
+                resourceKey: resourceKey,
+                generation: generation,
+                reason: reason
+            )
+            return
+        }
+        #endif
+
+        scheduleChartSecondaryBootstrap(
+            context: context,
+            requestKey: requestKey,
+            resourceKey: resourceKey,
+            generation: generation,
+            reason: reason
+        )
     }
 
     private func scheduleChartSecondarySubscriptions(reason: String) {
@@ -4139,7 +4221,7 @@ final class CryptoViewModel: ObservableObject {
 
         let task = Task<CandleSnapshot, Error> { [marketRepository] in
             try await marketRepository.fetchCandles(
-                symbol: key.symbol,
+                symbol: Self.chartCandleRequestSymbol(for: key.marketIdentity),
                 exchange: key.exchange,
                 quoteCurrency: key.marketIdentity.quoteCurrency,
                 interval: key.interval,
@@ -4155,6 +4237,19 @@ final class CryptoViewModel: ObservableObject {
         }
         candleFetchTasksByKey[key] = nil
         return result
+    }
+
+    private nonisolated static func chartCandleRequestSymbol(for identity: MarketIdentity) -> String {
+        guard let marketId = identity.marketId else {
+            return identity.symbol
+        }
+
+        if identity.exchange == .korbit,
+           identity.quoteCurrency == .krw {
+            return "\(identity.symbol)_\(identity.quoteCurrency.rawValue)"
+        }
+
+        return identity.symbol
     }
 
     private func isUnsupportedSparklineError(_ error: Error) -> Bool {
@@ -6364,7 +6459,7 @@ final class CryptoViewModel: ObservableObject {
                     "[ChartPipeline] \(context.marketIdentity.logFields) interval=\(context.mappedInterval.uppercased()) phase=response_failure key=\(resolvedRequestKey.debugValue) message=\(userMessage)"
                 )
             }
-            scheduleChartSecondaryBootstrap(
+            await completeChartSecondaryBootstrap(
                 context: context,
                 requestKey: requestKey,
                 resourceKey: resourceKey,
@@ -6802,12 +6897,13 @@ final class CryptoViewModel: ObservableObject {
         defer { isDeletingAccount = false }
 
         do {
-            try await runAuthenticatedRequest(session: session) { [authService] refreshedSession in
-                try await authService.deleteAccount(session: refreshedSession)
+            try await runAuthenticatedRequest(session: session) { [deleteAccountUseCase] refreshedSession in
+                try await deleteAccountUseCase.execute(session: refreshedSession)
             }
+            PushNotificationService.shared.cleanupForLogout(previousSession: session)
             googleSignInProvider.signOut()
             completeLocalSessionReset(reason: "delete_account")
-            showNotification("계정이 삭제되었어요.", type: .success)
+            showNotification("계정이 삭제되었습니다.", type: .success)
             return true
         } catch {
             showNotification(friendlyAccountDeletionErrorMessage(error), type: .error)
@@ -6866,10 +6962,34 @@ final class CryptoViewModel: ObservableObject {
         loadedExchangeConnections = []
         privateRequestFailureStates.removeAll()
         lastAutomaticPrivateRequestAtByKey.removeAll()
+        if reason == "delete_account" {
+            clearAccountScopedLocalData()
+        }
         privateWebSocketService.disconnect()
         updateAuthGate()
         updatePrivateSubscriptions(reason: reason)
         AppLogger.debug(.auth, "User session cleared reason=\(reason)")
+    }
+
+    private func clearAccountScopedLocalData() {
+        favCoins.removeAll()
+        defaults.removeObject(forKey: favoritesKey)
+        activePriceAlert = nil
+        priceAlertDraft = PriceAlertDraft(
+            alertId: nil,
+            exchange: selectedExchange,
+            symbol: selectedCoin?.symbol ?? "BTC",
+            quoteCurrency: selectedQuoteCurrency,
+            currentPrice: 0,
+            condition: .above,
+            targetPriceText: "",
+            repeatPolicy: .once,
+            isActive: true,
+            warningMessage: nil
+        )
+        priceAlertLoadMessage = nil
+        isPriceAlertSheetPresented = false
+        AppLogger.debug(.auth, "[AuthFlowDebug] action=account_scoped_local_data_cleared")
     }
 
     func openStatusAction() {
@@ -7250,18 +7370,15 @@ final class CryptoViewModel: ObservableObject {
            case .httpError(let statusCode, _, _) = networkError {
             switch statusCode {
             case 401, 403:
-                return "로그인 상태를 다시 확인한 뒤 탈퇴를 진행해주세요."
-            case 404, 501:
-                return "앱 내 탈퇴 API가 아직 준비되지 않았어요. 계정삭제 안내 페이지를 확인해주세요."
+                return "로그인이 필요합니다. 다시 로그인한 뒤 계정 삭제를 진행해 주세요."
             case 500...599:
-                return "일시적인 오류예요. 잠시 후 다시 시도해주세요."
+                return "계정 삭제에 실패했습니다. 잠시 후 다시 시도해 주세요."
             default:
                 break
             }
         }
 
-        let rawMessage = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
-        return rawMessage.isEmpty ? "회원탈퇴를 완료하지 못했어요. 잠시 후 다시 시도해주세요." : rawMessage
+        return "계정 삭제에 실패했습니다. 잠시 후 다시 시도해 주세요."
     }
 
     private func isUserCancelledAuthentication(_ error: Error) -> Bool {
@@ -9368,6 +9485,11 @@ final class CryptoViewModel: ObservableObject {
 
         AppLogger.debug(.network, "fetchTickers start -> exchange=\(exchange.rawValue) reason=\(reason)")
         AppLogger.debug(.network, "[MarketSnapshot] request start kind=tickers exchange=\(exchange.rawValue) reason=\(reason)")
+        if forceRefresh {
+            sparklineFailureCooldownUntilByKey = sparklineFailureCooldownUntilByKey.filter {
+                $0.key.exchange != exchange
+            }
+        }
         if forceRefresh || unsupportedSparklineMarketIdentitiesByExchange[exchange]?.isEmpty == false {
             unsupportedSparklineMarketIdentitiesByExchange[exchange] = []
             AppLogger.debug(
@@ -10220,9 +10342,32 @@ final class CryptoViewModel: ObservableObject {
         sparklineSnapshot(marketIdentity: resolvedMarketIdentity(exchange: exchange, symbol: symbol))
     }
 
-    private func sparklineSnapshot(marketIdentity: MarketIdentity) -> SparklineLayerSnapshot? {
+    private func sparklineSnapshot(
+        marketIdentity: MarketIdentity,
+        preferredInterval: String? = nil
+    ) -> SparklineLayerSnapshot? {
+        if let preferredInterval,
+           let snapshot = sparklineSnapshotsByKey[SparklineCacheKey(
+            marketIdentity: marketIdentity,
+            interval: preferredInterval
+           )] {
+            return snapshot
+        }
+        if let preferredInterval,
+           let snapshot = sparklineSnapshotsByKey.first(where: {
+            $0.key.interval == preferredInterval
+                && Self.marketIdentitiesMatch($0.key.marketIdentity, marketIdentity)
+           })?.value {
+            return snapshot
+        }
         let key = sparklineCacheKey(marketIdentity: marketIdentity)
-        return sparklineSnapshotsByKey[key]
+        if let snapshot = sparklineSnapshotsByKey[key] {
+            return snapshot
+        }
+        return sparklineSnapshotsByKey.first(where: {
+            $0.key.interval == key.interval
+                && Self.marketIdentitiesMatch($0.key.marketIdentity, marketIdentity)
+        })?.value
     }
 
     private func graphCacheLogKey(for marketIdentity: MarketIdentity) -> String {
@@ -10420,9 +10565,32 @@ final class CryptoViewModel: ObservableObject {
         stableSparklineDisplay(marketIdentity: resolvedMarketIdentity(exchange: exchange, symbol: symbol))
     }
 
-    private func stableSparklineDisplay(marketIdentity: MarketIdentity) -> StableSparklineDisplay? {
+    private func stableSparklineDisplay(
+        marketIdentity: MarketIdentity,
+        preferredInterval: String? = nil
+    ) -> StableSparklineDisplay? {
+        if let preferredInterval,
+           let display = stableSparklineDisplaysByKey[MarketGraphBindingKey(
+            marketIdentity: marketIdentity,
+            interval: preferredInterval
+           )] {
+            return display
+        }
+        if let preferredInterval,
+           let display = stableSparklineDisplaysByKey.first(where: {
+            $0.key.interval == preferredInterval
+                && Self.marketIdentitiesMatch($0.key.marketIdentity, marketIdentity)
+           })?.value {
+            return display
+        }
         let key = stableSparklineDisplayKey(marketIdentity: marketIdentity)
-        return stableSparklineDisplaysByKey[key]
+        if let display = stableSparklineDisplaysByKey[key] {
+            return display
+        }
+        return stableSparklineDisplaysByKey.first(where: {
+            $0.key.interval == key.interval
+                && Self.marketIdentitiesMatch($0.key.marketIdentity, marketIdentity)
+        })?.value
     }
 
     private func stableSparklineDisplaysByMarketIdentity(
@@ -10870,6 +11038,13 @@ final class CryptoViewModel: ObservableObject {
         guard activeTab == .market, selectedExchange == exchange else {
             return
         }
+        guard visibleMarketIdentitiesByExchange[exchange]?.isEmpty == false else {
+            AppLogger.debug(
+                .network,
+                "[GraphRequestDebug] exchange=\(exchange.rawValue) action=visible_hydration_skipped reason=no_visible_rows trigger=\(reason)"
+            )
+            return
+        }
 
         if runningSparklineHydrationExchanges.contains(exchange) {
             pendingSparklineHydrationReasonsByExchange[exchange] = reason
@@ -10921,6 +11096,13 @@ final class CryptoViewModel: ObservableObject {
         reason: String
     ) -> Bool {
         guard activeTab == .market, selectedExchange == exchange else {
+            return false
+        }
+        guard visibleMarketIdentitiesByExchange[exchange]?.isEmpty == false else {
+            AppLogger.debug(
+                .network,
+                "[GraphRequestDebug] exchange=\(exchange.rawValue) action=priority_visible_skipped reason=no_visible_rows trigger=\(reason)"
+            )
             return false
         }
 
@@ -11419,11 +11601,13 @@ final class CryptoViewModel: ObservableObject {
         exchange: Exchange,
         rows: [MarketRowViewState]
     ) -> Bool {
-        if visibleMarketIdentitiesByExchange[exchange]?.contains(marketIdentity) == true {
+        if visibleMarketIdentitiesByExchange[exchange]?.contains(where: {
+            Self.marketIdentitiesMatch($0, marketIdentity)
+        }) == true {
             return true
         }
         return priorityVisibleSparklineMarketIdentities(for: exchange, rows: rows)
-            .contains(marketIdentity)
+            .contains(where: { Self.marketIdentitiesMatch($0, marketIdentity) })
     }
 
     private func shouldDropSparklinePatchBeforeUIPromotion(
@@ -12134,8 +12318,15 @@ final class CryptoViewModel: ObservableObject {
     }
 
     private func sparklineInterval(for marketIdentity: MarketIdentity) -> String {
-        let supported = supportedIntervalsByExchangeAndMarketIdentity[marketIdentity.exchange]?[marketIdentity]?.map { $0.lowercased() } ?? []
-        for preferred in ["1m", "5m", "15m", "1h", "1d"] where supported.contains(preferred) {
+        let supportedByIdentity = supportedIntervalsByExchangeAndMarketIdentity[marketIdentity.exchange] ?? [:]
+        let supported = (
+            supportedByIdentity[marketIdentity]
+                ?? supportedByIdentity.first(where: {
+                    Self.marketIdentitiesMatch($0.key, marketIdentity)
+                })?.value
+                ?? []
+        ).map { $0.lowercased() }
+        for preferred in ["1h", "1d", "15m", "5m", "1m"] where supported.contains(preferred) {
             return preferred
         }
         return supported.first ?? "1m"
@@ -12162,7 +12353,11 @@ final class CryptoViewModel: ObservableObject {
         }
 
         for marketIdentity in marketIdentities {
-            guard let row = presentation.rows.first(where: { $0.marketIdentity == marketIdentity }) else {
+            guard let rowIdentity = Self.presentationMarketIdentity(
+                    matching: marketIdentity,
+                    rows: presentation.rows
+                  ),
+                  let row = presentation.rows.first(where: { $0.marketIdentity == rowIdentity }) else {
                 recordStaleGraphPatchDrop(for: marketIdentity)
                 continue
             }
@@ -12289,9 +12484,15 @@ final class CryptoViewModel: ObservableObject {
 
         let resolution = Self.resolvedSparkline(
             ticker: pricesByMarketIdentity[marketIdentity],
-            snapshot: sparklineSnapshot(marketIdentity: marketIdentity),
+            snapshot: sparklineSnapshot(
+                marketIdentity: marketIdentity,
+                preferredInterval: cachedRow?.sparklineTimeframe
+            ),
             cachedRow: cachedRow,
-            stableSparklineDisplay: stableSparklineDisplay(marketIdentity: marketIdentity),
+            stableSparklineDisplay: stableSparklineDisplay(
+                marketIdentity: marketIdentity,
+                preferredInterval: cachedRow?.sparklineTimeframe
+            ),
             isLoading: loadingSparklineMarketIdentitiesByExchange[exchange]?.contains(marketIdentity) == true,
             isUnavailable: unavailableSparklineMarketIdentitiesByExchange[exchange]?.contains(marketIdentity) == true,
             preferDetailedVisibleGraph: true,
@@ -12428,22 +12629,31 @@ final class CryptoViewModel: ObservableObject {
 
         var coalescedPatches = [MarketIdentity: MarketSparklinePatch]()
         for patch in patches {
-            if let current = coalescedPatches[patch.marketIdentity] {
-                coalescedPatches[patch.marketIdentity] = preferredSparklinePatch(
+            guard let rowIdentity = Self.presentationMarketIdentity(
+                matching: patch.marketIdentity,
+                rows: presentation.rows
+            ) else {
+                recordStaleGraphPatchDrop(for: patch.marketIdentity)
+                continue
+            }
+            let canonicalPatch = MarketSparklinePatch(
+                marketIdentity: rowIdentity,
+                snapshot: patch.snapshot,
+                graphState: patch.graphState,
+                reason: patch.reason
+            )
+            if let current = coalescedPatches[rowIdentity] {
+                coalescedPatches[rowIdentity] = preferredSparklinePatch(
                     existing: current,
-                    incoming: patch
+                    incoming: canonicalPatch
                 )
             } else {
-                coalescedPatches[patch.marketIdentity] = patch
+                coalescedPatches[rowIdentity] = canonicalPatch
             }
         }
 
         var enqueuedCount = 0
         for patch in coalescedPatches.values {
-            guard presentation.rows.contains(where: { $0.marketIdentity == patch.marketIdentity }) else {
-                recordStaleGraphPatchDrop(for: patch.marketIdentity)
-                continue
-            }
             if shouldDropSparklinePatchBeforeUIPromotion(
                 patch,
                 exchange: exchange,
@@ -12889,6 +13099,7 @@ final class CryptoViewModel: ObservableObject {
                 for: exchange,
                 quoteCurrency: selectedQuoteCurrency
             ),
+            supportedIntervalsByMarketIdentity: supportedIntervalsByExchangeAndMarketIdentity[exchange] ?? [:],
             loadingSparklineMarketIdentities: loadingSparklineMarketIdentitiesByExchange[exchange] ?? [],
             unavailableSparklineMarketIdentities: unavailableSparklineMarketIdentitiesByExchange[exchange] ?? [],
             filteredMarketIdentities: filteredMarketIdentitiesByExchange[exchange] ?? [],
@@ -13136,6 +13347,10 @@ final class CryptoViewModel: ObservableObject {
                 favoriteSymbols: input.favoriteSymbols,
                 sparklineSnapshot: input.sparklineSnapshotsByMarketIdentity[marketIdentity],
                 stableSparklineDisplay: input.stableSparklineDisplaysByMarketIdentity[marketIdentity],
+                preferredSparklineInterval: Self.preferredSparklineInterval(
+                    for: marketIdentity,
+                    supportedIntervalsByMarketIdentity: input.supportedIntervalsByMarketIdentity
+                ),
                 isSparklineLoading: input.loadingSparklineMarketIdentities.contains(marketIdentity),
                 isSparklineUnavailable: input.unavailableSparklineMarketIdentities.contains(marketIdentity),
                 preferDetailedVisibleGraph: priorityDetailedMarketIdentities.contains(marketIdentity),
@@ -13228,6 +13443,45 @@ final class CryptoViewModel: ObservableObject {
                 partialResult[marketIdentity] = coin
             }
         }
+    }
+
+    private nonisolated static func marketIdentitiesMatch(
+        _ lhs: MarketIdentity,
+        _ rhs: MarketIdentity
+    ) -> Bool {
+        guard lhs.exchange == rhs.exchange,
+              lhs.quoteCurrency == rhs.quoteCurrency else {
+            return false
+        }
+        if let lhsMarketId = lhs.marketId,
+           let rhsMarketId = rhs.marketId {
+            return lhsMarketId == rhsMarketId
+        }
+        return lhs.symbol == rhs.symbol
+    }
+
+    private nonisolated static func presentationMarketIdentity(
+        matching marketIdentity: MarketIdentity,
+        rows: [MarketRowViewState]
+    ) -> MarketIdentity? {
+        rows.first { marketIdentitiesMatch($0.marketIdentity, marketIdentity) }?.marketIdentity
+    }
+
+    private nonisolated static func preferredSparklineInterval(
+        for marketIdentity: MarketIdentity,
+        supportedIntervalsByMarketIdentity: [MarketIdentity: [String]]
+    ) -> String {
+        let supported = (
+            supportedIntervalsByMarketIdentity[marketIdentity]
+                ?? supportedIntervalsByMarketIdentity.first(where: {
+                    marketIdentitiesMatch($0.key, marketIdentity)
+                })?.value
+                ?? []
+        ).map { $0.lowercased() }
+        for preferred in ["1h", "1d", "15m", "5m", "1m"] where supported.contains(preferred) {
+            return preferred
+        }
+        return supported.first ?? "1m"
     }
 
     private nonisolated static func shouldCarryForwardGraph(
@@ -13383,6 +13637,7 @@ final class CryptoViewModel: ObservableObject {
         favoriteSymbols: Set<String>,
         sparklineSnapshot: SparklineLayerSnapshot?,
         stableSparklineDisplay: StableSparklineDisplay?,
+        preferredSparklineInterval: String,
         isSparklineLoading: Bool,
         isSparklineUnavailable: Bool,
         preferDetailedVisibleGraph: Bool,
@@ -13417,7 +13672,7 @@ final class CryptoViewModel: ObservableObject {
         let sparklineTimeframe = sparklineSnapshot?.interval
             ?? stableSparklineDisplay?.key.interval
             ?? cachedRow?.sparklineTimeframe
-            ?? "1m"
+            ?? preferredSparklineInterval
         let hasEnoughSparklineData = MarketSparklineRenderPolicy.hasHydratedGraph(
             points: sparkline,
             pointCount: sparklinePointCount
@@ -13736,6 +13991,14 @@ final class CryptoViewModel: ObservableObject {
         if normalizedSource.contains("stale") || normalizedSource.contains("cache") || normalizedSource.contains("retained") {
             return "staleListSparkline24"
         }
+        if normalizedSource.contains("provider_sparkline"),
+           pointCount < MarketSparklineRenderPolicy.partialRealPointCountThreshold {
+            return "provider_sparkline"
+        }
+        if normalizedSource.contains("ticker_sparkline_points"),
+           pointCount < MarketSparklineRenderPolicy.partialRealPointCountThreshold {
+            return "ticker_sparkline_points"
+        }
         return "listSparkline24"
     }
 
@@ -13819,18 +14082,6 @@ final class CryptoViewModel: ObservableObject {
             )
         } else {
             tickerCandidate = nil
-        }
-
-        if let tickerCandidate {
-            return (
-                tickerCandidate.points,
-                tickerCandidate.pointCount,
-                tickerCandidate.graphState,
-                tickerCandidate.source,
-                tickerCandidate.sourceVersion,
-                tickerCandidate.sourceName,
-                tickerCandidate.rangeRatio
-            )
         }
 
         let snapshotCandidate: SparklineResolutionCandidate?
@@ -14147,8 +14398,21 @@ final class CryptoViewModel: ObservableObject {
                     sourceVersion: displayCache.sourceVersion,
                     sourceName: displayCache.sourceName ?? displayCache.source.logComponent
                 )
-                if preferredQuality.isUsableGraph,
-                   preferredQuality.detailLevel.pathDetailRank >= displayQuality.detailLevel.pathDetailRank {
+                let displayDecision = MarketSparklineQuality.graphQualityDecision(
+                    current: preferredQuality,
+                    incoming: displayQuality
+                )
+                if preferredWithoutDisplayCache.source == .rowState,
+                   preferredQuality.sourceVersion >= displayQuality.sourceVersion {
+                    return SparklineResolutionSelection(
+                        candidate: preferredWithoutDisplayCache,
+                        skippedDisplayCacheForNewerCandidate: true
+                    )
+                }
+                if displayDecision.accepted == false,
+                   preferredQuality.isUsableGraph,
+                   preferredQuality.applyPriority >= displayQuality.applyPriority,
+                   preferredQuality.qualityRank >= displayQuality.qualityRank {
                     return SparklineResolutionSelection(
                         candidate: preferredWithoutDisplayCache,
                         skippedDisplayCacheForNewerCandidate: true
@@ -14200,6 +14464,17 @@ final class CryptoViewModel: ObservableObject {
         let existingVisibleReason = existingQuality.visibleBindableChangeReason(over: incomingQuality)
         let incomingSourceRank = visibleSparklineResolutionSourceRank(incoming.source)
         let existingSourceRank = visibleSparklineResolutionSourceRank(existing.source)
+
+        if incoming.source == .rowState,
+           incomingQuality.applyPriority >= existingQuality.applyPriority,
+           incomingQuality.pointCount >= existingQuality.pointCount {
+            return incoming
+        }
+        if existing.source == .rowState,
+           existingQuality.applyPriority >= incomingQuality.applyPriority,
+           existingQuality.pointCount >= incomingQuality.pointCount {
+            return existing
+        }
 
         if incomingVisibleReason != nil,
            existingVisibleReason == nil,
@@ -14258,13 +14533,13 @@ final class CryptoViewModel: ObservableObject {
     ) -> Int {
         switch source {
         case .ticker:
-            return 4
-        case .snapshot:
-            return 3
-        case .rowState:
-            return 2
-        case .displayCache:
             return 1
+        case .snapshot:
+            return 4
+        case .rowState:
+            return 3
+        case .displayCache:
+            return 2
         case .unavailable, .placeholder, .none:
             return 0
         }
@@ -14562,8 +14837,7 @@ final class CryptoViewModel: ObservableObject {
             return false
         }
         guard let presentation = marketPresentationSnapshotsByExchange[exchange],
-              presentation.generation == generation,
-              presentation.rows.contains(where: { $0.marketIdentity == marketIdentity }) else {
+              presentation.generation == generation else {
             let rejectReason = generation != marketPresentationGeneration ? "generation_mismatch" : "row_missing"
             logPatchReject(
                 patchKind: patchKind,
@@ -14578,15 +14852,70 @@ final class CryptoViewModel: ObservableObject {
             return false
         }
 
+        guard let effectiveMarketIdentity = Self.presentationMarketIdentity(
+            matching: marketIdentity,
+            rows: presentation.rows
+        ) else {
+            logPatchReject(
+                patchKind: patchKind,
+                patchExchange: exchange,
+                patchQuote: marketIdentity.quoteCurrency,
+                patchGeneration: generation,
+                reason: "row_missing"
+            )
+            if let sparklinePatch {
+                recordStaleGraphPatchDrop(for: sparklinePatch.marketIdentity)
+            }
+            return false
+        }
+
+        let effectiveSparklinePatch = sparklinePatch.map {
+            MarketSparklinePatch(
+                marketIdentity: effectiveMarketIdentity,
+                snapshot: $0.snapshot,
+                graphState: $0.graphState,
+                reason: $0.reason
+            )
+        }
+        let effectiveSymbolImagePatch = symbolImagePatch.map {
+            MarketSymbolImagePatch(
+                marketIdentity: effectiveMarketIdentity,
+                exchange: $0.exchange,
+                generation: $0.generation,
+                expectedImageURL: $0.expectedImageURL,
+                nextState: $0.nextState,
+                reason: $0.reason
+            )
+        }
+        let effectiveTickerDisplayPatch = tickerDisplayPatch.map {
+            MarketTickerDisplayPatch(
+                marketIdentity: effectiveMarketIdentity,
+                exchange: $0.exchange,
+                generation: $0.generation,
+                sourceExchange: $0.sourceExchange,
+                priceText: $0.priceText,
+                changeText: $0.changeText,
+                volumeText: $0.volumeText,
+                isPricePlaceholder: $0.isPricePlaceholder,
+                isChangePlaceholder: $0.isChangePlaceholder,
+                isVolumePlaceholder: $0.isVolumePlaceholder,
+                isUp: $0.isUp,
+                flash: $0.flash,
+                dataState: $0.dataState,
+                baseFreshnessState: $0.baseFreshnessState,
+                reason: $0.reason
+            )
+        }
+
         var patches = pendingMarketRowPatchesByExchange[exchange] ?? [:]
-        if var existingPatch = patches[marketIdentity] {
+        if var existingPatch = patches[effectiveMarketIdentity] {
             let hadGraph = existingPatch.sparklinePatch != nil
             let hadImage = existingPatch.symbolImagePatch != nil
             let hadDisplay = existingPatch.tickerDisplayPatch != nil
             existingPatch.merge(
-                sparklinePatch: sparklinePatch,
-                symbolImagePatch: symbolImagePatch,
-                tickerDisplayPatch: tickerDisplayPatch,
+                sparklinePatch: effectiveSparklinePatch,
+                symbolImagePatch: effectiveSymbolImagePatch,
+                tickerDisplayPatch: effectiveTickerDisplayPatch,
                 rebuildReason: rebuildReason,
                 preferredSparklinePatch: { [self] existing, incoming in
                     preferredSparklinePatch(existing: existing, incoming: incoming)
@@ -14605,17 +14934,17 @@ final class CryptoViewModel: ObservableObject {
                     "[MarketRows] row_patch_coalesced graph=\(existingPatch.sparklinePatch != nil) image=\(existingPatch.symbolImagePatch != nil) display=\(existingPatch.tickerDisplayPatch != nil)"
                 )
             }
-            patches[marketIdentity] = existingPatch
+            patches[effectiveMarketIdentity] = existingPatch
         } else {
             var patch = PendingMarketRowPatch(
-                marketIdentity: marketIdentity,
+                marketIdentity: effectiveMarketIdentity,
                 exchange: exchange,
                 generation: generation
             )
             patch.merge(
-                sparklinePatch: sparklinePatch,
-                symbolImagePatch: symbolImagePatch,
-                tickerDisplayPatch: tickerDisplayPatch,
+                sparklinePatch: effectiveSparklinePatch,
+                symbolImagePatch: effectiveSymbolImagePatch,
+                tickerDisplayPatch: effectiveTickerDisplayPatch,
                 rebuildReason: rebuildReason,
                 preferredSparklinePatch: { [self] existing, incoming in
                     preferredSparklinePatch(existing: existing, incoming: incoming)
@@ -14627,7 +14956,7 @@ final class CryptoViewModel: ObservableObject {
                     incoming
                 }
             )
-            patches[marketIdentity] = patch
+            patches[effectiveMarketIdentity] = patch
         }
         pendingMarketRowPatchesByExchange[exchange] = patches
 
@@ -15107,17 +15436,65 @@ final class CryptoViewModel: ObservableObject {
         exchange: Exchange,
         generation: Int
     ) -> MarketRowViewState? {
-        if previousRow.exchange != exchange || previousRow.sparklineTimeframe != sparklineInterval(for: patch.marketIdentity) {
+        let expectedInterval = patch.snapshot?.interval ?? sparklineInterval(for: patch.marketIdentity)
+        if previousRow.exchange != exchange {
             recordStaleGraphPatchDrop(for: patch.marketIdentity)
             return nil
         }
-        if let snapshot = patch.snapshot,
-           snapshot.interval != previousRow.sparklineTimeframe {
-            recordStaleGraphPatchDrop(for: patch.marketIdentity)
-            return nil
-        }
+        let patchCanAdoptSnapshotInterval = patch.snapshot.map { snapshot in
+            guard snapshot.graphDisplayAllowed != false,
+                  MarketSparklineRenderPolicy.hasVisibleRenderableGraph(
+                    points: snapshot.points,
+                    pointCount: snapshot.pointCount,
+                    sourceName: snapshot.qualityDescriptor,
+                    isDerived: snapshot.isDerived
+                  ) else {
+                return false
+            }
+            guard previousRow.graphState.keepsVisibleGraph else {
+                return true
+            }
 
-        let retainedDisplay = stableSparklineDisplay(marketIdentity: patch.marketIdentity)
+            let normalizedSnapshotPoints = Self.normalizedListSparklinePoints(snapshot.points)
+            let normalizedSnapshotSourceName = Self.listSparklineQualityName(
+                rawSource: snapshot.qualityDescriptor
+                    ?? (snapshot.source == .sparklineEndpoint ? "sparkline_endpoint" : "candle_snapshot"),
+                pointCount: normalizedSnapshotPoints.count
+            )
+            let snapshotState = snapshot.graphState(staleInterval: sparklineCacheStaleInterval, now: Date())
+            let incomingGraphState: MarketRowGraphState
+            switch patch.graphState {
+            case .liveVisible, .cachedVisible:
+                incomingGraphState = patch.graphState
+            case .staleVisible, .unavailable:
+                incomingGraphState = .staleVisible
+            case .none, .placeholder:
+                incomingGraphState = snapshotState
+            }
+            let existingQuality = Self.sparklineQuality(for: previousRow)
+            let incomingQuality = MarketSparklineQuality(
+                graphState: incomingGraphState,
+                points: normalizedSnapshotPoints,
+                pointCount: normalizedSnapshotPoints.count,
+                sourceVersion: Self.sparklineSourceVersion(from: snapshot.fetchedAt),
+                sourceName: normalizedSnapshotSourceName
+            )
+            return MarketSparklineQuality.graphQualityDecision(
+                current: existingQuality,
+                incoming: incomingQuality
+            ).accepted
+        } ?? false
+        if previousRow.sparklineTimeframe != expectedInterval,
+           patchCanAdoptSnapshotInterval == false {
+            recordStaleGraphPatchDrop(for: patch.marketIdentity)
+            return nil
+        }
+        let nextSparklineTimeframe = patchCanAdoptSnapshotInterval ? expectedInterval : previousRow.sparklineTimeframe
+
+        let retainedDisplay = stableSparklineDisplay(
+            marketIdentity: patch.marketIdentity,
+            preferredInterval: nextSparklineTimeframe
+        )
         let hasRetainedVisibleGraph = retainedDisplay?.hasRenderableGraph == true
             || (previousRow.graphState.keepsVisibleGraph
                 && MarketSparklineRenderPolicy.hasVisibleRenderableGraph(
@@ -15289,6 +15666,7 @@ final class CryptoViewModel: ObservableObject {
             graphState: nextGraphState,
             sparklineSource: nextSourceName,
             sparklineRangeRatio: patch.snapshot?.rangeRatio,
+            sparklineTimeframe: nextSparklineTimeframe,
             sourceVersion: nextSourceVersion
         )
         let visibleRedrawReason = visibleSparklineRedrawReason(
@@ -15507,8 +15885,12 @@ final class CryptoViewModel: ObservableObject {
         if marketId.rangeOfCharacter(from: separators) != nil {
             let components = marketId.components(separatedBy: separators).filter { !$0.isEmpty }
             let knownQuotes = Set(MarketQuoteCurrency.allCases.map(\.rawValue))
+            let knownExchangePrefixes = Set(Exchange.allCases.map { $0.rawValue.uppercased() })
             if components.first == quote || components.last == quote {
                 return true
+            }
+            if let first = components.first, knownExchangePrefixes.contains(first) {
+                return quoteCurrency == .krw
             }
             if let first = components.first, knownQuotes.contains(first) {
                 return false
@@ -15551,8 +15933,15 @@ final class CryptoViewModel: ObservableObject {
                 ?? pricesByMarketIdentity[resolvedMarketIdentity(exchange: exchange, symbol: coin.symbol)],
             cachedRow: cachedRow,
             favoriteSymbols: favCoins,
-            sparklineSnapshot: sparklineSnapshot(marketIdentity: marketIdentity),
-            stableSparklineDisplay: stableSparklineDisplay(marketIdentity: marketIdentity),
+            sparklineSnapshot: sparklineSnapshot(
+                marketIdentity: marketIdentity,
+                preferredInterval: cachedRow?.sparklineTimeframe
+            ),
+            stableSparklineDisplay: stableSparklineDisplay(
+                marketIdentity: marketIdentity,
+                preferredInterval: cachedRow?.sparklineTimeframe
+            ),
+            preferredSparklineInterval: sparklineInterval(for: marketIdentity),
             isSparklineLoading: loadingSparklineMarketIdentitiesByExchange[exchange]?.contains(marketIdentity) == true,
             isSparklineUnavailable: unavailableSparklineMarketIdentitiesByExchange[exchange]?.contains(marketIdentity) == true,
             preferDetailedVisibleGraph: priorityVisibleMarketIdentities.contains(marketIdentity),
@@ -15596,8 +15985,15 @@ final class CryptoViewModel: ObservableObject {
                     ?? pricesByMarketIdentity[resolvedMarketIdentity(exchange: exchange, symbol: coin.symbol)],
                 cachedRow: cachedRowsByMarketIdentity[marketIdentity],
                 favoriteSymbols: favCoins,
-                sparklineSnapshot: sparklineSnapshot(marketIdentity: marketIdentity),
-                stableSparklineDisplay: stableSparklineDisplay(marketIdentity: marketIdentity),
+                sparklineSnapshot: sparklineSnapshot(
+                    marketIdentity: marketIdentity,
+                    preferredInterval: cachedRowsByMarketIdentity[marketIdentity]?.sparklineTimeframe
+                ),
+                stableSparklineDisplay: stableSparklineDisplay(
+                    marketIdentity: marketIdentity,
+                    preferredInterval: cachedRowsByMarketIdentity[marketIdentity]?.sparklineTimeframe
+                ),
+                preferredSparklineInterval: sparklineInterval(for: marketIdentity),
                 isSparklineLoading: loadingSparklineMarketIdentitiesByExchange[exchange]?.contains(marketIdentity) == true,
                 isSparklineUnavailable: unavailableSparklineMarketIdentitiesByExchange[exchange]?.contains(marketIdentity) == true,
                 preferDetailedVisibleGraph: priorityDetailedMarketIdentities.contains(marketIdentity),
@@ -17920,7 +18316,14 @@ final class CryptoViewModel: ObservableObject {
 
         switch activeTab {
         case .market:
-            break
+            for marketIdentity in targetMarketStreamingMarketIdentities(for: selectedExchange) {
+                subscriptions.insert(
+                    PublicMarketSubscription(
+                        channel: .ticker,
+                        marketIdentity: marketIdentity
+                    )
+                )
+            }
         case .trade, .chart:
             if let selectedCoin {
                 let marketIdentity = selectedCoin.marketIdentity(exchange: selectedExchange, quoteCurrency: selectedQuoteCurrency)

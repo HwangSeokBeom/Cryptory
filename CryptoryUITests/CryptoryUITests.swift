@@ -44,12 +44,11 @@ final class CryptoryUITests: XCTestCase {
         app.launchEnvironment["CRYPTORY_UI_TEST_SCENARIO"] = "chart_settings"
         app.launch()
 
-        let settingsButton = app.buttons["차트 설정"].firstMatch
-        XCTAssertTrue(settingsButton.waitForExistence(timeout: 6))
-        settingsButton.tap()
+        let settingsButton = app.buttons["chart_settings_button"].firstMatch
+        tap(settingsButton, in: app, timeout: 6)
 
-        XCTAssertTrue(app.staticTexts["차트 설정"].waitForExistence(timeout: 3))
-        XCTAssertTrue(app.buttons["지표 상세 설정"].waitForExistence(timeout: 2))
+        assertExists(app.otherElements["chart_settings_sheet"].firstMatch, in: app, timeout: 3)
+        assertExists(app.buttons["지표 상세 설정"].firstMatch, in: app, timeout: 2)
 
         func value(for label: String) -> String? {
             app.buttons[label].firstMatch.value as? String
@@ -79,30 +78,29 @@ final class CryptoryUITests: XCTestCase {
         XCTAssertEqual(value(for: blockedTopIndicator), "선택 안 됨")
         XCTAssertEqual(selectedTopCount(), 3)
 
-        app.buttons["차트 형식"].firstMatch.tap()
+        app.buttons["chart_settings_tab_chart_style"].firstMatch.tap()
         XCTAssertTrue(app.buttons["라인"].firstMatch.waitForExistence(timeout: 2))
         app.buttons["라인"].firstMatch.tap()
         XCTAssertEqual(value(for: "라인"), "선택됨")
 
-        app.buttons["보기 설정"].firstMatch.tap()
+        app.buttons["chart_settings_tab_display"].firstMatch.tap()
         XCTAssertTrue(app.buttons["해외거래소 차트 색상 적용"].firstMatch.waitForExistence(timeout: 2))
         app.buttons["해외거래소 차트 색상 적용"].firstMatch.tap()
         app.buttons["협정 세계시(UTC) 적용"].firstMatch.tap()
         XCTAssertEqual(value(for: "해외거래소 차트 색상 적용"), "켬")
         XCTAssertEqual(value(for: "협정 세계시(UTC) 적용"), "켬")
-        XCTAssertTrue(app.buttons["종목 비교"].firstMatch.exists)
+        XCTAssertTrue(app.buttons["chart_settings_compare_row"].firstMatch.exists)
 
-        app.buttons["종목 비교"].firstMatch.tap()
-        XCTAssertTrue(app.staticTexts["종목 비교"].waitForExistence(timeout: 2))
-        let quickCompareButton = app.buttons["quickCompare_ETH"]
-        XCTAssertTrue(quickCompareButton.waitForExistence(timeout: 2))
-        quickCompareButton.tap()
+        tap(app.buttons["chart_settings_compare_row"].firstMatch, in: app, timeout: 3)
+        assertExists(app.staticTexts["quick_compare_section"].firstMatch, in: app, timeout: 3)
+        let quickCompareButton = app.buttons["quickCompare_ETH"].firstMatch
+        tap(quickCompareButton, in: app, timeout: 3)
         let selectedComparedSymbol = app.otherElements.matching(
             NSPredicate(format: "identifier BEGINSWITH %@", "selectedComparedSymbol_")
         ).firstMatch
-        XCTAssertTrue(selectedComparedSymbol.waitForExistence(timeout: 2))
+        assertExists(selectedComparedSymbol, in: app, timeout: 2)
         app.buttons["chartSettingsCompareBackButton"].tap()
-        XCTAssertTrue(app.staticTexts["차트 설정"].waitForExistence(timeout: 2))
+        assertExists(app.otherElements["chart_settings_sheet"].firstMatch, in: app, timeout: 2)
 
         let sheetTitle = app.staticTexts["차트 설정"].firstMatch
         let start = sheetTitle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
@@ -112,7 +110,7 @@ final class CryptoryUITests: XCTestCase {
         waitForExpectations(timeout: 3)
 
         settingsButton.tap()
-        XCTAssertTrue(app.staticTexts["차트 설정"].waitForExistence(timeout: 3))
+        assertExists(app.otherElements["chart_settings_sheet"].firstMatch, in: app, timeout: 3)
         app.buttons["지표 상세 설정"].firstMatch.tap()
         XCTAssertTrue(app.staticTexts["지표 상세 설정"].waitForExistence(timeout: 2))
         XCTAssertTrue(app.buttons["이동평균선"].firstMatch.waitForExistence(timeout: 2))
@@ -123,13 +121,12 @@ final class CryptoryUITests: XCTestCase {
         app.launchEnvironment["CRYPTORY_UI_TEST_RESET_DEFAULTS"] = "0"
         app.launch()
 
-        XCTAssertTrue(settingsButton.waitForExistence(timeout: 6))
-        settingsButton.tap()
-        XCTAssertTrue(app.staticTexts["차트 설정"].waitForExistence(timeout: 3))
-        app.buttons["차트 형식"].firstMatch.tap()
+        tap(app.buttons["chart_settings_button"].firstMatch, in: app, timeout: 6)
+        assertExists(app.otherElements["chart_settings_sheet"].firstMatch, in: app, timeout: 3)
+        app.buttons["chart_settings_tab_chart_style"].firstMatch.tap()
         XCTAssertTrue(app.buttons["라인"].firstMatch.waitForExistence(timeout: 2))
         XCTAssertEqual(value(for: "라인"), "선택됨")
-        app.buttons["보기 설정"].firstMatch.tap()
+        app.buttons["chart_settings_tab_display"].firstMatch.tap()
         XCTAssertTrue(app.buttons["해외거래소 차트 색상 적용"].firstMatch.waitForExistence(timeout: 2))
         XCTAssertEqual(value(for: "해외거래소 차트 색상 적용"), "켬")
         XCTAssertEqual(value(for: "협정 세계시(UTC) 적용"), "켬")
@@ -141,5 +138,39 @@ final class CryptoryUITests: XCTestCase {
         measure(metrics: [XCTApplicationLaunchMetric()]) {
             XCUIApplication().launch()
         }
+    }
+
+    private func assertExists(
+        _ element: XCUIElement,
+        in app: XCUIApplication,
+        timeout: TimeInterval,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        XCTAssertTrue(
+            element.waitForExistence(timeout: timeout),
+            "Expected element to exist. Snapshot:\n\(debugSnapshot(app))",
+            file: file,
+            line: line
+        )
+    }
+
+    private func tap(
+        _ element: XCUIElement,
+        in app: XCUIApplication,
+        timeout: TimeInterval,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        assertExists(element, in: app, timeout: timeout, file: file, line: line)
+        if element.isHittable {
+            element.tap()
+        } else {
+            element.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        }
+    }
+
+    private func debugSnapshot(_ app: XCUIApplication) -> String {
+        String(app.debugDescription.prefix(6_000))
     }
 }

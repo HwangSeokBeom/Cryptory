@@ -48,6 +48,7 @@ struct PeriodSelector: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel("차트 설정")
+            .accessibilityIdentifier("chart_settings_button")
         }
         .padding(.leading, 16)
         .padding(.trailing, 12)

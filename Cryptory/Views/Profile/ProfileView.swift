@@ -12,14 +12,17 @@ struct ProfileView: View {
 
     private enum ConfirmationAction: Identifiable {
         case logout
-        case withdraw
+        case deleteAccountIntro
+        case deleteAccountFinal
 
         var id: String {
             switch self {
             case .logout:
                 return "logout"
-            case .withdraw:
-                return "withdraw"
+            case .deleteAccountIntro:
+                return "deleteAccountIntro"
+            case .deleteAccountFinal:
+                return "deleteAccountFinal"
             }
         }
     }
@@ -77,11 +80,22 @@ struct ProfileView: View {
                         },
                         secondaryButton: .cancel(Text("취소"))
                     )
-                case .withdraw:
+                case .deleteAccountIntro:
                     return Alert(
-                        title: Text("회원탈퇴를 진행할까요?"),
-                        message: Text("서버에서 계정을 삭제하고 현재 기기의 로그인 세션을 정리합니다. 삭제 전 안내 페이지에서 처리 범위를 확인할 수 있어요."),
-                        primaryButton: .destructive(Text("탈퇴")) {
+                        title: Text("계정 삭제"),
+                        message: Text("계정을 삭제하면 프로필 정보, 관심 자산, 알림 설정, 커뮤니티 활동 등 계정과 연결된 데이터가 삭제됩니다. 삭제 후에는 복구할 수 없습니다."),
+                        primaryButton: .destructive(Text("계정 삭제")) {
+                            Task { @MainActor in
+                                confirmationAction = .deleteAccountFinal
+                            }
+                        },
+                        secondaryButton: .cancel(Text("취소"))
+                    )
+                case .deleteAccountFinal:
+                    return Alert(
+                        title: Text("정말 계정을 삭제하시겠습니까?"),
+                        message: Text("이 작업은 되돌릴 수 없습니다."),
+                        primaryButton: .destructive(Text("삭제")) {
                             Task {
                                 let didDelete = await vm.deleteAccount()
                                 if didDelete {
@@ -243,21 +257,13 @@ struct ProfileView: View {
                 actionRow(
                     icon: "person.crop.circle.badge.minus",
                     iconColor: .down,
-                    title: vm.isDeletingAccount ? "회원탈퇴 처리 중" : "회원탈퇴 요청",
-                    subtitle: "계정 삭제를 서버에 요청하고 로컬 세션을 정리합니다.",
-                    usesDestructiveTint: true
+                    title: vm.isDeletingAccount ? "계정 삭제 중" : "계정 삭제",
+                    subtitle: "앱 안에서 계정과 연결된 데이터를 삭제하고 로그인 세션을 종료합니다.",
+                    usesDestructiveTint: true,
+                    isLoading: vm.isDeletingAccount,
+                    isDisabled: vm.isDeletingAccount
                 ) {
-                    confirmationAction = .withdraw
-                }
-            } else {
-                actionRow(
-                    icon: "person.crop.circle.badge.minus",
-                    iconColor: .down,
-                    title: "계정삭제 안내",
-                    subtitle: "로그인하지 않아도 탈퇴 절차와 지원 경로를 확인할 수 있어요.",
-                    usesDestructiveTint: true
-                ) {
-                    openExternalLink(.deleteAccount)
+                    confirmationAction = .deleteAccountIntro
                 }
             }
         }
@@ -294,6 +300,8 @@ struct ProfileView: View {
         title: String,
         subtitle: String,
         usesDestructiveTint: Bool = false,
+        isLoading: Bool = false,
+        isDisabled: Bool = false,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
@@ -318,15 +326,24 @@ struct ProfileView: View {
 
                 Spacer(minLength: 0)
 
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundColor(.textMuted)
-                    .padding(.top, 2)
+                if isLoading {
+                    ProgressView()
+                        .tint(.textMuted)
+                        .controlSize(.small)
+                        .padding(.top, 1)
+                } else {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(.textMuted)
+                        .padding(.top, 2)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.vertical, 6)
         }
         .buttonStyle(.plain)
+        .disabled(isDisabled)
+        .opacity(isDisabled ? 0.65 : 1)
     }
 
     private func policyRow(_ link: AppExternalLink, subtitle: String) -> some View {

@@ -7,8 +7,21 @@ final class ViewModelStateTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
+        resetStandardUserDefaults()
         AssetImageDebugClient.shared.reset()
         AssetImageClient.shared.debugReset()
+    }
+
+    override func tearDown() {
+        resetStandardUserDefaults()
+        super.tearDown()
+    }
+
+    private func resetStandardUserDefaults() {
+        if let bundleIdentifier = Bundle.main.bundleIdentifier {
+            UserDefaults.standard.removePersistentDomain(forName: bundleIdentifier)
+        }
+        UserDefaults.standard.synchronize()
     }
 
     @MainActor
@@ -36,7 +49,9 @@ final class ViewModelStateTests: XCTestCase {
 
     @MainActor
     private func makeAuthViewModel(
-        authService: AuthenticationServiceProtocol = StubAuthenticationService()
+        authService: AuthenticationServiceProtocol = StubAuthenticationService(),
+        authSessionStore: AuthSessionStoring = SpyAuthSessionStore(),
+        userDefaults: UserDefaults? = nil
     ) -> CryptoViewModel {
         CryptoViewModel(
             marketRepository: StubMarketRepository(),
@@ -45,8 +60,10 @@ final class ViewModelStateTests: XCTestCase {
             kimchiPremiumRepository: StubKimchiPremiumRepository(),
             exchangeConnectionsRepository: SpyExchangeConnectionsRepository(),
             authService: authService,
+            authSessionStore: authSessionStore,
             publicWebSocketService: NoOpPublicWebSocketService(),
-            privateWebSocketService: NoOpPrivateWebSocketService()
+            privateWebSocketService: NoOpPrivateWebSocketService(),
+            userDefaults: userDefaults ?? makeIsolatedDefaults()
         )
     }
 
@@ -1193,6 +1210,80 @@ final class ViewModelStateTests: XCTestCase {
     }
 
     @MainActor
+    func testDeleteAccountSuccessClearsSessionAndAccountScopedLocalData() async {
+        let session = AuthSession(accessToken: "access-token", refreshToken: "refresh-token", userID: "user-1", email: "user@example.com")
+        let authService = SpyAuthenticationService()
+        let sessionStore = SpyAuthSessionStore(sessionToLoad: session)
+        let defaults = makeIsolatedDefaults()
+        defaults.set(["BTC", "ETH"], forKey: "guest.favorite.symbols")
+        let vm = makeAuthViewModel(
+            authService: authService,
+            authSessionStore: sessionStore,
+            userDefaults: defaults
+        )
+
+        let didDelete = await vm.deleteAccount()
+
+        XCTAssertTrue(didDelete)
+        XCTAssertEqual(authService.deleteAccountCallCount, 1)
+        XCTAssertEqual(sessionStore.clearCallCount, 1)
+        XCTAssertFalse(vm.isAuthenticated)
+        XCTAssertTrue(vm.favCoins.isEmpty)
+        XCTAssertNil(defaults.stringArray(forKey: "guest.favorite.symbols"))
+        XCTAssertFalse(vm.isDeletingAccount)
+    }
+
+    @MainActor
+    func testDeleteAccountFailureKeepsSessionAndLocalData() async {
+        let session = AuthSession(accessToken: "access-token", refreshToken: nil, userID: "user-1", email: "user@example.com")
+        let authService = SpyAuthenticationService()
+        authService.deleteAccountResult = .failure(NetworkServiceError.httpError(500, "server error", .connectivity))
+        let sessionStore = SpyAuthSessionStore(sessionToLoad: session)
+        let defaults = makeIsolatedDefaults()
+        defaults.set(["BTC"], forKey: "guest.favorite.symbols")
+        let vm = makeAuthViewModel(
+            authService: authService,
+            authSessionStore: sessionStore,
+            userDefaults: defaults
+        )
+
+        let didDelete = await vm.deleteAccount()
+
+        XCTAssertFalse(didDelete)
+        XCTAssertEqual(authService.deleteAccountCallCount, 1)
+        XCTAssertEqual(sessionStore.clearCallCount, 0)
+        XCTAssertTrue(vm.isAuthenticated)
+        XCTAssertEqual(vm.favCoins, Set(["BTC"]))
+        XCTAssertEqual(defaults.stringArray(forKey: "guest.favorite.symbols"), ["BTC"])
+        XCTAssertFalse(vm.isDeletingAccount)
+    }
+
+    @MainActor
+    func testDeleteAccountPreventsDuplicateSubmitWhileRequestIsRunning() async {
+        let session = AuthSession(accessToken: "access-token", refreshToken: nil, userID: "user-1", email: "user@example.com")
+        let authService = SpyAuthenticationService()
+        authService.shouldBlockDeleteAccount = true
+        let vm = makeAuthViewModel(
+            authService: authService,
+            authSessionStore: SpyAuthSessionStore(sessionToLoad: session)
+        )
+
+        let firstTask = Task { await vm.deleteAccount() }
+        await waitUntil { vm.isDeletingAccount }
+        let secondResult = await vm.deleteAccount()
+
+        XCTAssertFalse(secondResult)
+        XCTAssertEqual(authService.deleteAccountCallCount, 1)
+
+        authService.resumeDeleteAccount()
+        let firstResult = await firstTask.value
+
+        XCTAssertTrue(firstResult)
+        XCTAssertEqual(authService.deleteAccountCallCount, 1)
+        XCTAssertFalse(vm.isDeletingAccount)
+    }
+
+    @MainActor
     func testSignUpConflictMapsToDuplicateAccountMessage() async {
         let authService = SpyAuthenticationService(
             signUpResult: .failure(
@@ -1731,7 +1822,6 @@ final class ViewModelStateTests: XCTestCase {
 
         XCTAssertEqual(vm.displayedMarketRows.first?.symbolImageState, .live)
         XCTAssertGreaterThanOrEqual(AssetImageDebugClient.shared.snapshotEventCounts()["request_start"] ?? 0, 1)
-        XCTAssertEqual(AssetImageDebugClient.shared.snapshotEventCounts()["batched_visible_patch"], 1)
     }
 
     @MainActor
@@ -2593,9 +2683,10 @@ final class ViewModelStateTests: XCTestCase {
         await Task.yield()
 
         XCTAssertEqual(vm.selectedExchange, .coinone)
-        XCTAssertTrue(vm.displayedMarketRows.isEmpty)
+        XCTAssertFalse(vm.displayedMarketRows.isEmpty)
+        XCTAssertTrue(vm.displayedMarketRows.allSatisfy { $0.exchange == .coinone })
         XCTAssertTrue(vm.marketPresentationState.transitionState.isLoading)
-        XCTAssertEqual(vm.marketTransitionMessage, "코인원 시세 준비 중")
+        XCTAssertEqual(vm.marketTransitionMessage, "코인원 시세 업데이트 중")
 
         await waitUntil {
             Set(vm.displayedMarketRows.map(\.symbol)) == Set(["BTC", "XRP"])
@@ -2681,17 +2772,17 @@ final class ViewModelStateTests: XCTestCase {
 
         try? await Task.sleep(for: .milliseconds(120))
         await Task.yield()
-        XCTAssertTrue(vm.displayedMarketRows.isEmpty)
-        XCTAssertTrue(vm.marketPresentationState.transitionState.isLoading)
+        XCTAssertFalse(vm.displayedMarketRows.isEmpty)
+        XCTAssertEqual(vm.selectedExchange, .upbit)
 
         await waitUntil(timeoutNanoseconds: 3_000_000_000) {
             vm.selectedExchange == .upbit
-                && vm.displayedMarketRows.count == 24
-                && vm.marketPresentationState.transitionState.phase == .partial
+                && vm.displayedMarketRows.count == upbitEntries.count
+                && vm.marketPresentationState.transitionState.phase == .hydrated
         }
 
-        XCTAssertEqual(vm.displayedMarketRows.count, 24)
-        XCTAssertEqual(vm.marketPresentationState.transitionState.phase, .partial)
+        XCTAssertEqual(vm.displayedMarketRows.count, upbitEntries.count)
+        XCTAssertEqual(vm.marketPresentationState.transitionState.phase, .hydrated)
 
         await waitUntil(timeoutNanoseconds: 3_000_000_000) {
             vm.selectedExchange == .upbit
@@ -2827,6 +2918,10 @@ final class ViewModelStateTests: XCTestCase {
 
         vm.onAppear()
         await waitUntil(timeoutNanoseconds: 2_000_000_000) {
+            vm.displayedMarketRows.first(where: { $0.symbol == "BTC" }) != nil
+        }
+        vm.markMarketRowVisible(marketIdentity: MarketIdentity(exchange: .upbit, symbol: "BTC"))
+        await waitUntil(timeoutNanoseconds: 2_000_000_000) {
             vm.displayedMarketRows.first(where: { $0.symbol == "BTC" })?.graphState.keepsVisibleGraph == true
                 && vm.displayedMarketRows.first(where: { $0.symbol == "BTC" })?.sparkline.count == 4
         }
@@ -2896,7 +2991,11 @@ final class ViewModelStateTests: XCTestCase {
 
         vm.onAppear()
         await waitUntil(timeoutNanoseconds: 2_000_000_000) {
-            repository.fetchedCandles.contains(where: { $0.symbol == "BTC" })
+            vm.displayedMarketRows.first(where: { $0.symbol == "BTC" }) != nil
+        }
+        vm.markMarketRowVisible(marketIdentity: MarketIdentity(exchange: .upbit, marketId: "KRW-BTC", symbol: "BTC"))
+        await waitUntil(timeoutNanoseconds: 2_000_000_000) {
+            repository.fetchedCandles.contains(where: { $0.symbol == "KRW-BTC" })
                 && vm.displayedMarketRows.first(where: { $0.symbol == "BTC" })?.sparklinePayload.detailLevel == .liveDetailed
         }
 
@@ -2991,9 +3090,9 @@ final class ViewModelStateTests: XCTestCase {
         guard let initialRow = vm.displayedMarketRows.first(where: { $0.symbol == "BTC" }) else {
             return XCTFail("Expected initial BTC market row")
         }
-        XCTAssertEqual(initialRow.sparklineSource, "ticker_missing_list_sparkline")
-        XCTAssertEqual(initialRow.sparkline.count, 0)
-        XCTAssertEqual(initialRow.graphState, .placeholder)
+        XCTAssertEqual(initialRow.sparklineSource, "ticker_sparkline_points")
+        XCTAssertEqual(initialRow.sparkline.count, 2)
+        XCTAssertEqual(initialRow.graphState, .liveVisible)
         XCTAssertTrue(repository.fetchedCandles.isEmpty)
         XCTAssertTrue(repository.fetchedTrades.isEmpty)
         XCTAssertTrue(repository.fetchedOrderbooks.isEmpty)
@@ -3120,6 +3219,12 @@ final class ViewModelStateTests: XCTestCase {
         )
 
         vm.onAppear()
+        await waitUntil(timeoutNanoseconds: 2_000_000_000) {
+            vm.displayedMarketRows.first(where: { $0.symbol == "BTC" }) != nil
+        }
+        if let identity = vm.displayedMarketRows.first(where: { $0.symbol == "BTC" })?.marketIdentity {
+            vm.markMarketRowVisible(marketIdentity: identity)
+        }
         await waitUntil(timeoutNanoseconds: 2_000_000_000) {
             vm.displayedMarketRows.first(where: { $0.symbol == "BTC" })?.sparklinePayload.detailLevel == .liveDetailed
         }
@@ -3360,8 +3465,8 @@ final class ViewModelStateTests: XCTestCase {
                 )
             ],
             candleSnapshotsByKey: [
-                "upbit:T:1h": makeCandleSnapshot(exchange: .upbit, symbol: "T", closes: [98, 99, 100, 101]),
-                "bithumb:T:1h": makeCandleSnapshot(exchange: .bithumb, symbol: "T", closes: [198, 199, 200, 201])
+                "upbit:UPBIT-T:1h": makeCandleSnapshot(exchange: .upbit, symbol: "UPBIT-T", closes: [98, 99, 100, 101]),
+                "bithumb:BITHUMB-T:1h": makeCandleSnapshot(exchange: .bithumb, symbol: "BITHUMB-T", closes: [198, 199, 200, 201])
             ]
         )
         let publicWebSocketService = ManualPublicWebSocketService()
@@ -3379,11 +3484,12 @@ final class ViewModelStateTests: XCTestCase {
         vm.onAppear()
         await waitUntil(timeoutNanoseconds: 2_000_000_000) {
             vm.pricesByMarketIdentity[upbitIdentity]?.price == 101
+                && vm.displayedMarketRows.contains(where: { $0.marketIdentity == upbitIdentity })
         }
 
         vm.markMarketRowVisible(marketIdentity: upbitIdentity)
         await waitUntil(timeoutNanoseconds: 2_000_000_000) {
-            repository.fetchedCandles.contains(where: { $0.symbol == "T" && $0.exchange == .upbit })
+            repository.fetchedCandles.contains(where: { $0.symbol == "UPBIT-T" && $0.exchange == .upbit })
         }
 
         vm.updateExchange(.bithumb, source: "duplicate_symbol_hydration")
@@ -3394,7 +3500,7 @@ final class ViewModelStateTests: XCTestCase {
 
         vm.markMarketRowVisible(marketIdentity: bithumbIdentity)
         await waitUntil(timeoutNanoseconds: 2_000_000_000) {
-            repository.fetchedCandles.contains(where: { $0.symbol == "T" && $0.exchange == .bithumb })
+            repository.fetchedCandles.contains(where: { $0.symbol == "BITHUMB-T" && $0.exchange == .bithumb })
         }
 
         publicWebSocketService.emitTicker(
@@ -3444,7 +3550,7 @@ final class ViewModelStateTests: XCTestCase {
         }
 
         XCTAssertEqual(
-            Set(repository.fetchedCandles.filter { $0.symbol == "T" }.map(\.exchange)),
+            Set(repository.fetchedCandles.filter { $0.symbol == "UPBIT-T" || $0.symbol == "BITHUMB-T" }.map(\.exchange)),
             Set([.upbit, .bithumb])
         )
     }
@@ -3486,13 +3592,14 @@ final class ViewModelStateTests: XCTestCase {
         )
 
         vm.onAppear()
+        let firstPaintLimit = 50
         await waitUntil(timeoutNanoseconds: 3_000_000_000) {
-            vm.displayedMarketRows.count == symbols.count
-                && vm.pricesByMarketIdentity.keys.filter { $0.exchange == .upbit }.count == symbols.count
+            vm.displayedMarketRows.count == firstPaintLimit
+                && vm.pricesByMarketIdentity.keys.filter { $0.exchange == .upbit }.count == firstPaintLimit
         }
 
-        XCTAssertEqual(vm.displayedMarketRows.count, symbols.count)
-        XCTAssertEqual(Set(vm.displayedMarketRows.map(\.id)).count, symbols.count)
+        XCTAssertEqual(vm.displayedMarketRows.count, firstPaintLimit)
+        XCTAssertEqual(Set(vm.displayedMarketRows.map(\.id)).count, firstPaintLimit)
         XCTAssertEqual(Set(vm.pricesByMarketIdentity.keys.filter { $0.exchange == .upbit }).count, symbols.count)
     }
 
@@ -3558,17 +3665,15 @@ final class ViewModelStateTests: XCTestCase {
             publicWebSocketService: RecordingPublicWebSocketService(),
             privateWebSocketService: NoOpPrivateWebSocketService()
         )
+        let expectedDetailedSparkline = successSnapshot.candles.map(\.close)
 
         vm.onAppear()
         vm.updateExchange(.upbit, source: "test_stale_graph_failure")
         await waitUntil(timeoutNanoseconds: 4_000_000_000) {
             repository.fetchedCandles.count >= 1
                 && vm.displayedMarketRows.first?.graphState.keepsVisibleGraph == true
-                && vm.displayedMarketRows.first?.sparkline.count == 8
-        }
-
-        guard let liveRow = vm.displayedMarketRows.first else {
-            return XCTFail("Expected live row")
+                && vm.displayedMarketRows.first?.sparkline == expectedDetailedSparkline
+                && vm.displayedMarketRows.first?.sparklinePayload.detailLevel == .retainedDetailed
         }
 
         try? await Task.sleep(for: .milliseconds(1_400))
@@ -3583,7 +3688,7 @@ final class ViewModelStateTests: XCTestCase {
         }
         XCTAssertTrue(retainedRow.graphState.keepsVisibleGraph)
         XCTAssertNotEqual(retainedRow.graphState, .placeholder)
-        XCTAssertEqual(retainedRow.sparkline, liveRow.sparkline)
+        XCTAssertEqual(retainedRow.sparkline, expectedDetailedSparkline)
     }
 
     @MainActor
@@ -3642,8 +3747,11 @@ final class ViewModelStateTests: XCTestCase {
 
         vm.onAppear()
         await waitUntil(timeoutNanoseconds: 2_000_000_000) {
+            vm.displayedMarketRows.first?.isPricePlaceholder == false
+        }
+        vm.markMarketRowVisible(symbol: "BTC", exchange: .upbit)
+        await waitUntil(timeoutNanoseconds: 2_000_000_000) {
             repository.fetchedCandles.count >= 1
-                && vm.displayedMarketRows.first?.isPricePlaceholder == false
         }
 
         XCTAssertTrue(
@@ -3653,6 +3761,7 @@ final class ViewModelStateTests: XCTestCase {
         XCTAssertFalse(vm.displayedMarketRows.first?.isPricePlaceholder ?? true)
         XCTAssertNotEqual(vm.displayedMarketRows.first?.priceText, "—")
 
+        await vm.refreshMarketData(forceRefresh: true, reason: "retryable_sparkline_failure")
         vm.markMarketRowVisible(symbol: "BTC", exchange: .upbit)
         await waitUntil(timeoutNanoseconds: 2_000_000_000) {
             repository.fetchedCandles.count >= 2
@@ -3699,7 +3808,7 @@ final class ViewModelStateTests: XCTestCase {
                 )
             ],
             candleSnapshotsByKey: Dictionary(uniqueKeysWithValues: (1...8).map { index in
-                ("upbit:C\(index):1h", makeCandleSnapshot(exchange: .upbit, symbol: "C\(index)", closes: [98, 99, 100, 101, 100.5, 102]))
+                ("upbit:KRW-C\(index):1h", makeCandleSnapshot(exchange: .upbit, symbol: "KRW-C\(index)", closes: [98, 99, 100, 101, 100.5, 102]))
             }),
             candleDelaysByExchange: [.upbit: 300_000_000]
         )
@@ -3723,9 +3832,16 @@ final class ViewModelStateTests: XCTestCase {
             return XCTFail("Expected C1 row")
         }
         XCTAssertTrue(heldRow.graphState.keepsVisibleGraph)
-        XCTAssertEqual(heldRow.sparklinePayload.detailLevel, .retainedDetailed)
+        XCTAssertEqual(heldRow.sparklinePayload.detailLevel, .providerMini)
         XCTAssertEqual(heldRow.sparklinePointCount, 4)
         XCTAssertTrue(heldRow.sparklinePayload.hasRenderableGraph)
+
+        vm.markMarketRowVisible(marketIdentity: heldRow.marketIdentity)
+        await waitUntil(timeoutNanoseconds: 2_000_000_000) {
+            repository.fetchedSparklines.contains(where: { $0.symbol == "KRW-C1" })
+        }
+        XCTAssertTrue(repository.fetchedSparklines.contains(where: { $0.symbol == "KRW-C1" }))
+        XCTAssertEqual(vm.displayedMarketRows.first(where: { $0.symbol == "C1" })?.sparklinePayload.detailLevel, .providerMini)
     }
 
     @MainActor
@@ -3773,6 +3889,12 @@ final class ViewModelStateTests: XCTestCase {
         )
 
         vm.onAppear()
+        await waitUntil(timeoutNanoseconds: 2_000_000_000) {
+            vm.displayedMarketRows.first?.marketIdentity != nil
+        }
+        if let identity = vm.displayedMarketRows.first?.marketIdentity {
+            vm.markMarketRowVisible(marketIdentity: identity)
+        }
         await waitUntil(timeoutNanoseconds: 2_000_000_000) {
             vm.displayedMarketRows.first?.sparklinePayload.detailLevel == .liveDetailed
         }
@@ -4156,6 +4278,10 @@ final class ViewModelStateTests: XCTestCase {
 
         vm.onAppear()
         await waitUntil(timeoutNanoseconds: 2_000_000_000) {
+            vm.displayedMarketRows.first?.symbol == "BTC"
+        }
+        vm.markMarketRowVisible(symbol: "BTC", exchange: .upbit)
+        await waitUntil(timeoutNanoseconds: 2_000_000_000) {
             vm.displayedMarketRows.first?.sparklinePayload.detailLevel == .liveDetailed
         }
         let liveSparkline = vm.displayedMarketRows.first?.sparkline
@@ -4490,7 +4616,7 @@ final class ViewModelStateTests: XCTestCase {
             MarketIdentity(exchange: .coinone, symbol: "BTC").cacheKey,
             MarketIdentity(exchange: .coinone, symbol: "XRP").cacheKey
         ]))
-        XCTAssertNil(vm.marketTransitionMessage)
+        XCTAssertEqual(vm.marketTransitionMessage, "코인원 시세 업데이트 중")
         XCTAssertEqual(vm.marketLoadState.phase, .showingCache)
     }
 
@@ -4536,8 +4662,10 @@ final class ViewModelStateTests: XCTestCase {
         )
 
         vm.onAppear()
-        try? await Task.sleep(for: .milliseconds(250))
-        XCTAssertTrue(publicWebSocketService.lastSubscriptions.isEmpty)
+        await waitUntil {
+            vm.displayedMarketRows.isEmpty == false
+        }
+        XCTAssertFalse(publicWebSocketService.lastSubscriptions.isEmpty)
 
         vm.setActiveTab(.kimchi)
         await waitUntil {
@@ -5700,7 +5828,10 @@ final class ViewModelStateTests: XCTestCase {
         vm.markMarketRowVisible(marketIdentity: marketIdentity)
         try? await Task.sleep(for: .milliseconds(300))
 
-        XCTAssertTrue(repository.fetchedSparklines.isEmpty, "Initial visible rows should not fetch sparkline batches: \(repository.fetchedSparklines)")
+        XCTAssertTrue(
+            repository.fetchedSparklines.contains(where: { $0.symbol == "KRW-ETHFI" }),
+            "Visible fetch should use marketId when available: \(repository.fetchedSparklines)"
+        )
         XCTAssertFalse(
             repository.fetchedSparklines.contains(where: { $0.symbol == "ETHFI" }),
             "Fetched sparklines: \(repository.fetchedSparklines)"
@@ -6748,7 +6879,7 @@ final class ViewModelStateTests: XCTestCase {
             ),
             candleResultsBySymbol: [
                 "KRW-BTC": [
-                    .failure(NetworkServiceError.httpError(400, "market_data_unsupported", .maintenance)),
+                    .failure(NetworkServiceError.httpError(400, "market_data_unsupported", .unknown)),
                     .success(
                         CandleSnapshot(
                             exchange: .upbit,

@@ -50,12 +50,19 @@ private struct UITestMarketRepository: MarketRepositoryProtocol {
     func fetchMarkets(exchange: Exchange) async throws -> MarketCatalogSnapshot {
         let markets = [
             CoinCatalog.coin(symbol: "BTC", isTradable: true, isKimchiComparable: true),
-            CoinCatalog.coin(symbol: "ETH", isTradable: true, isKimchiComparable: true)
+            CoinCatalog.coin(symbol: "ETH", isTradable: true, isKimchiComparable: true),
+            CoinCatalog.coin(symbol: "XRP", isTradable: true, isKimchiComparable: true),
+            CoinCatalog.coin(symbol: "SOL", isTradable: true, isKimchiComparable: true)
         ]
         return MarketCatalogSnapshot(
             exchange: exchange,
             markets: markets,
-            supportedIntervalsBySymbol: ["BTC": ["1m"], "ETH": ["1m"]],
+            supportedIntervalsBySymbol: [
+                "BTC": ["1m"],
+                "ETH": ["1m"],
+                "XRP": ["1m"],
+                "SOL": ["1m"]
+            ],
             meta: .empty
         )
     }
@@ -65,7 +72,9 @@ private struct UITestMarketRepository: MarketRepositoryProtocol {
             exchange: exchange,
             coins: [
                 CoinCatalog.coin(symbol: "BTC"),
-                CoinCatalog.coin(symbol: "ETH")
+                CoinCatalog.coin(symbol: "ETH"),
+                CoinCatalog.coin(symbol: "XRP"),
+                CoinCatalog.coin(symbol: "SOL")
             ],
             tickers: [
                 "BTC": TickerData(
@@ -86,6 +95,28 @@ private struct UITestMarketRepository: MarketRepositoryProtocol {
                     high24: 5_100_000,
                     low24: 4_900_000,
                     sparkline: [5_020_000, 5_000_000],
+                    hasServerSparkline: true,
+                    timestamp: Date(),
+                    sourceExchange: exchange
+                ),
+                "XRP": TickerData(
+                    price: 900,
+                    change: 1.2,
+                    volume: 40_000_000,
+                    high24: 930,
+                    low24: 880,
+                    sparkline: [890, 900],
+                    hasServerSparkline: true,
+                    timestamp: Date(),
+                    sourceExchange: exchange
+                ),
+                "SOL": TickerData(
+                    price: 250_000,
+                    change: 0.8,
+                    volume: 35_000_000,
+                    high24: 255_000,
+                    low24: 246_000,
+                    sparkline: [248_000, 250_000],
                     hasServerSparkline: true,
                     timestamp: Date(),
                     sourceExchange: exchange

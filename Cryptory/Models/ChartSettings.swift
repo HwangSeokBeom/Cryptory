@@ -147,6 +147,17 @@ enum ChartSettingsTab: Int, CaseIterable, Equatable {
             return "보기 설정"
         }
     }
+
+    nonisolated var accessibilityIdentifier: String {
+        switch self {
+        case .indicators:
+            return "chart_settings_tab_indicators"
+        case .chartStyle:
+            return "chart_settings_tab_chart_style"
+        case .viewOptions:
+            return "chart_settings_tab_display"
+        }
+    }
 }
 
 enum ChartIndicatorPlacement: String, Codable, Equatable {

@@ -5,6 +5,11 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
+        #if DEBUG
+        if AppTestEnvironment.isRunningUnitTests || AppTestEnvironment.isRunningUITests {
+            return true
+        }
+        #endif
         PushNotificationService.shared.configure()
         PushNotificationService.shared.requestAuthorizationAndRegister()
         return true

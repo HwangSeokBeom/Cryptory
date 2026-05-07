@@ -263,6 +263,18 @@ enum SymbolNormalization {
             return marketCandidate
         }
 
+        let normalizedMarketId = normalizedToken(marketId)
+        if let normalizedMarketId,
+           normalizedMarketId.rangeOfCharacter(from: separators) == nil,
+           quoteCurrencies.contains(normalizedMarketId) == false,
+           shouldPreferMarketIdCandidate(
+            normalizedMarketId,
+            rawSymbolCandidate: normalizedCanonicalSymbol ?? normalizedRawSymbol,
+            baseAssetCandidate: normalizedBaseAsset
+           ) {
+            return normalizedMarketId
+        }
+
         if let rawCandidate = baseAssetCodeFromPair(rawSymbol, quoteAsset: normalizedQuoteAsset) {
             return rawCandidate
         }
@@ -328,7 +340,7 @@ enum SymbolNormalization {
             if let lastPart = parts.last, quoteCurrencies.contains(lastPart) {
                 return normalizedToken(parts[0])
             }
-            return normalizedToken(parts[0])
+            return nil
         }
 
         if quoteCurrencies.contains(normalizedValue) {

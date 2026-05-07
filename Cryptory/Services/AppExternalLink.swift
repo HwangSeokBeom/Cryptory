@@ -15,7 +15,6 @@ enum AppExternalLink: String, CaseIterable, Identifiable {
         .privacyPolicy,
         .termsOfService,
         .communityPolicy,
-        .deleteAccount,
         .investmentDisclaimer,
         .home
     ]
@@ -33,7 +32,7 @@ enum AppExternalLink: String, CaseIterable, Identifiable {
         case .support:
             return "고객지원"
         case .deleteAccount:
-            return "계정삭제 안내"
+            return "계정 삭제"
         case .investmentDisclaimer:
             return "투자 유의 및 면책"
         case .communityPolicy:
@@ -52,7 +51,7 @@ enum AppExternalLink: String, CaseIterable, Identifiable {
         case .support:
             return "문의, 문제 신고, 앱 사용 지원 페이지를 엽니다."
         case .deleteAccount:
-            return "계정 삭제 절차와 데이터 처리 범위를 확인합니다."
+            return "앱 내 계정 삭제 기능의 데이터 처리 범위를 확인합니다."
         case .investmentDisclaimer:
             return "투자 유의사항과 면책 범위를 확인합니다."
         case .communityPolicy:
