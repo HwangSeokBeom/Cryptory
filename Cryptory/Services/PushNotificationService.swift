@@ -4,41 +4,61 @@ import UserNotifications
 import FirebaseCore
 import FirebaseMessaging
 
+@MainActor
 enum FirebaseBootstrapper {
     private static let lock = NSLock()
     private static var didAttemptConfigure = false
+    private static var configureSucceeded = false
+    private static var didLogConfigurationState = false
 
     @discardableResult
     static func configureIfNeeded() -> Bool {
         lock.lock()
-        defer { lock.unlock() }
-
-        if FirebaseApp.app() != nil {
-            didAttemptConfigure = true
-            logConfigurationState()
-            return true
-        }
-
-        guard didAttemptConfigure == false else {
-            logConfigurationState()
-            return FirebaseApp.app() != nil
+        if didAttemptConfigure {
+            let configured = configureSucceeded
+            lock.unlock()
+            logConfigurationStateIfNeeded(reason: configured ? nil : "previous_configure_failed")
+            return configured
         }
         didAttemptConfigure = true
+        lock.unlock()
 
         guard Bundle.main.path(forResource: "GoogleService-Info", ofType: "plist") != nil else {
             AppLogger.debug(.network, "[Firebase] configure skipped reason=missing_google_service_info")
-            logConfigurationState(reason: "missing_google_service_info")
+            setConfigured(false)
+            logConfigurationStateIfNeeded(reason: "missing_google_service_info")
             return false
         }
 
         FirebaseApp.configure()
         let configured = FirebaseApp.app() != nil
+        setConfigured(configured)
         AppLogger.debug(.network, "[Firebase] configure status=\(configured ? "configured" : "failed")")
-        logConfigurationState()
+        logConfigurationStateIfNeeded()
         return configured
     }
 
-    private static func logConfigurationState(reason: String? = nil) {
+    static var isConfigured: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return configureSucceeded
+    }
+
+    private static func setConfigured(_ configured: Bool) {
+        lock.lock()
+        configureSucceeded = configured
+        lock.unlock()
+    }
+
+    private static func logConfigurationStateIfNeeded(reason: String? = nil) {
+        lock.lock()
+        guard didLogConfigurationState == false else {
+            lock.unlock()
+            return
+        }
+        didLogConfigurationState = true
+        lock.unlock()
+
         let app = FirebaseApp.app()
         let configured = app != nil
         let projectID = app?.options.projectID ?? "nil"
@@ -82,6 +102,7 @@ final class FCMTokenRegistrar: FCMTokenRegistrarProtocol {
     }
 }
 
+@MainActor
 final class PushNotificationService: NSObject {
     static let shared = PushNotificationService()
 
@@ -105,7 +126,7 @@ final class PushNotificationService: NSObject {
     }
 
     func requestAuthorizationAndRegister() {
-        guard FirebaseApp.app() != nil else {
+        guard FirebaseBootstrapper.isConfigured else {
             AppLogger.debug(.network, "[Push] registration skipped reason=firebase_unconfigured")
             return
         }
@@ -122,7 +143,7 @@ final class PushNotificationService: NSObject {
     }
 
     func updateAPNSToken(_ deviceToken: Data) {
-        guard FirebaseApp.app() != nil else { return }
+        guard FirebaseBootstrapper.isConfigured else { return }
         Messaging.messaging().apnsToken = deviceToken
     }
 
@@ -180,6 +201,7 @@ extension PushNotificationService: UNUserNotificationCenterDelegate {
     }
 }
 
+@MainActor
 final class NotificationRouter {
     static let shared = NotificationRouter()
     var onPriceAlert: ((PushPriceAlertRoute) -> Void)?

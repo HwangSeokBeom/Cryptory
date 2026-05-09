@@ -78,8 +78,8 @@ enum TradeTimestampParser {
                 return parseNumericTimestamp(timestamp, source: source, logContext: logContext)
             }
 
-            if let date = iso8601Formatter.date(from: trimmed)
-                ?? alternateISO8601Formatter.date(from: trimmed)
+            if let date = Self.parseISO8601DateWithFraction(trimmed)
+                ?? Self.parseISO8601Date(trimmed)
                 ?? dateTimeFormatter.date(from: trimmed)
                 ?? slashDateTimeFormatter.date(from: trimmed) {
                 return TradeTimestampParseResult(
@@ -220,17 +220,17 @@ enum TradeTimestampParser {
         return formatter
     }()
 
-    private static let iso8601Formatter: ISO8601DateFormatter = {
+    private static func parseISO8601DateWithFraction(_ value: String) -> Date? {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         formatter.timeZone = .autoupdatingCurrent
-        return formatter
-    }()
+        return formatter.date(from: value)
+    }
 
-    private static let alternateISO8601Formatter: ISO8601DateFormatter = {
+    private static func parseISO8601Date(_ value: String) -> Date? {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime]
         formatter.timeZone = .autoupdatingCurrent
-        return formatter
-    }()
+        return formatter.date(from: value)
+    }
 }

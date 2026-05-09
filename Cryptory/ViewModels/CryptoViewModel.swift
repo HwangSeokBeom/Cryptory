@@ -4241,7 +4241,7 @@ final class CryptoViewModel: ObservableObject {
     }
 
     private nonisolated static func chartCandleRequestSymbol(for identity: MarketIdentity) -> String {
-        guard let marketId = identity.marketId else {
+        guard identity.marketId != nil else {
             return identity.symbol
         }
 
@@ -12388,6 +12388,11 @@ final class CryptoViewModel: ObservableObject {
                                 "[sparkline_batch_timeout] exchange=\(exchange.rawValue) quoteCurrency=\(marketIdentity.quoteCurrency.rawValue) requestedCount=\(marketIdentities.count) firstMarketIds=\(requestedMarketIds) timeoutMs=\(Int(requestTimeout * 1000)) cooldownMs=\(Int(sparklineFailureCooldownInterval * 1000))"
                             )
                         }
+                        AppLogger.debugOnce(
+                            .network,
+                            key: "sparkline-timeout-market-list-\(exchange.rawValue)-\(marketIdentity.quoteCurrency.rawValue)-\(key.interval)",
+                            "[Sparkline] fallback reason=timeout scope=marketList"
+                        )
                     }
                     if isUnsupportedSparklineError(error) {
                         unsupportedSparklineMarketIdentitiesByExchange[marketIdentity.exchange, default: []].insert(marketIdentity)
@@ -12627,10 +12632,10 @@ final class CryptoViewModel: ObservableObject {
         let cachedRow = marketPresentationSnapshotsByExchange[exchange]?.rows.first(where: {
             $0.marketIdentity == marketIdentity
         })
-        let coin = cachedRow?.coin
-            ?? marketsByExchange[exchange]?.first(where: { $0.marketIdentity(exchange: exchange, quoteCurrency: marketIdentity.quoteCurrency) == marketIdentity })
-            ?? tickerSnapshotCoinsByExchange[exchange]?.first(where: { $0.marketIdentity(exchange: exchange, quoteCurrency: marketIdentity.quoteCurrency) == marketIdentity })
-        guard let coin else {
+        let hasCoin = cachedRow?.coin != nil
+            || marketsByExchange[exchange]?.contains(where: { $0.marketIdentity(exchange: exchange, quoteCurrency: marketIdentity.quoteCurrency) == marketIdentity }) == true
+            || tickerSnapshotCoinsByExchange[exchange]?.contains(where: { $0.marketIdentity(exchange: exchange, quoteCurrency: marketIdentity.quoteCurrency) == marketIdentity }) == true
+        guard hasCoin else {
             return nil
         }
 

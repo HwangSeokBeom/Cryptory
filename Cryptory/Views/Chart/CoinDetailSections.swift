@@ -971,9 +971,9 @@ struct CoinNewsDetailView: View {
     let feedViewState: NewsFeedViewState
     let selectedDate: Date
     let sortOrder: ContentSortOrder
-    let onSelectDate: (Date) -> Void
-    let onSelectSort: (ContentSortOrder) -> Void
-    let onRetry: () -> Void
+    let onSelectDate: @MainActor @Sendable (Date) -> Void
+    let onSelectSort: @MainActor @Sendable (ContentSortOrder) -> Void
+    let onRetry: @MainActor @Sendable () -> Void
     @State private var originalNewsItemIds: Set<String> = []
 
     var body: some View {
@@ -1144,6 +1144,7 @@ func sectionTitle(_ title: String) -> some View {
         .foregroundColor(.themeText)
 }
 
+@MainActor
 func newsSortMenu(sortOrder: ContentSortOrder, onSelect: @escaping (ContentSortOrder) -> Void) -> some View {
     Menu {
         ForEach([ContentSortOrder.latest, .oldest]) { sort in

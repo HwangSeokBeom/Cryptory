@@ -306,7 +306,7 @@ protocol PrivateWebSocketServicing: AnyObject {
     func updateSubscriptions(_ subscriptions: Set<PrivateTradingSubscription>)
 }
 
-final class WebSocketService: PublicWebSocketServicing {
+final class WebSocketService: PublicWebSocketServicing, @unchecked Sendable {
     private let instanceID = AppLogger.nextInstanceID(scope: "PublicWebSocketService")
     var onConnectionStateChange: ((PublicWebSocketConnectionState) -> Void)?
     var onTickerReceived: ((TickerStreamPayload) -> Void)?
@@ -513,13 +513,17 @@ final class WebSocketService: PublicWebSocketServicing {
     private func parseMessage(_ text: String) {
         switch MarketWebSocketMessageParser.parse(text) {
         case .some(.ticker(let payload)):
-            DispatchQueue.main.async { [weak self] in self?.onTickerReceived?(payload) }
+            let handler = onTickerReceived
+            DispatchQueue.main.async { [handler] in handler?(payload) }
         case .some(.orderbook(let payload)):
-            DispatchQueue.main.async { [weak self] in self?.onOrderbookReceived?(payload) }
+            let handler = onOrderbookReceived
+            DispatchQueue.main.async { [handler] in handler?(payload) }
         case .some(.trades(let payload)):
-            DispatchQueue.main.async { [weak self] in self?.onTradesReceived?(payload) }
+            let handler = onTradesReceived
+            DispatchQueue.main.async { [handler] in handler?(payload) }
         case .some(.candles(let payload)):
-            DispatchQueue.main.async { [weak self] in self?.onCandlesReceived?(payload) }
+            let handler = onCandlesReceived
+            DispatchQueue.main.async { [handler] in handler?(payload) }
         case .none:
             break
         }
@@ -548,7 +552,7 @@ final class WebSocketService: PublicWebSocketServicing {
     }
 }
 
-final class PrivateWebSocketService: PrivateWebSocketServicing {
+final class PrivateWebSocketService: PrivateWebSocketServicing, @unchecked Sendable {
     private let instanceID = AppLogger.nextInstanceID(scope: "PrivateWebSocketService")
     var onConnectionStateChange: ((PrivateWebSocketConnectionState) -> Void)?
     var onOrderReceived: ((OrderStreamPayload) -> Void)?
@@ -761,9 +765,11 @@ final class PrivateWebSocketService: PrivateWebSocketServicing {
     private func parseMessage(_ text: String) {
         switch PrivateWebSocketMessageParser.parse(text) {
         case .some(.order(let payload)):
-            DispatchQueue.main.async { [weak self] in self?.onOrderReceived?(payload) }
+            let handler = onOrderReceived
+            DispatchQueue.main.async { [handler] in handler?(payload) }
         case .some(.fill(let payload)):
-            DispatchQueue.main.async { [weak self] in self?.onFillReceived?(payload) }
+            let handler = onFillReceived
+            DispatchQueue.main.async { [handler] in handler?(payload) }
         case .none:
             break
         }
@@ -862,7 +868,7 @@ private func websocketDate(_ rawValue: Any?) -> Date? {
             let seconds = timestamp > 1_000_000_000_000 ? timestamp / 1000 : timestamp
             return Date(timeIntervalSince1970: seconds)
         }
-        return websocketISO8601Formatter.date(from: string) ?? websocketSimpleISO8601Formatter.date(from: string)
+        return websocketISO8601DateWithFraction(string) ?? websocketISO8601Date(string)
     default:
         return nil
     }
@@ -935,14 +941,14 @@ private let websocketTimeFormatter: DateFormatter = {
     return formatter
 }()
 
-private let websocketISO8601Formatter: ISO8601DateFormatter = {
+private func websocketISO8601DateWithFraction(_ value: String) -> Date? {
     let formatter = ISO8601DateFormatter()
     formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-    return formatter
-}()
+    return formatter.date(from: value)
+}
 
-private let websocketSimpleISO8601Formatter: ISO8601DateFormatter = {
+private func websocketISO8601Date(_ value: String) -> Date? {
     let formatter = ISO8601DateFormatter()
     formatter.formatOptions = [.withInternetDateTime]
-    return formatter
-}()
+    return formatter.date(from: value)
+}

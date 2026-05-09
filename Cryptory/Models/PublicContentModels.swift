@@ -92,7 +92,8 @@ struct CryptoNewsItem: Identifiable, Equatable, Hashable {
     }
 
     var hasTranslation: Bool {
-        translatedTitle?.trimmedNonEmpty != nil || translatedSummary?.trimmedNonEmpty != nil
+        Self.isMeaningfullyTranslated(original: originalTitle, translated: translatedTitle)
+            || Self.isMeaningfullyTranslated(original: originalSummary ?? summary, translated: translatedSummary)
     }
 
     func textVariant(showOriginal: Bool) -> (title: String, summary: String) {
@@ -103,8 +104,9 @@ struct CryptoNewsItem: Identifiable, Equatable, Hashable {
     }
 
     func replacingTranslated(title: String?, summary: String?, state: TranslationState = .translated) -> CryptoNewsItem {
-        let translatedTitle = title ?? self.translatedTitle
-        let translatedSummary = summary ?? self.translatedSummary
+        let translatedTitle = Self.isMeaningfullyTranslated(original: originalTitle, translated: title) ? title?.trimmedNonEmpty : self.translatedTitle
+        let translatedSummary = Self.isMeaningfullyTranslated(original: originalSummary ?? self.summary, translated: summary) ? summary?.trimmedNonEmpty : self.translatedSummary
+        let hasTranslatedText = translatedTitle != nil || translatedSummary != nil
         return CryptoNewsItem(
             id: id,
             title: translatedTitle ?? self.title,
@@ -122,12 +124,24 @@ struct CryptoNewsItem: Identifiable, Equatable, Hashable {
             originalURL: originalURL,
             thumbnailURL: thumbnailURL,
             originalLanguage: originalLanguage,
-            renderLanguage: translatedTitle != nil || translatedSummary != nil ? "ko" : renderLanguage,
-            translationState: translatedTitle != nil || translatedSummary != nil ? state : .failed,
+            renderLanguage: hasTranslatedText ? "ko" : renderLanguage,
+            translationState: hasTranslatedText ? state : .originalOnly,
             titleFallbackUsed: translatedTitle == nil && titleFallbackUsed,
             summaryFallbackUsed: translatedSummary == nil && summaryFallbackUsed,
             relevanceScore: relevanceScore
         )
+    }
+
+    private static func isMeaningfullyTranslated(original: String, translated: String?) -> Bool {
+        guard let translated = translated?.trimmedNonEmpty else { return false }
+        return normalizedComparableText(original) != normalizedComparableText(translated)
+    }
+
+    private static func normalizedComparableText(_ value: String) -> String {
+        value
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .lowercased()
     }
 
     private static let dateFormatter: DateFormatter = {
@@ -366,7 +380,10 @@ struct CoinDetailInfo: Equatable {
     }
 
     func replacingDescription(_ description: String?, language: String, notice: String?, translationState: TranslationState? = nil) -> CoinDetailInfo {
-        CoinDetailInfo(
+        let translatedDescription = language == "ko" && Self.isMeaningfullyTranslated(original: originalDescription, translated: description)
+            ? description?.trimmedNonEmpty
+            : self.translatedDescription
+        return CoinDetailInfo(
             symbol: symbol,
             displaySymbol: displaySymbol,
             name: name,
@@ -397,11 +414,26 @@ struct CoinDetailInfo: Equatable {
             marketSource: marketSource,
             fallbackUsed: fallbackUsed,
             originalDescription: originalDescription,
-            translatedDescription: language == "ko" ? description : translatedDescription,
-            descriptionRenderLanguage: language,
+            translatedDescription: translatedDescription,
+            descriptionRenderLanguage: translatedDescription == nil && language == "ko" ? (originalDescription == nil ? language : "en") : language,
             descriptionFallbackNotice: notice,
-            descriptionTranslationState: translationState ?? (language == "ko" ? .translated : .originalOnly)
+            descriptionTranslationState: translatedDescription == nil ? .originalOnly : (translationState ?? .translated)
         )
+    }
+
+    private static func isMeaningfullyTranslated(original: String?, translated: String?) -> Bool {
+        guard let original = original?.trimmedNonEmpty,
+              let translated = translated?.trimmedNonEmpty else {
+            return false
+        }
+        return original
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .lowercased()
+            != translated
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+                .lowercased()
     }
 }
 
@@ -1118,19 +1150,21 @@ struct MarketNewsSummary: Identifiable, Equatable {
     }
 
     func replacingTranslated(title: String?, summary: String?) -> MarketNewsSummary {
-        MarketNewsSummary(
+        let translatedTitle = title?.trimmedNonEmpty == originalTitle.trimmedNonEmpty ? nil : title?.trimmedNonEmpty
+        let translatedSummary = summary?.trimmedNonEmpty == originalSummary?.trimmedNonEmpty ? nil : summary?.trimmedNonEmpty
+        return MarketNewsSummary(
             id: id,
-            title: title ?? self.title,
-            summary: summary ?? self.summary,
+            title: translatedTitle ?? self.title,
+            summary: translatedSummary ?? self.summary,
             originalTitle: originalTitle,
             originalSummary: originalSummary,
-            translatedTitle: title ?? translatedTitle,
-            translatedSummary: summary ?? translatedSummary,
+            translatedTitle: translatedTitle ?? self.translatedTitle,
+            translatedSummary: translatedSummary ?? self.translatedSummary,
             source: source,
             publishedAt: publishedAt,
-            renderLanguage: title != nil || summary != nil ? "ko" : renderLanguage,
-            translationState: title != nil || summary != nil ? .translated : .failed,
-            fallbackUsed: title == nil && summary == nil && fallbackUsed
+            renderLanguage: translatedTitle != nil || translatedSummary != nil ? "ko" : renderLanguage,
+            translationState: translatedTitle != nil || translatedSummary != nil ? .translated : .originalOnly,
+            fallbackUsed: translatedTitle == nil && translatedSummary == nil && fallbackUsed
         )
     }
 }

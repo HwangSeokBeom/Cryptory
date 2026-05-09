@@ -1,6 +1,16 @@
 import UIKit
 
 final class AppDelegate: NSObject, UIApplicationDelegate {
+    override init() {
+        super.init()
+        #if DEBUG
+        if AppTestEnvironment.isRunningUnitTests || AppTestEnvironment.isRunningUITests {
+            return
+        }
+        #endif
+        FirebaseBootstrapper.configureIfNeeded()
+    }
+
     func application(
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil

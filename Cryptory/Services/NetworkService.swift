@@ -4295,10 +4295,10 @@ private func parseDateValue(_ rawValue: Any?) -> Date? {
             let seconds = timestamp > 1_000_000_000_000 ? timestamp / 1000 : timestamp
             return Date(timeIntervalSince1970: seconds)
         }
-        if let date = iso8601Formatter.date(from: string) {
+        if let date = parseISO8601DateWithFraction(string) {
             return date
         }
-        if let date = alternateISO8601Formatter.date(from: string) {
+        if let date = parseISO8601Date(string) {
             return date
         }
         return nil
@@ -4463,17 +4463,17 @@ private let shortTimeFormatter: DateFormatter = {
     return formatter
 }()
 
-private let iso8601Formatter: ISO8601DateFormatter = {
+private func parseISO8601DateWithFraction(_ value: String) -> Date? {
     let formatter = ISO8601DateFormatter()
     formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-    return formatter
-}()
+    return formatter.date(from: value)
+}
 
-private let alternateISO8601Formatter: ISO8601DateFormatter = {
+private func parseISO8601Date(_ value: String) -> Date? {
     let formatter = ISO8601DateFormatter()
     formatter.formatOptions = [.withInternetDateTime]
-    return formatter
-}()
+    return formatter.date(from: value)
+}
 
 private extension Dictionary where Key == String, Value == Any {
     func containsAny(_ keys: [String]) -> Bool {

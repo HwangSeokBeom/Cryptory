@@ -237,10 +237,10 @@ struct RemoteLegalLinksConfiguration: Decodable {
     }
 }
 
-@MainActor
-final class LegalLinksConfigurationCenter {
+final class LegalLinksConfigurationCenter: @unchecked Sendable {
     static let shared = LegalLinksConfigurationCenter()
 
+    private let lock = NSLock()
     private var storedConfiguration: LegalLinksConfiguration
     private var didAttemptRemoteFetch = false
 
@@ -249,19 +249,27 @@ final class LegalLinksConfigurationCenter {
     }
 
     var configuration: LegalLinksConfiguration {
-        storedConfiguration
+        lock.withLock { storedConfiguration }
     }
 
     func refreshIfNeeded(repository: LegalLinksConfigurationRepository? = nil) async {
-        guard didAttemptRemoteFetch == false else {
+        let shouldFetch = lock.withLock {
+            guard didAttemptRemoteFetch == false else {
+                return false
+            }
+            didAttemptRemoteFetch = true
+            return true
+        }
+        guard shouldFetch else {
             return
         }
-        didAttemptRemoteFetch = true
         let repository = repository ?? LiveLegalLinksConfigurationRepository()
 
         do {
             let configuration = try await repository.fetchConfiguration()
-            storedConfiguration = configuration
+            lock.withLock {
+                storedConfiguration = configuration
+            }
             AppLogger.debug(.network, "DEBUG [LegalLink] config source=server")
         } catch {
             AppLogger.debug(.network, "WARN [LegalLink] config source=fallback reason=\(error.localizedDescription)")
@@ -269,12 +277,13 @@ final class LegalLinksConfigurationCenter {
     }
 
     func replaceForTesting(_ configuration: LegalLinksConfiguration, didAttemptRemoteFetch: Bool = false) {
-        storedConfiguration = configuration
-        self.didAttemptRemoteFetch = didAttemptRemoteFetch
+        lock.withLock {
+            storedConfiguration = configuration
+            self.didAttemptRemoteFetch = didAttemptRemoteFetch
+        }
     }
 }
 
-@MainActor
 protocol LegalLinksConfigurationRepository {
     func fetchConfiguration() async throws -> LegalLinksConfiguration
 }

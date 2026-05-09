@@ -6600,6 +6600,74 @@ final class ViewModelStateTests: XCTestCase {
     }
 
     @MainActor
+    func testSparklineTimeoutFallbackDoesNotClearAuthenticatedSessionOrSetLoginError() async throws {
+        let session = AuthSession(
+            accessToken: "access-token",
+            refreshToken: "refresh-token",
+            userID: "user-1",
+            email: "user@example.com"
+        )
+        let repository = SpyMarketRepository()
+        repository.marketCatalogSnapshots[.upbit] = makeCatalogSnapshot(
+            exchange: .upbit,
+            entries: [(marketId: "KRW-BTC", symbol: "BTC", imageURL: nil)]
+        )
+        repository.tickerSnapshots[.upbit] = makeTickerSnapshot(
+            exchange: .upbit,
+            entries: [(marketId: "KRW-BTC", symbol: "BTC", price: 125_000_000, imageURL: nil, sparkline: [124_000_000])]
+        )
+        let vm = CryptoViewModel(
+            marketRepository: repository,
+            tradingRepository: SpyTradingRepository(),
+            portfolioRepository: SpyPortfolioRepository(),
+            kimchiPremiumRepository: StubKimchiPremiumRepository(),
+            exchangeConnectionsRepository: SpyExchangeConnectionsRepository(),
+            authService: StubAuthenticationService(),
+            authSessionStore: SpyAuthSessionStore(sessionToLoad: session),
+            publicWebSocketService: NoOpPublicWebSocketService(),
+            privateWebSocketService: NoOpPrivateWebSocketService()
+        )
+
+        vm.onAppear()
+        await waitUntil {
+            vm.displayedMarketRows.first?.symbol == "BTC"
+        }
+        let identity = try XCTUnwrap(vm.displayedMarketRows.first?.marketIdentity)
+        let readyPoints = [124_000_000.0, 124_500_000.0, 125_000_000.0, 125_500_000.0]
+
+        XCTAssertTrue(vm.applySparklinePatchForTesting(
+            marketIdentity: identity,
+            exchange: .upbit,
+            interval: "1m",
+            points: readyPoints,
+            graphState: .liveVisible,
+            reason: "test_ready_before_timeout",
+            sourceName: "sparkline_endpoint|provider_partial_real",
+            quality: "provider_partial_real",
+            realSeries: true,
+            graphDisplayAllowed: true
+        ))
+        await waitUntil {
+            vm.displayedMarketRows.first?.sparkline == readyPoints
+        }
+
+        _ = vm.applySparklineFailurePatchForTesting(
+            marketIdentity: identity,
+            exchange: .upbit,
+            graphState: .unavailable,
+            reason: "test_timeout_failure"
+        )
+        await Task.yield()
+
+        XCTAssertNotNil(vm.authState.session)
+        XCTAssertTrue(vm.isAuthenticated)
+        XCTAssertNil(vm.loginErrorMessage)
+        let row = try XCTUnwrap(vm.displayedMarketRows.first)
+        XCTAssertTrue(row.graphState.keepsVisibleGraph)
+        XCTAssertEqual(row.sparkline, readyPoints)
+    }
+
+    @MainActor
     func testLowerQualityResponseDoesNotReplaceReadyFullGraph() async throws {
         let repository = SpyMarketRepository()
         repository.marketCatalogSnapshots[.upbit] = makeCatalogSnapshot(

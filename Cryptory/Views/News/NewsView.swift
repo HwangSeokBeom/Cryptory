@@ -319,6 +319,7 @@ private enum CalculatorKind: String, CaseIterable, Identifiable {
     }
 
     @ViewBuilder
+    @MainActor
     var destination: some View {
         switch self {
         case .usdt:
@@ -507,7 +508,7 @@ private final class USDTCalculatorViewModel: ObservableObject {
         isFormatting = false
     }
 
-    static func sanitizedDecimal(_ value: String, maxIntegerDigits: Int, maxFractionDigits: Int) -> String {
+    nonisolated static func sanitizedDecimal(_ value: String, maxIntegerDigits: Int, maxFractionDigits: Int) -> String {
         let allowed = value
             .replacingOccurrences(of: ",", with: "")
             .filter { $0.isNumber || $0 == "." }
@@ -533,7 +534,7 @@ private final class USDTCalculatorViewModel: ObservableObject {
         return result
     }
 
-    static func number(from value: String) -> Double? {
+    nonisolated static func number(from value: String) -> Double? {
         let normalized = value.replacingOccurrences(of: ",", with: "")
         guard let number = Double(normalized), number.isFinite else {
             return nil
@@ -541,7 +542,7 @@ private final class USDTCalculatorViewModel: ObservableObject {
         return number
     }
 
-    static func formatDecimalInput(_ value: String) -> String {
+    nonisolated static func formatDecimalInput(_ value: String) -> String {
         guard value.isEmpty == false else { return "" }
         let hasTrailingDot = value.hasSuffix(".")
         let parts = value.split(separator: ".", omittingEmptySubsequences: false)
@@ -554,7 +555,7 @@ private final class USDTCalculatorViewModel: ObservableObject {
         return hasTrailingDot ? "\(groupedInteger)." : groupedInteger
     }
 
-    static func formatNumber(_ value: Double, maximumFractionDigits: Int) -> String {
+    nonisolated static func formatNumber(_ value: Double, maximumFractionDigits: Int) -> String {
         guard value.isFinite, value < 1_000_000_000_000_000_000 else { return "" }
         return value.formatted(.number.precision(.fractionLength(0...maximumFractionDigits)))
     }
@@ -575,7 +576,7 @@ private final class USDTCalculatorViewModel: ObservableObject {
         return "업데이트 \(updateTimeFormatter.string(from: date))"
     }
 
-    private static func formatIntegerString(_ value: String) -> String {
+    nonisolated private static func formatIntegerString(_ value: String) -> String {
         guard let number = Int64(value), value.isEmpty == false else {
             return value
         }
@@ -1988,7 +1989,8 @@ private struct NewsDetailView: View {
     }
 }
 
-func dateFilterBar(selectedDate: Date, onSelect: @escaping (Date) -> Void) -> some View {
+@MainActor
+func dateFilterBar(selectedDate: Date, onSelect: @escaping @MainActor (Date) -> Void) -> some View {
     var calendar = Calendar(identifier: .gregorian)
     calendar.timeZone = TimeZone(identifier: "Asia/Seoul") ?? .current
     let options: [(title: String, date: Date)] = [
@@ -2014,7 +2016,11 @@ func dateFilterBar(selectedDate: Date, onSelect: @escaping (Date) -> Void) -> so
             }
             DatePicker(
                 "날짜 선택",
-                selection: Binding(get: { selectedDate }, set: onSelect),
+                selection: Binding(get: { selectedDate }, set: { date in
+                    Task { @MainActor in
+                        onSelect(date)
+                    }
+                }),
                 displayedComponents: [.date]
             )
             .labelsHidden()

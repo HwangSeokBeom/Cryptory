@@ -40,6 +40,22 @@ struct TranslationResultItem: Codable, Equatable {
     let targetLanguage: String
     let provider: String?
     let state: TranslationState
+
+    var effectiveTranslatedText: String? {
+        guard let translated = translatedText?.trimmedNonEmpty else { return nil }
+        return Self.isMeaningfullyTranslated(originalText: originalText, translatedText: translated) ? translated : nil
+    }
+
+    private static func isMeaningfullyTranslated(originalText: String, translatedText: String) -> Bool {
+        normalizedComparableText(originalText) != normalizedComparableText(translatedText)
+    }
+
+    private static func normalizedComparableText(_ value: String) -> String {
+        value
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .lowercased()
+    }
 }
 
 struct TranslatableTextViewState: Equatable {
@@ -54,11 +70,11 @@ struct TranslatableTextViewState: Equatable {
         if showsOriginal {
             return originalText
         }
-        return translatedText?.trimmedNonEmpty ?? originalText
+        return hasMeaningfulTranslation ? (translatedText?.trimmedNonEmpty ?? originalText) : originalText
     }
 
     var isShowingTranslation: Bool {
-        showsOriginal == false && translatedText?.trimmedNonEmpty != nil
+        showsOriginal == false && hasMeaningfulTranslation
     }
 
     var translationBadgeText: String? {
@@ -66,13 +82,64 @@ struct TranslatableTextViewState: Equatable {
     }
 
     var toggleTitle: String? {
-        guard translatedText?.trimmedNonEmpty != nil else { return nil }
+        guard hasMeaningfulTranslation else { return nil }
         return showsOriginal ? "번역 보기" : "원문 보기"
+    }
+
+    private var hasMeaningfulTranslation: Bool {
+        guard let translatedText = translatedText?.trimmedNonEmpty else { return false }
+        return originalText
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .lowercased()
+            != translatedText
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+                .lowercased()
     }
 }
 
 protocol ClientTranslationServiceProtocol {
     func translate(items: [TranslationRequestItem], targetLanguage: String, context: String, symbol: String?) async -> [TranslationResultItem]
+}
+
+enum ClientTranslationUnavailabilityReason: String, Codable, Equatable, Hashable {
+    case unsupportedDeviceOrPairing
+    case sameLanguage
+}
+
+enum ClientTranslationAvailability: Equatable {
+    case available
+    case unavailable(ClientTranslationUnavailabilityReason)
+}
+
+protocol ClientTranslationAvailabilityChecking {
+    func availability(sourceLanguage: String?, targetLanguage: String) async -> ClientTranslationAvailability
+}
+
+struct AppleTranslationAvailabilityChecker: ClientTranslationAvailabilityChecking {
+    func availability(sourceLanguage: String?, targetLanguage: String) async -> ClientTranslationAvailability {
+        let sourceIdentifier = normalizedLanguageIdentifier(sourceLanguage) ?? "en"
+        let targetIdentifier = normalizedLanguageIdentifier(targetLanguage) ?? targetLanguage
+        guard sourceIdentifier != targetIdentifier else {
+            return .unavailable(.sameLanguage)
+        }
+        guard #available(iOS 26.0, *) else {
+            return .unavailable(.unsupportedDeviceOrPairing)
+        }
+        return await AppleTranslationRuntime.availability(
+            sourceLanguage: sourceIdentifier,
+            targetLanguage: targetIdentifier
+        )
+    }
+
+    private func normalizedLanguageIdentifier(_ value: String?) -> String? {
+        value?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .split(separator: "-")
+            .first
+            .map { String($0).lowercased() }
+    }
 }
 
 actor TranslationCache {
@@ -125,8 +192,11 @@ struct AppleTranslationService: ClientTranslationServiceProtocol {
         symbol: String?
     ) async -> [TranslationResultItem] {
         guard #available(iOS 26.0, *) else {
-            AppLogger.debug(.network, "[AppleTranslation] context=\(context) status=unavailable reason=ios_below_26 itemCount=\(items.count)")
-            AppLogger.debug(.network, "[Translation] skipped reason=unsupportedDeviceOrPairing sourceLocale=unknown targetLocale=\(targetLanguage)")
+            AppLogger.debugOnce(
+                .network,
+                key: "translation-ios-below-26-\(targetLanguage)",
+                "[Translation] skipped reason=unsupportedDeviceOrPairing sourceLocale=unknown targetLocale=\(targetLanguage)"
+            )
             return items.map {
                 TranslationResultItem(
                     id: $0.id,
@@ -135,7 +205,7 @@ struct AppleTranslationService: ClientTranslationServiceProtocol {
                     sourceLanguage: $0.sourceLanguage,
                     targetLanguage: targetLanguage,
                     provider: "apple_translation",
-                    state: .unavailable
+                    state: .originalOnly
                 )
             }
         }
@@ -151,6 +221,17 @@ struct AppleTranslationService: ClientTranslationServiceProtocol {
 
 @available(iOS 26.0, *)
 private enum AppleTranslationRuntime {
+    static func availability(sourceLanguage: String, targetLanguage: String) async -> ClientTranslationAvailability {
+        let availability = LanguageAvailability()
+        let source = Locale.Language(identifier: sourceLanguage)
+        let target = Locale.Language(identifier: targetLanguage)
+        let status = await availability.status(from: source, to: target)
+        guard status == .installed else {
+            return .unavailable(.unsupportedDeviceOrPairing)
+        }
+        return .available
+    }
+
     static func translate(
         items: [TranslationRequestItem],
         targetLanguage: String,
@@ -170,9 +251,12 @@ private enum AppleTranslationRuntime {
         for (sourceIdentifier, sourceItems) in grouped {
             let source = Locale.Language(identifier: sourceIdentifier)
             let status = await availability.status(from: source, to: target)
-            guard status != .unsupported else {
-                AppLogger.debug(.network, "[AppleTranslation] context=\(context) source=\(sourceIdentifier) target=\(targetLanguage) status=unsupported itemCount=\(sourceItems.count)")
-                AppLogger.debug(.network, "[Translation] skipped reason=unsupportedDeviceOrPairing sourceLocale=\(sourceIdentifier) targetLocale=\(targetLanguage)")
+            guard status == .installed else {
+                AppLogger.debugOnce(
+                    .network,
+                    key: "translation-unsupported-\(sourceIdentifier)-\(targetLanguage)",
+                    "[Translation] skipped reason=unsupportedDeviceOrPairing sourceLocale=\(sourceIdentifier) targetLocale=\(targetLanguage)"
+                )
                 results += sourceItems.map {
                     TranslationResultItem(
                         id: $0.id,
@@ -181,7 +265,7 @@ private enum AppleTranslationRuntime {
                         sourceLanguage: sourceIdentifier,
                         targetLanguage: targetLanguage,
                         provider: "apple_translation",
-                        state: .unavailable
+                        state: .originalOnly
                     )
                 }
                 continue
@@ -200,7 +284,17 @@ private enum AppleTranslationRuntime {
                     return (id, response)
                 })
                 for item in sourceItems {
-                    let translated = byId[item.id]?.targetText.trimmedNonEmpty
+                    let rawTranslated = byId[item.id]?.targetText.trimmedNonEmpty
+                    let result = TranslationResultItem(
+                        id: item.id,
+                        originalText: item.text,
+                        translatedText: rawTranslated,
+                        sourceLanguage: sourceIdentifier,
+                        targetLanguage: targetLanguage,
+                        provider: "apple_translation",
+                        state: rawTranslated == nil ? .originalOnly : .translated
+                    )
+                    let translated = result.effectiveTranslatedText
                     results.append(
                         TranslationResultItem(
                             id: item.id,
@@ -209,14 +303,18 @@ private enum AppleTranslationRuntime {
                             sourceLanguage: sourceIdentifier,
                             targetLanguage: targetLanguage,
                             provider: "apple_translation",
-                            state: translated == nil ? .failed : .translated
+                            state: translated == nil ? .originalOnly : .translated
                         )
                     )
                 }
                 AppLogger.debug(.network, "[AppleTranslation] context=\(context) source=\(sourceIdentifier) target=\(targetLanguage) status=success itemCount=\(sourceItems.count) translatedCount=\(responses.count)")
             } catch {
                 AppLogger.debug(.network, "[AppleTranslation] context=\(context) source=\(sourceIdentifier) target=\(targetLanguage) status=fallback_original error=\(error.localizedDescription)")
-                AppLogger.debug(.network, "[Translation] fallbackToOriginal reason=\(error.localizedDescription)")
+                AppLogger.debugOnce(
+                    .network,
+                    key: "translation-fallback-\(sourceIdentifier)-\(targetLanguage)",
+                    "[Translation] fallbackToOriginal reason=preflightUnsupported"
+                )
                 results += sourceItems.map {
                     TranslationResultItem(
                         id: $0.id,
@@ -225,7 +323,7 @@ private enum AppleTranslationRuntime {
                         sourceLanguage: sourceIdentifier,
                         targetLanguage: targetLanguage,
                         provider: "apple_translation",
-                        state: .failed
+                        state: .originalOnly
                     )
                 }
             }
@@ -236,15 +334,18 @@ private enum AppleTranslationRuntime {
 
 struct TranslationUseCase {
     let service: ClientTranslationServiceProtocol
+    let availabilityChecker: ClientTranslationAvailabilityChecking
     let cache: TranslationCache
     let maxBatchSize: Int
 
     init(
         service: ClientTranslationServiceProtocol = AppleTranslationService(),
+        availabilityChecker: ClientTranslationAvailabilityChecking = AppleTranslationAvailabilityChecker(),
         cache: TranslationCache = .shared,
         maxBatchSize: Int = 20
     ) {
         self.service = service
+        self.availabilityChecker = availabilityChecker
         self.cache = cache
         self.maxBatchSize = maxBatchSize
     }
@@ -280,20 +381,30 @@ struct TranslationUseCase {
 
         let missing = Array(missingByCacheKey.values)
         for chunk in missing.chunked(into: maxBatchSize) {
+            let preflighted = await preflight(chunk, targetLanguage: targetLanguage)
+            for fallback in preflighted.fallbacks {
+                let key = cacheKey(item: fallback.request, targetLanguage: targetLanguage, context: context, symbol: symbol)
+                for id in idsByCacheKey[key] ?? [fallback.result.id] {
+                    results[id] = remap(fallback.result, to: id)
+                }
+            }
+            guard preflighted.availableItems.isEmpty == false else { continue }
+
             let translated = await service.translate(
-                items: chunk,
+                items: preflighted.availableItems,
                 targetLanguage: targetLanguage,
                 context: context,
                 symbol: symbol
             )
             for result in translated {
-                let request = chunk.first { $0.id == result.id } ?? TranslationRequestItem(id: result.id, text: result.originalText, sourceLanguage: result.sourceLanguage)
+                let request = preflighted.availableItems.first { $0.id == result.id } ?? TranslationRequestItem(id: result.id, text: result.originalText, sourceLanguage: result.sourceLanguage)
                 let key = cacheKey(item: request, targetLanguage: targetLanguage, context: context, symbol: symbol)
-                if result.state == .translated {
-                    await cache.setValue(result, for: key)
+                let effectiveResult = normalizedResult(result)
+                if effectiveResult.state == .translated {
+                    await cache.setValue(effectiveResult, for: key)
                 }
-                for id in idsByCacheKey[key] ?? [result.id] {
-                    results[id] = remap(result, to: id)
+                for id in idsByCacheKey[key] ?? [effectiveResult.id] {
+                    results[id] = remap(effectiveResult, to: id)
                 }
             }
         }
@@ -318,11 +429,79 @@ struct TranslationUseCase {
         TranslationResultItem(
             id: id,
             originalText: result.originalText,
-            translatedText: result.translatedText,
+            translatedText: result.effectiveTranslatedText,
             sourceLanguage: result.sourceLanguage,
             targetLanguage: result.targetLanguage,
             provider: result.provider,
-            state: result.state
+            state: result.effectiveTranslatedText == nil && result.state != .translated ? .originalOnly : result.state
+        )
+    }
+
+    private func preflight(
+        _ items: [TranslationRequestItem],
+        targetLanguage: String
+    ) async -> (availableItems: [TranslationRequestItem], fallbacks: [(request: TranslationRequestItem, result: TranslationResultItem)]) {
+        var availabilityBySource: [String: ClientTranslationAvailability] = [:]
+        var availableItems: [TranslationRequestItem] = []
+        var fallbacks: [(request: TranslationRequestItem, result: TranslationResultItem)] = []
+
+        for item in items {
+            let source = item.sourceLanguage?.trimmedNonEmpty ?? "en"
+            let availability: ClientTranslationAvailability
+            if let cached = availabilityBySource[source] {
+                availability = cached
+            } else {
+                let checked = await availabilityChecker.availability(sourceLanguage: source, targetLanguage: targetLanguage)
+                availabilityBySource[source] = checked
+                availability = checked
+            }
+
+            switch availability {
+            case .available:
+                availableItems.append(item)
+            case .unavailable(let reason):
+                if reason == .unsupportedDeviceOrPairing {
+                    AppLogger.debugOnce(
+                        .network,
+                        key: "translation-preflight-\(source)-\(targetLanguage)",
+                        "[Translation] skipped reason=unsupportedDeviceOrPairing sourceLocale=\(source) targetLocale=\(targetLanguage)"
+                    )
+                    AppLogger.debugOnce(
+                        .network,
+                        key: "translation-preflight-fallback-\(source)-\(targetLanguage)",
+                        "[Translation] fallbackToOriginal reason=preflightUnsupported"
+                    )
+                }
+                fallbacks.append(
+                    (
+                        request: item,
+                        result: TranslationResultItem(
+                            id: item.id,
+                            originalText: item.text,
+                            translatedText: nil,
+                            sourceLanguage: item.sourceLanguage,
+                            targetLanguage: targetLanguage,
+                            provider: "apple_translation",
+                            state: .originalOnly
+                        )
+                    )
+                )
+            }
+        }
+
+        return (availableItems, fallbacks)
+    }
+
+    private func normalizedResult(_ result: TranslationResultItem) -> TranslationResultItem {
+        let translatedText = result.effectiveTranslatedText
+        return TranslationResultItem(
+            id: result.id,
+            originalText: result.originalText,
+            translatedText: translatedText,
+            sourceLanguage: result.sourceLanguage,
+            targetLanguage: result.targetLanguage,
+            provider: result.provider,
+            state: translatedText == nil ? .originalOnly : result.state
         )
     }
 

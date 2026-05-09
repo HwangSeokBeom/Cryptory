@@ -36,7 +36,7 @@ private func logGraphQualityDecision(
     )
 }
 
-private final class RetainedSparklineStore {
+private final class RetainedSparklineStore: @unchecked Sendable {
     static let shared = RetainedSparklineStore()
 
     private let firstPaintHoldInterval: TimeInterval = 0.14
@@ -185,7 +185,7 @@ fileprivate struct MarketSparklinePathResult {
     let didApplyTinyRangeBoost: Bool
 }
 
-private final class MarketSparklinePathCache {
+private final class MarketSparklinePathCache: @unchecked Sendable {
     static let shared = MarketSparklinePathCache()
 
     private let lock = NSLock()

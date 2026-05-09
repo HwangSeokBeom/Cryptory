@@ -71,17 +71,13 @@ enum USDTExchangeRateMapper {
             let seconds = timestamp > 1_000_000_000_000 ? timestamp / 1000 : timestamp
             return Date(timeIntervalSince1970: seconds)
         }
+        let iso8601WithFraction = ISO8601DateFormatter()
+        iso8601WithFraction.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         if let date = iso8601WithFraction.date(from: value) {
             return date
         }
+
+        let iso8601 = ISO8601DateFormatter()
         return iso8601.date(from: value)
     }
-
-    private static let iso8601WithFraction: ISO8601DateFormatter = {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return formatter
-    }()
-
-    private static let iso8601 = ISO8601DateFormatter()
 }

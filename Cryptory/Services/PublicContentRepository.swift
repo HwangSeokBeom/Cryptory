@@ -231,11 +231,11 @@ final class LivePublicContentRepository: PublicContentRepositoryProtocol {
                 context: "coin_description",
                 symbol: normalized
             )
-            if let translatedText = translated.translatedText?.trimmedNonEmpty {
+            if let translatedText = translated.effectiveTranslatedText {
                 info = info.replacingDescription(translatedText, language: "ko", notice: nil, translationState: translated.state)
                 AppLogger.debug(.network, "[CoinDescriptionTranslation] symbol=\(normalized) source=translateEndpoint usedServerKo=false usedTranslateEndpoint=true fallbackUsed=false status=success")
             } else {
-                info = info.replacingDescription(description, language: "en", notice: "번역 실패 · 원문 표시 중", translationState: .failed)
+                info = info.replacingDescription(description, language: "en", notice: nil, translationState: .originalOnly)
                 AppLogger.debug(.network, "[CoinDescriptionTranslation] symbol=\(normalized) source=english usedServerKo=false usedTranslateEndpoint=true fallbackUsed=true status=fallback_original")
             }
         } else {
@@ -728,8 +728,8 @@ final class LivePublicContentRepository: PublicContentRepositoryProtocol {
         }
         let translations = await translationUseCase.translate(items: requestItems, context: context, symbol: symbol)
         return items.map { item in
-            let title = translations["\(item.id)_title"]?.translatedText
-            let summary = translations["\(item.id)_summary"]?.translatedText
+            let title = translations["\(item.id)_title"]?.effectiveTranslatedText
+            let summary = translations["\(item.id)_summary"]?.effectiveTranslatedText
             if title != nil || summary != nil {
                 let nextItem = item.replacingTranslated(title: title, summary: summary)
                 AppLogger.debug(.network, "[NewsTranslation] id=\(item.id) hasKo=true fallbackUsed=false")
@@ -737,7 +737,7 @@ final class LivePublicContentRepository: PublicContentRepositoryProtocol {
             }
             let needsTranslation = item.titleFallbackUsed || item.summaryFallbackUsed
             AppLogger.debug(.network, "[NewsTranslation] id=\(item.id) hasKo=\(!needsTranslation) fallbackUsed=\(needsTranslation)")
-            return needsTranslation ? item.replacingTranslated(title: nil, summary: nil, state: .failed) : item
+            return needsTranslation ? item.replacingTranslated(title: nil, summary: nil, state: .originalOnly) : item
         }
     }
 
@@ -1921,10 +1921,10 @@ private enum PublicContentParser {
                 let seconds = timestamp > 1_000_000_000_000 ? timestamp / 1000 : timestamp
                 return Date(timeIntervalSince1970: seconds)
             }
-            if let date = iso8601WithFraction.date(from: string) {
+            if let date = parseISO8601DateWithFraction(string) {
                 return date
             }
-            return iso8601.date(from: string) ?? dateOnly.date(from: string)
+            return parseISO8601Date(string) ?? dateOnly.date(from: string)
         default:
             return nil
         }
@@ -1936,13 +1936,15 @@ private enum PublicContentParser {
         return dates.isEmpty ? nil : dates
     }
 
-    private static let iso8601WithFraction: ISO8601DateFormatter = {
+    private static func parseISO8601DateWithFraction(_ value: String) -> Date? {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return formatter
-    }()
+        return formatter.date(from: value)
+    }
 
-    private static let iso8601 = ISO8601DateFormatter()
+    private static func parseISO8601Date(_ value: String) -> Date? {
+        ISO8601DateFormatter().date(from: value)
+    }
 
     private static let dateOnly: DateFormatter = {
         let formatter = DateFormatter()

@@ -102,12 +102,10 @@ final class ChartSettingsPresenterHostViewController: UIViewController {
             sheetPresentationController.preferredCornerRadius = 28
         }
 
-        let presentBlock = { [weak self, weak navigationController] in
-            guard let self,
-                  let navigationController,
-                  self.presentedNavigationController == nil,
+        func presentBlock() {
+            guard self.presentedNavigationController == nil,
                   self.presentedViewController == nil else {
-                self?.cleanupPresentedState()
+                self.cleanupPresentedState()
                 return
             }
             self.presentedNavigationController = navigationController
@@ -117,7 +115,19 @@ final class ChartSettingsPresenterHostViewController: UIViewController {
         }
 
         if view.window == nil {
-            DispatchQueue.main.async(execute: presentBlock)
+            DispatchQueue.main.async { [weak self, weak navigationController] in
+                guard let self,
+                      let navigationController,
+                      self.presentedNavigationController == nil,
+                      self.presentedViewController == nil else {
+                    self?.cleanupPresentedState()
+                    return
+                }
+                self.presentedNavigationController = navigationController
+                self.present(navigationController, animated: true) {
+                    self.isPresentationPending = false
+                }
+            }
         } else {
             presentBlock()
         }
@@ -510,24 +520,30 @@ final class ChartSettingsBottomSheetViewController: UIViewController {
 
     private func makeIndicatorGrid(items: [ChartIndicatorItem]) -> UIStackView {
         makeGrid(items: items) { [weak self] item in
+            guard let self else {
+                return ChartSettingsSelectableCardView(accessory: .checkbox)
+            }
             let card = ChartSettingsSelectableCardView(accessory: .checkbox)
-            card.configure(title: item.title, isSelected: state.isIndicatorSelected(item.id), isEnabled: true)
+            card.configure(title: item.title, isSelected: self.state.isIndicatorSelected(item.id), isEnabled: true)
             card.accessibilityLabel = item.title
             card.accessibilityHint = "선택 또는 해제"
             card.onTap = { [weak self] in
                 self?.toggleIndicator(item.id)
             }
-            self?.indicatorCards[item.id] = card
+            self.indicatorCards[item.id] = card
             return card
         }
     }
 
     private func makeStyleGrid(items: [ChartStyleItem]) -> UIStackView {
         makeGrid(items: items) { [weak self] item in
+            guard let self else {
+                return ChartSettingsSelectableCardView(accessory: .icon(systemName: item.iconSystemName))
+            }
             let card = ChartSettingsSelectableCardView(accessory: .icon(systemName: item.iconSystemName))
             card.configure(
                 title: item.title,
-                isSelected: state.selectedChartStyle == item.id,
+                isSelected: self.state.selectedChartStyle == item.id,
                 isEnabled: item.isSupported
             )
             card.accessibilityLabel = item.title
@@ -536,7 +552,7 @@ final class ChartSettingsBottomSheetViewController: UIViewController {
                 guard item.isSupported else { return }
                 self?.selectChartStyle(item.id)
             }
-            self?.styleCards[item.id] = card
+            self.styleCards[item.id] = card
             return card
         }
     }
@@ -1740,7 +1756,10 @@ private final class ChartCompareSymbolsViewController: UIViewController, UITable
             button.tintColor = .chartButtonText
             button.backgroundColor = .chartCTA
             button.layer.cornerRadius = 12
-            button.contentEdgeInsets = UIEdgeInsets(top: 12, left: 16, bottom: 12, right: 16)
+            var configuration = UIButton.Configuration.plain()
+            configuration.contentInsets = NSDirectionalEdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16)
+            configuration.baseForegroundColor = .chartButtonText
+            button.configuration = configuration
             button.contentHorizontalAlignment = .left
             button.accessibilityIdentifier = "quickCompare_\(candidate.symbol.uppercased())"
             button.addAction(UIAction { [weak self] _ in

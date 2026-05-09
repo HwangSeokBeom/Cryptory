@@ -37,6 +37,27 @@ final class PublicContentRepositoryTests: XCTestCase {
         }
     }
 
+    private actor FailingIfCalledTranslationService: ClientTranslationServiceProtocol {
+        private(set) var callCount = 0
+
+        func translate(items: [TranslationRequestItem], targetLanguage: String, context: String, symbol: String?) async -> [TranslationResultItem] {
+            callCount += 1
+            return []
+        }
+    }
+
+    private struct UnavailableTranslationChecker: ClientTranslationAvailabilityChecking {
+        func availability(sourceLanguage: String?, targetLanguage: String) async -> ClientTranslationAvailability {
+            .unavailable(.unsupportedDeviceOrPairing)
+        }
+    }
+
+    private struct AvailableTranslationChecker: ClientTranslationAvailabilityChecking {
+        func availability(sourceLanguage: String?, targetLanguage: String) async -> ClientTranslationAvailability {
+            .available
+        }
+    }
+
     private func makeRepository(translationUseCase: TranslationUseCase? = nil) -> LivePublicContentRepository {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [URLProtocolSpy.self]
@@ -278,6 +299,7 @@ final class PublicContentRepositoryTests: XCTestCase {
         let repository = makeRepository(
             translationUseCase: TranslationUseCase(
                 service: translationService,
+                availabilityChecker: AvailableTranslationChecker(),
                 cache: TranslationCache(),
                 maxBatchSize: 20
             )
@@ -326,6 +348,7 @@ final class PublicContentRepositoryTests: XCTestCase {
         let repository = makeRepository(
             translationUseCase: TranslationUseCase(
                 service: translationService,
+                availabilityChecker: AvailableTranslationChecker(),
                 cache: TranslationCache(),
                 maxBatchSize: 20
             )
@@ -379,6 +402,105 @@ final class PublicContentRepositoryTests: XCTestCase {
         XCTAssertEqual(item.summary, "Original summary")
         XCTAssertFalse(item.hasTranslation)
         XCTAssertNil(item.translationStatusText)
+    }
+
+    func testTranslationUseCasePreflightUnsupportedReturnsOriginalWithoutCallingService() async throws {
+        let service = FailingIfCalledTranslationService()
+        let useCase = TranslationUseCase(
+            service: service,
+            availabilityChecker: UnavailableTranslationChecker(),
+            cache: TranslationCache(),
+            maxBatchSize: 20
+        )
+
+        let results = await useCase.translate(
+            items: [
+                TranslationRequestItem(
+                    id: "title",
+                    text: "Original market headline",
+                    sourceLanguage: "en"
+                )
+            ],
+            targetLanguage: "ko",
+            context: "unit_test"
+        )
+
+        let result = try XCTUnwrap(results["title"])
+        XCTAssertEqual(result.originalText, "Original market headline")
+        XCTAssertNil(result.translatedText)
+        XCTAssertEqual(result.state, .originalOnly)
+        let callCount = await service.callCount
+        XCTAssertEqual(callCount, 0)
+    }
+
+    func testPreflightUnsupportedTranslationDoesNotExposeUserFacingNewsErrorOrBadge() async throws {
+        URLProtocolSpy.reset()
+        URLProtocolSpy.responseData = Data(
+            """
+            {
+              "success": true,
+              "data": {
+                "items": [
+                  {
+                    "id": "preflight-unsupported-1",
+                    "title": "Original market headline",
+                    "summary": "Original summary",
+                    "sourceName": "Review Wire",
+                    "provider": "newsapi",
+                    "publishedAt": "2026-05-03T10:00:00Z",
+                    "language": "en"
+                  }
+                ]
+              }
+            }
+            """.utf8
+        )
+        let service = FailingIfCalledTranslationService()
+        let repository = makeRepository(
+            translationUseCase: TranslationUseCase(
+                service: service,
+                availabilityChecker: UnavailableTranslationChecker(),
+                cache: TranslationCache(),
+                maxBatchSize: 20
+            )
+        )
+
+        let snapshot = try await repository.fetchNews(category: nil, symbol: nil, date: nil, cursor: nil, limit: 40)
+        let item = try XCTUnwrap(snapshot.items.first)
+
+        XCTAssertEqual(item.title, "Original market headline")
+        XCTAssertEqual(item.summary, "Original summary")
+        XCTAssertEqual(item.translationState, .originalOnly)
+        XCTAssertFalse(item.hasTranslation)
+        XCTAssertNil(item.translationStatusText)
+        let callCount = await service.callCount
+        XCTAssertEqual(callCount, 0)
+    }
+
+    func testTranslatedBadgeIsHiddenWhenFallbackOriginalTextIsUsed() {
+        let originalOnlyState = TranslatableTextViewState(
+            originalText: "Original market headline",
+            translatedText: nil,
+            originalLanguage: "en",
+            targetLanguage: "ko",
+            state: .originalOnly,
+            showsOriginal: false
+        )
+        let unchangedTranslatedState = TranslatableTextViewState(
+            originalText: "Original market headline",
+            translatedText: " Original market headline ",
+            originalLanguage: "en",
+            targetLanguage: "ko",
+            state: .translated,
+            showsOriginal: false
+        )
+
+        XCTAssertEqual(originalOnlyState.displayText, "Original market headline")
+        XCTAssertNil(originalOnlyState.translationBadgeText)
+        XCTAssertNil(originalOnlyState.toggleTitle)
+        XCTAssertEqual(unchangedTranslatedState.displayText, "Original market headline")
+        XCTAssertNil(unchangedTranslatedState.translationBadgeText)
+        XCTAssertNil(unchangedTranslatedState.toggleTitle)
     }
 
     func testHTTPNewsImageURLIsSkippedForPlaceholder() async throws {

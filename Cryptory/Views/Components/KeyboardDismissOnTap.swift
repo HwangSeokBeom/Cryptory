@@ -38,6 +38,7 @@ private struct KeyboardDismissGestureInstaller: UIViewRepresentable {
         }
     }
 
+    @MainActor
     final class Coordinator: NSObject, UIGestureRecognizerDelegate {
         private let instanceID = AppLogger.nextInstanceID(scope: "KeyboardDismissCoordinator")
         private weak var installedView: UIView?
@@ -54,7 +55,6 @@ private struct KeyboardDismissGestureInstaller: UIViewRepresentable {
         }
 
         deinit {
-            installedView?.removeGestureRecognizer(recognizer)
             AppLogger.debug(.lifecycle, "KeyboardDismissCoordinator deinit #\(instanceID)")
         }
 

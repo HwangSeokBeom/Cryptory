@@ -59,7 +59,7 @@ struct MarketSegmentedControl: View {
 }
 
 private struct MarketSegmentFramePreferenceKey: PreferenceKey {
-    static var defaultValue: [MarketFilter: CGRect] = [:]
+    static let defaultValue: [MarketFilter: CGRect] = [:]
 
     static func reduce(value: inout [MarketFilter: CGRect], nextValue: () -> [MarketFilter: CGRect]) {
         value.merge(nextValue(), uniquingKeysWith: { _, new in new })

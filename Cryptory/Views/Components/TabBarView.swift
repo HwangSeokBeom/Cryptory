@@ -7,6 +7,7 @@ enum AppTabBarAppearance {
     private static let selectedColor = UIColor(hex: "#F59E0B")
     private static let normalColor = UIColor(hex: "#A6B1C5")
 
+    @MainActor
     static func configure() {
         let appearance = UITabBarAppearance()
         appearance.configureWithTransparentBackground()

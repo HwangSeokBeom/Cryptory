@@ -946,13 +946,6 @@ struct KimchiPremiumViewStateUseCase {
     }
 }
 
-private let relativeStatusFormatter: RelativeDateTimeFormatter = {
-    let formatter = RelativeDateTimeFormatter()
-    formatter.locale = Locale(identifier: "ko_KR")
-    formatter.unitsStyle = .short
-    return formatter
-}()
-
 private func userFacingRelativeTimestampText(_ date: Date) -> String {
     let relativeText = userFacingRelativeText(date)
     return "업데이트 \(relativeText)"
@@ -976,7 +969,10 @@ private func userFacingRelativeText(_ date: Date) -> String {
         now: now,
         elapsed: elapsed
     )
-    let relative = relativeStatusFormatter.localizedString(for: roundedReferenceDate, relativeTo: now)
+    let formatter = RelativeDateTimeFormatter()
+    formatter.locale = Locale(identifier: "ko_KR")
+    formatter.unitsStyle = .short
+    let relative = formatter.localizedString(for: roundedReferenceDate, relativeTo: now)
     if relative == "0초 전" || relative == "0초 후" {
         return "방금 전"
     }
