@@ -1027,15 +1027,6 @@ struct CoinNewsDetailView: View {
         } else if let latestAvailable = feedViewState.availableDates.sorted(by: >).first {
             parts.append("가장 최근 뉴스: \(PriceFormatter.formatReferenceDate(latestAvailable))")
         }
-        if let source = feedViewState.source?.trimmedNonEmpty {
-            parts.append("source \(source)")
-        }
-        if let cacheHit = feedViewState.cacheHit {
-            parts.append("cacheHit \(cacheHit ? "true" : "false")")
-        }
-        if let providerStatus = feedViewState.providerStatus?.trimmedNonEmpty {
-            parts.append("providerStatus \(providerStatus)")
-        }
         return parts.joined(separator: " · ")
     }
 
@@ -1047,12 +1038,23 @@ struct CoinNewsDetailView: View {
                     switch phase {
                     case .success(let image):
                         image.resizable().scaledToFill()
+                    case .failure(let error):
+                        Color.bgTertiary
+                            .overlay(Image(systemName: "newspaper").foregroundColor(.textMuted))
+                            .onAppear {
+                                AppLogger.debug(.network, "[NewsImage] fallbackPlaceholder reason=loadFailed status=\((error as NSError).code)")
+                            }
                     default:
                         Color.bgTertiary.overlay(Image(systemName: "newspaper").foregroundColor(.textMuted))
                     }
                 }
                 .frame(width: 74, height: 74)
                 .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            } else {
+                Color.bgTertiary
+                    .overlay(Image(systemName: "newspaper").foregroundColor(.textMuted))
+                    .frame(width: 74, height: 74)
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
             VStack(alignment: .leading, spacing: 10) {
                 HStack {

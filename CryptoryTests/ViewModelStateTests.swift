@@ -1,6 +1,7 @@
 import Combine
 import XCTest
 import UIKit
+import AuthenticationServices
 @testable import Cryptory
 
 final class ViewModelStateTests: XCTestCase {
@@ -124,6 +125,71 @@ final class ViewModelStateTests: XCTestCase {
         XCTAssertEqual(repository.createCallCount, 0)
         XCTAssertEqual(vm.communitySubmitMessage, "로그인이 필요합니다.")
         XCTAssertNotNil(vm.coinCommunityState.value)
+    }
+
+    @MainActor
+    func testNewsTodayEmptyFallsBackToLatestAvailableNews() async {
+        let repository = SpyPublicContentRepository()
+        let latestDate = Date(timeIntervalSinceNow: -86_400)
+        let latestItem = CryptoNewsItem(
+            id: "latest-news",
+            title: "최근 뉴스",
+            summary: "최근 뉴스 요약",
+            body: nil,
+            source: "Review Wire",
+            publishedAt: latestDate,
+            relatedSymbols: [],
+            originalURL: nil,
+            thumbnailURL: nil,
+            originalLanguage: "ko"
+        )
+        repository.newsSnapshots = [
+            NewsSnapshot(items: [], meta: .empty),
+            NewsSnapshot(items: [latestItem], meta: .empty)
+        ]
+        let vm = makeCommunityViewModel(publicRepository: repository)
+
+        vm.loadNews(forceRefresh: true)
+        await waitUntil { vm.newsState.value?.first?.id == "latest-news" }
+
+        XCTAssertEqual(vm.newsState.value, [latestItem])
+        XCTAssertTrue(vm.isShowingLatestNewsFallback)
+        XCTAssertEqual(repository.fetchNewsDates.count, 2)
+        XCTAssertNotNil(repository.fetchNewsDates[0])
+        XCTAssertNil(repository.fetchNewsDates[1])
+        XCTAssertNil(vm.notification)
+    }
+
+    @MainActor
+    func testNewsSelectedDateEmptyIsNormalEmptyStateWithoutNotification() async {
+        let repository = SpyPublicContentRepository()
+        repository.newsSnapshot = NewsSnapshot(items: [], meta: .empty)
+        let vm = makeCommunityViewModel(publicRepository: repository)
+        let oldDate = Date(timeIntervalSinceNow: -3 * 86_400)
+
+        vm.selectNewsDate(oldDate)
+        await waitUntil { vm.newsState == .empty }
+
+        XCTAssertEqual(vm.newsState, .empty)
+        XCTAssertFalse(vm.isShowingLatestNewsFallback)
+        XCTAssertNil(vm.newsState.errorMessage)
+        XCTAssertNil(vm.notification)
+        XCTAssertEqual(repository.fetchNewsDates.count, 1)
+    }
+
+    @MainActor
+    func testAppleLoginCancellationIsNeutral() async {
+        let vm = makeAuthViewModel()
+        let error = NSError(
+            domain: ASAuthorizationError.errorDomain,
+            code: ASAuthorizationError.canceled.rawValue
+        )
+
+        await vm.submitAppleSignIn(result: .failure(error))
+
+        XCTAssertFalse(vm.isAuthenticated)
+        XCTAssertNil(vm.loginErrorMessage)
+        XCTAssertNil(vm.notification)
     }
 
     @MainActor

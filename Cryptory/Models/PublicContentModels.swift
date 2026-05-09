@@ -88,7 +88,7 @@ struct CryptoNewsItem: Identifiable, Equatable, Hashable {
     }
 
     var translationStatusText: String? {
-        translationState.badgeText
+        hasTranslation && translationState == .translated ? translationState.badgeText : nil
     }
 
     var hasTranslation: Bool {

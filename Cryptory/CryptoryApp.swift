@@ -14,6 +14,13 @@ struct CryptoryApp: App {
         FirebaseBootstrapper.configureIfNeeded()
         AppTabBarAppearance.configure()
         _ = AppConfig.current
+        let bundleID = Bundle.main.bundleIdentifier ?? "nil"
+        AppLogger.authConfiguration("Apple Sign-In bundleId -> \(bundleID)")
+        #if DEBUG
+        if bundleID != "com.hwb.Cryptory" {
+            assertionFailure("Apple Sign-In must use Bundle ID com.hwb.Cryptory, got \(bundleID)")
+        }
+        #endif
     }
 
     var body: some Scene {

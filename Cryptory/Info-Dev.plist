@@ -37,6 +37,8 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>GOOGLE_CLIENT_ID</key>
 	<string>$(GOOGLE_CLIENT_ID)</string>
+	<key>FirebaseAppDelegateProxyEnabled</key>
+	<false/>
 	<key>LOCAL_SERVER_HOST</key>
 	<string>$(LOCAL_SERVER_HOST)</string>
 	<key>LOCAL_SERVER_PORT</key>

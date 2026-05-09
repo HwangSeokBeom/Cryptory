@@ -15,23 +15,36 @@ enum FirebaseBootstrapper {
 
         if FirebaseApp.app() != nil {
             didAttemptConfigure = true
+            logConfigurationState()
             return true
         }
 
         guard didAttemptConfigure == false else {
+            logConfigurationState()
             return FirebaseApp.app() != nil
         }
         didAttemptConfigure = true
 
         guard Bundle.main.path(forResource: "GoogleService-Info", ofType: "plist") != nil else {
             AppLogger.debug(.network, "[Firebase] configure skipped reason=missing_google_service_info")
+            logConfigurationState(reason: "missing_google_service_info")
             return false
         }
 
         FirebaseApp.configure()
         let configured = FirebaseApp.app() != nil
         AppLogger.debug(.network, "[Firebase] configure status=\(configured ? "configured" : "failed")")
+        logConfigurationState()
         return configured
+    }
+
+    private static func logConfigurationState(reason: String? = nil) {
+        let app = FirebaseApp.app()
+        let configured = app != nil
+        let projectID = app?.options.projectID ?? "nil"
+        let bundleID = Bundle.main.bundleIdentifier ?? "nil"
+        let suffix = reason.map { " reason=\($0)" } ?? ""
+        AppLogger.configuration("[FirebaseConfig] configured=\(configured) projectId=\(projectID) bundleId=\(bundleID)\(suffix)")
     }
 }
 

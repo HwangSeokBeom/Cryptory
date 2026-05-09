@@ -866,6 +866,8 @@ final class SpyAuthSessionStore: AuthSessionStoring {
 
 final class SpyPublicContentRepository: PublicContentRepositoryProtocol {
     var newsSnapshot = NewsSnapshot(items: [], meta: .empty)
+    var newsSnapshots: [NewsSnapshot] = []
+    private(set) var fetchNewsDates: [Date?] = []
     var coinInfo = CoinDetailInfo(
         symbol: "ORCA",
         displaySymbol: "ORCA/KRW",
@@ -964,7 +966,11 @@ final class SpyPublicContentRepository: PublicContentRepositoryProtocol {
     private(set) var voteSessions: [AuthSession] = []
 
     func fetchNews(category: String?, symbol: String?, date: Date?, sort: String, cursor: String?, limit: Int) async throws -> NewsSnapshot {
-        newsSnapshot
+        fetchNewsDates.append(date)
+        if newsSnapshots.isEmpty == false {
+            return newsSnapshots.removeFirst()
+        }
+        return newsSnapshot
     }
 
     func fetchCoinNews(symbol: String, context: CoinNewsRequestContext?, date: Date?, sort: String, cursor: String?, limit: Int) async throws -> NewsSnapshot {

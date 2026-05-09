@@ -4,9 +4,9 @@ APP_DISPLAY_NAME = Cryptory
 LOCAL_SERVER_HOST = 127.0.0.1
 LOCAL_SERVER_PORT = 3002
 
-API_BASE_URL = http:/$()/crytory.duckdns.org
-WS_BASE_URL = ws:/$()/crytory.duckdns.org
-WEB_BASE_URL = http:/$()/crytory.duckdns.org
+API_BASE_URL = https:/$()/crytory.duckdns.org
+WS_BASE_URL = wss:/$()/crytory.duckdns.org
+WEB_BASE_URL = https:/$()/crytory.duckdns.org
 
 PUBLIC_WS_PATH = /ws/market
 PRIVATE_WS_PATH = /ws/trading

@@ -21,6 +21,22 @@ final class PublicContentRepositoryTests: XCTestCase {
         }
     }
 
+    private final class UnsupportedTranslationService: ClientTranslationServiceProtocol {
+        func translate(items: [TranslationRequestItem], targetLanguage: String, context: String, symbol: String?) async -> [TranslationResultItem] {
+            items.map {
+                TranslationResultItem(
+                    id: $0.id,
+                    originalText: $0.text,
+                    translatedText: nil,
+                    sourceLanguage: $0.sourceLanguage,
+                    targetLanguage: targetLanguage,
+                    provider: "apple_translation",
+                    state: .unavailable
+                )
+            }
+        }
+    }
+
     private func makeRepository(translationUseCase: TranslationUseCase? = nil) -> LivePublicContentRepository {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [URLProtocolSpy.self]
@@ -324,6 +340,77 @@ final class PublicContentRepositoryTests: XCTestCase {
         XCTAssertEqual(item.summary, "")
         XCTAssertNil(item.thumbnailURL)
         XCTAssertEqual(translationService.requestedIDs, ["unknown-provider-1_title"])
+    }
+
+    func testUnsupportedTranslationFallsBackToOriginalNewsText() async throws {
+        URLProtocolSpy.reset()
+        URLProtocolSpy.responseData = Data(
+            """
+            {
+              "success": true,
+              "data": {
+                "items": [
+                  {
+                    "id": "unsupported-translation-1",
+                    "title": "Original market headline",
+                    "summary": "Original summary",
+                    "sourceName": "Review Wire",
+                    "provider": "newsapi",
+                    "publishedAt": "2026-05-03T10:00:00Z",
+                    "language": "en"
+                  }
+                ]
+              }
+            }
+            """.utf8
+        )
+        let repository = makeRepository(
+            translationUseCase: TranslationUseCase(
+                service: UnsupportedTranslationService(),
+                cache: TranslationCache(),
+                maxBatchSize: 20
+            )
+        )
+
+        let snapshot = try await repository.fetchNews(category: nil, symbol: nil, date: nil, cursor: nil, limit: 40)
+        let item = try XCTUnwrap(snapshot.items.first)
+
+        XCTAssertEqual(item.title, "Original market headline")
+        XCTAssertEqual(item.summary, "Original summary")
+        XCTAssertFalse(item.hasTranslation)
+        XCTAssertNil(item.translationStatusText)
+    }
+
+    func testHTTPNewsImageURLIsSkippedForPlaceholder() async throws {
+        URLProtocolSpy.reset()
+        URLProtocolSpy.responseData = Data(
+            """
+            {
+              "success": true,
+              "data": {
+                "items": [
+                  {
+                    "id": "http-image-1",
+                    "titleKo": "이미지 없는 뉴스",
+                    "summaryKo": "HTTP 이미지는 플레이스홀더로 대체합니다.",
+                    "sourceName": "Review Wire",
+                    "provider": "cryptory",
+                    "publishedAt": "2026-05-03T10:00:00Z",
+                    "imageUrl": "http://images.example.com/news.png",
+                    "language": "ko"
+                  }
+                ]
+              }
+            }
+            """.utf8
+        )
+        let repository = makeRepository()
+
+        let snapshot = try await repository.fetchNews(category: nil, symbol: nil, date: nil, cursor: nil, limit: 40)
+        let item = try XCTUnwrap(snapshot.items.first)
+
+        XCTAssertNil(item.thumbnailURL)
+        XCTAssertEqual(item.title, "이미지 없는 뉴스")
     }
 
     func testCommunityEmptyListIsLoadedWithZeroParticipants() async throws {

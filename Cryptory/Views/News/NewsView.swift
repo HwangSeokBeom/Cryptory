@@ -169,8 +169,18 @@ struct NewsView: View {
                             vm.loadNews(forceRefresh: true)
                         }
                     case .empty:
-                        stateCard(title: "표시할 뉴스가 없습니다", detail: newsEmptyDetail(vm.newsFeedViewState), actionTitle: nil, action: nil)
+                        stateCard(title: "뉴스가 아직 없습니다", detail: newsEmptyDetail(vm.newsFeedViewState), actionTitle: "최근 뉴스 보기") {
+                            vm.loadLatestNewsFallback()
+                        }
                     case .loaded(let items):
+                        if vm.isShowingLatestNewsFallback {
+                            Text("가장 최근 뉴스를 표시하고 있어요.")
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundColor(.textMuted)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 8)
+                                .background(Capsule().fill(Color.bgTertiary))
+                        }
                         ForEach(groupedNews(items), id: \.date) { group in
                             VStack(alignment: .leading, spacing: 10) {
                                 Text(group.date)
@@ -239,15 +249,6 @@ struct NewsView: View {
             parts.append("가장 최근 뉴스: \(PriceFormatter.formatReferenceDate(fallbackDate))")
         } else if let latestAvailable = state.availableDates.sorted(by: >).first {
             parts.append("가장 최근 뉴스: \(PriceFormatter.formatReferenceDate(latestAvailable))")
-        }
-        if let source = state.source?.trimmedNonEmpty {
-            parts.append("source \(source)")
-        }
-        if let cacheHit = state.cacheHit {
-            parts.append("cacheHit \(cacheHit ? "true" : "false")")
-        }
-        if let providerStatus = state.providerStatus?.trimmedNonEmpty {
-            parts.append("providerStatus \(providerStatus)")
         }
         return parts.joined(separator: " · ")
     }
@@ -1863,12 +1864,23 @@ private struct NewsRow: View {
                     image
                         .resizable()
                         .scaledToFill()
+                case .failure(let error):
+                    Color.bgTertiary
+                        .overlay(Image(systemName: "newspaper").foregroundColor(.textMuted))
+                        .onAppear {
+                            AppLogger.debug(.network, "[NewsImage] fallbackPlaceholder reason=loadFailed status=\((error as NSError).code)")
+                        }
                 default:
                     Color.bgTertiary.overlay(Image(systemName: "newspaper").foregroundColor(.textMuted))
                 }
             }
             .frame(width: 72, height: 72)
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        } else {
+            Color.bgTertiary
+                .overlay(Image(systemName: "newspaper").foregroundColor(.textMuted))
+                .frame(width: 72, height: 72)
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         }
     }
 
@@ -2024,7 +2036,7 @@ func newsEmptyReasonText(_ reason: String?, symbol: String?) -> String {
     case "provider_limit_and_cache_empty":
         return "뉴스 공급원 제한으로 현재 표시할 뉴스가 없습니다."
     case "no_news_for_date", "date_no_news", "date_empty":
-        return "선택한 날짜에 표시할 뉴스가 없습니다."
+        return "선택한 날짜에 등록된 뉴스가 아직 없습니다."
     case "cache_empty":
         return displaySymbol == nil ? "저장된 뉴스가 없습니다." : "저장된 관련 뉴스가 없습니다."
     default:

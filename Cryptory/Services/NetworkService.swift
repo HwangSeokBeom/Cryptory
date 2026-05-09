@@ -327,8 +327,12 @@ struct AppRuntimeConfiguration {
         AppLogger.configuration("Web base URL -> \(configuration.webBaseURL.absoluteString)")
         AppLogger.configuration("Public WS URL -> \(configuration.publicMarketWebSocketURL.absoluteString)")
         AppLogger.configuration("Private WS URL -> \(configuration.privateTradingWebSocketURL.absoluteString)")
+        AppLogger.configuration(
+            "Startup network safety -> environment=\(configuration.environment.rawValue) restBaseURLScheme=\(configuration.restBaseURL.scheme ?? "nil") publicWSURLScheme=\(configuration.publicMarketWebSocketURL.scheme ?? "nil") privateWSURLScheme=\(configuration.privateTradingWebSocketURL.scheme ?? "nil") atsSafe=\(configuration.isATSSafe)"
+        )
         AppLogger.authConfiguration("Social endpoint google -> \(SocialAuthEndpoint.google)")
         AppLogger.authConfiguration("Social endpoint apple -> \(SocialAuthEndpoint.apple)")
+        configuration.assertProductionTransportSecurity()
 
         return configuration
     }
@@ -353,10 +357,10 @@ struct AppRuntimeConfiguration {
             defaultString = runtimeSetting(
                 in: values,
                 keys: "PROD_API_BASE_URL", "PRODUCTION_API_BASE_URL", "CRYPTORY_PRODUCTION_API_BASE_URL"
-            ) ?? "http://crytory.duckdns.org"
+            ) ?? "https://crytory.duckdns.org"
         }
 
-        return URL(string: defaultString) ?? URL(string: "http://crytory.duckdns.org")!
+        return URL(string: defaultString) ?? URL(string: "https://crytory.duckdns.org")!
     }
 
     private static func environmentSpecificRESTBaseURLString(
@@ -451,6 +455,23 @@ struct AppRuntimeConfiguration {
         components.query = nil
         components.fragment = nil
         return components.url ?? url
+    }
+
+    var isATSSafe: Bool {
+        restBaseURL.scheme?.lowercased() == "https"
+            && webBaseURL.scheme?.lowercased() == "https"
+            && publicMarketWebSocketURL.scheme?.lowercased() == "wss"
+            && privateTradingWebSocketURL.scheme?.lowercased() == "wss"
+    }
+
+    private func assertProductionTransportSecurity() {
+        #if DEBUG
+        guard environment == .production else { return }
+        guard isATSSafe == false else { return }
+        assertionFailure(
+            "Production configuration must use https/wss. rest=\(restBaseURL.absoluteString) publicWS=\(publicMarketWebSocketURL.absoluteString) privateWS=\(privateTradingWebSocketURL.absoluteString)"
+        )
+        #endif
     }
 }
 

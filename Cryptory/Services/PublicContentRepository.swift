@@ -1090,7 +1090,7 @@ private enum PublicContentParser {
             relatedSymbols: dictionary.stringArray(["relatedSymbols", "related_symbols", "symbols", "coins", "assets"]).map { LivePublicContentRepository.normalizedSymbol($0) },
             tags: dictionary.stringArray(["tags", "keywords", "categories"]),
             originalURL: url(dictionary.string(["originalUrl", "originalURL", "url", "link"])),
-            thumbnailURL: url(dictionary.string(["thumbnailUrl", "thumbnailURL", "imageUrl", "imageURL"])),
+            thumbnailURL: newsImageURL(dictionary.string(["thumbnailUrl", "thumbnailURL", "imageUrl", "imageURL"])),
             originalLanguage: dictionary.string(["originalLanguage", "original_language", "language"]) ?? titleResolution.language,
             renderLanguage: titleResolution.language ?? summaryResolution.language ?? "unknown",
             translationState: titleResolution.fallbackUsed || summaryResolution.fallbackUsed ? .originalOnly : .translated,
@@ -1898,6 +1898,17 @@ private enum PublicContentParser {
             return URL(string: value)
         }
         return URL(string: "https://\(value)")
+    }
+
+    private static func newsImageURL(_ value: String?) -> URL? {
+        guard let candidate = url(value) else { return nil }
+        let scheme = candidate.scheme?.lowercased()
+        guard scheme != "http" else {
+            AppLogger.debug(.network, "[NewsImage] skipped reason=insecureURL host=\(candidate.host ?? "nil")")
+            AppLogger.debug(.network, "[NewsImage] fallbackPlaceholder reason=atsBlocked")
+            return nil
+        }
+        return candidate
     }
 
     private static func parseDate(_ rawValue: Any?) -> Date? {

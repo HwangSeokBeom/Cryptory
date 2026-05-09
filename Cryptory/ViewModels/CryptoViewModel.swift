@@ -1088,6 +1088,7 @@ final class CryptoViewModel: ObservableObject {
     @Published private(set) var newsState: Loadable<[CryptoNewsItem]> = .idle
     @Published private(set) var coinNewsState: Loadable<[CryptoNewsItem]> = .idle
     @Published private(set) var marketTrendsState: Loadable<MarketTrendsSnapshot> = .idle
+    @Published private(set) var isShowingLatestNewsFallback = false
     @Published private(set) var newsSelectedDate: Date = Date()
     @Published private(set) var coinNewsSelectedDate: Date = Date()
     @Published private(set) var newsSortOrder: ContentSortOrder = .latest
@@ -4917,6 +4918,7 @@ final class CryptoViewModel: ObservableObject {
             return
         }
         newsSelectedDate = date
+        isShowingLatestNewsFallback = false
         newsFeedViewState = newsFeedViewState.preparing(date: date, sort: newsSortOrder, isCoinScoped: false)
         loadNews(forceRefresh: true)
     }
@@ -4924,6 +4926,7 @@ final class CryptoViewModel: ObservableObject {
     func selectNewsSort(_ sort: ContentSortOrder) {
         guard newsSortOrder != sort else { return }
         newsSortOrder = sort
+        isShowingLatestNewsFallback = false
         newsState = .loading
         newsFeedViewState = newsFeedViewState.preparing(date: newsSelectedDate, sort: sort, isCoinScoped: false)
         loadNews(forceRefresh: true)
@@ -4976,6 +4979,19 @@ final class CryptoViewModel: ObservableObject {
                     AppLogger.debug(.network, "[NewsAPI] ignored stale response date=\(requestDateString) sort=\(selectedSort.rawValue)")
                     return
                 }
+                if snapshot.items.isEmpty,
+                   Self.kstCalendar.isDateInToday(selectedDate) {
+                    let didFallback = await applyLatestAvailableNewsFallback(
+                        repository: repository,
+                        selectedSort: selectedSort,
+                        requestID: requestID,
+                        reason: "today_empty"
+                    )
+                    if didFallback {
+                        return
+                    }
+                }
+                isShowingLatestNewsFallback = false
                 newsState = snapshot.items.isEmpty ? .empty : .loaded(snapshot.items)
                 newsFeedViewState = newsFeedViewState.resolved(
                     items: snapshot.items,
@@ -4988,6 +5004,76 @@ final class CryptoViewModel: ObservableObject {
                 guard newsRequestID == requestID else { return }
                 newsState = .failed(friendlyPublicContentErrorMessage(error, fallback: "뉴스를 불러오지 못했어요."))
             }
+        }
+    }
+
+    func loadLatestNewsFallback() {
+        if newsState.isLoading {
+            return
+        }
+        newsState = .loading
+        let requestID = UUID()
+        newsRequestID = requestID
+        let selectedSort = newsSortOrder
+        let repository = publicContentRepository
+        Task { @MainActor in
+            let didFallback = await applyLatestAvailableNewsFallback(
+                repository: repository,
+                selectedSort: selectedSort,
+                requestID: requestID,
+                reason: "user_cta"
+            )
+            if didFallback == false, newsRequestID == requestID {
+                newsState = .empty
+                isShowingLatestNewsFallback = false
+            }
+        }
+    }
+
+    private func applyLatestAvailableNewsFallback(
+        repository: PublicContentRepositoryProtocol,
+        selectedSort: ContentSortOrder,
+        requestID: UUID,
+        reason: String
+    ) async -> Bool {
+        do {
+            AppLogger.debug(.network, "[NewsAPI] fallback request reason=\(reason) date=nil sort=\(selectedSort.rawValue)")
+            let latestSnapshot = try await repository.fetchNews(
+                category: nil,
+                symbol: nil,
+                date: nil,
+                sort: selectedSort.rawValue,
+                cursor: nil,
+                limit: 40
+            )
+            guard newsRequestID == requestID,
+                  newsSortOrder == selectedSort else {
+                AppLogger.debug(.network, "[NewsAPI] ignored stale fallback response reason=\(reason)")
+                return true
+            }
+            guard latestSnapshot.items.isEmpty == false else {
+                AppLogger.debug(.network, "[NewsAPI] fallback empty reason=\(reason)")
+                return false
+            }
+            let latestDate = latestSnapshot.items.compactMap(\.publishedAt).max() ?? Date()
+            newsSelectedDate = latestDate
+            newsState = .loaded(latestSnapshot.items)
+            isShowingLatestNewsFallback = true
+            newsFeedViewState = newsFeedViewState
+                .preparing(date: latestDate, sort: selectedSort, isCoinScoped: false)
+                .resolved(
+                    items: latestSnapshot.items,
+                    meta: latestSnapshot.meta,
+                    emptyReason: nil
+                )
+            AppLogger.debug(
+                .network,
+                "[NewsAPI] fallback success reason=\(reason) selectedDate=\(LivePublicContentRepository.apiDateString(latestDate)) itemCount=\(latestSnapshot.items.count)"
+            )
+            return true
+        } catch {
+            AppLogger.debug(.network, "[NewsAPI] fallback failed reason=\(reason) error=\(error.localizedDescription)")
+            return false
         }
     }
 
@@ -6741,14 +6827,17 @@ final class CryptoViewModel: ObservableObject {
 
         authState = .signingIn
         loginErrorMessage = nil
-        AppLogger.debug(.auth, "[AuthFlowDebug] action=login_started method=email")
+        logAuthPhase(provider: "email", phase: "start")
+        logAuthPhase(provider: "email", phase: "credentialReceived")
+        logAuthPhase(provider: "email", phase: "serverExchangeStart")
 
         do {
             let session = try await authService.signIn(email: loginEmail, password: loginPassword)
-            AppLogger.debug(.auth, "[AuthFlowDebug] action=login_success method=email")
+            logAuthPhase(provider: "email", phase: "serverExchangeSuccess")
             await completeAuthentication(with: session, source: "login_success", method: "email")
         } catch {
             authState = .guest
+            logAuthFailure(provider: "email", failureKind: authFailureKind(for: error, defaultKind: "serverAuth"))
             loginErrorMessage = friendlyAuthErrorMessage(error, mode: .login)
         }
     }
@@ -6763,10 +6852,12 @@ final class CryptoViewModel: ObservableObject {
         authState = .signingIn
         activeSocialSignInMethod = .google
         loginErrorMessage = nil
-        AppLogger.debug(.auth, "[AuthFlowDebug] action=login_started method=google")
+        logAuthPhase(provider: "google", phase: "start")
 
         do {
             let credential = try await googleSignInProvider.signIn(presenting: viewController)
+            logAuthPhase(provider: "google", phase: "credentialReceived")
+            logAuthPhase(provider: "google", phase: "serverExchangeStart")
             let session = try await authService.signInWithGoogle(
                 request: GoogleSocialLoginRequest(
                     idToken: credential.idToken,
@@ -6776,11 +6867,14 @@ final class CryptoViewModel: ObservableObject {
                     deviceID: currentDeviceID
                 )
             )
-            AppLogger.debug(.auth, "[AuthFlowDebug] action=login_success method=google")
+            logAuthPhase(provider: "google", phase: "serverExchangeSuccess")
             await completeAuthentication(with: session, source: "google_login_success", method: "google")
         } catch {
             authState = .guest
-            if !isUserCancelledAuthentication(error) {
+            if isUserCancelledAuthentication(error) {
+                logAuthFailure(provider: "google", failureKind: "cancelled")
+            } else {
+                logAuthFailure(provider: "google", failureKind: authFailureKind(for: error, defaultKind: "serverAuth"))
                 loginErrorMessage = friendlySocialAuthErrorMessage(error, method: .google)
             }
         }
@@ -6794,18 +6888,21 @@ final class CryptoViewModel: ObservableObject {
         authState = .signingIn
         activeSocialSignInMethod = .apple
         loginErrorMessage = nil
-        AppLogger.debug(.auth, "[AuthFlowDebug] action=login_started method=apple")
+        logAuthPhase(provider: "apple", phase: "start")
 
         do {
             let authorization = try result.get()
             guard let credential = authorization.credential as? ASAuthorizationAppleIDCredential else {
+                logAuthFailure(provider: "apple", failureKind: "appleCredential")
                 throw NetworkServiceError.parsingFailed("애플 인증 정보를 확인할 수 없어요.")
             }
             guard let identityTokenData = credential.identityToken,
                   let identityToken = String(data: identityTokenData, encoding: .utf8),
                   identityToken.isEmpty == false else {
+                logAuthFailure(provider: "apple", failureKind: "appleCredential")
                 throw NetworkServiceError.parsingFailed("애플 identity token을 확인할 수 없어요.")
             }
+            logAuthPhase(provider: "apple", phase: "credentialReceived")
 
             let authorizationCode = credential.authorizationCode.flatMap {
                 String(data: $0, encoding: .utf8)
@@ -6814,6 +6911,7 @@ final class CryptoViewModel: ObservableObject {
                 PersonNameComponentsFormatter.localizedString(from: $0, style: .medium, options: [])
             }?.trimmedNonEmpty
 
+            logAuthPhase(provider: "apple", phase: "serverExchangeStart")
             let session = try await authService.signInWithApple(
                 request: AppleSocialLoginRequest(
                     identityToken: identityToken,
@@ -6826,11 +6924,14 @@ final class CryptoViewModel: ObservableObject {
                     deviceID: currentDeviceID
                 )
             )
-            AppLogger.debug(.auth, "[AuthFlowDebug] action=login_success method=apple")
+            logAuthPhase(provider: "apple", phase: "serverExchangeSuccess")
             await completeAuthentication(with: session, source: "apple_login_success", method: "apple")
         } catch {
             authState = .guest
-            if !isUserCancelledAuthentication(error) {
+            if isUserCancelledAuthentication(error) {
+                logAuthFailure(provider: "apple", failureKind: "cancelled")
+            } else {
+                logAuthFailure(provider: "apple", failureKind: appleAuthFailureKind(for: error))
                 loginErrorMessage = friendlySocialAuthErrorMessage(error, method: .apple)
             }
         }
@@ -7018,6 +7119,7 @@ final class CryptoViewModel: ObservableObject {
         authState = .authenticated(session)
         PushNotificationService.shared.bindSession(session)
         authSessionStore?.saveSession(session)
+        logAuthPhase(provider: method, phase: "sessionSaved")
         AppLogger.debug(
             .auth,
             "[AuthFlowDebug] action=token_saved method=\(method) hasAccessToken=\(!session.accessToken.isEmpty) hasRefreshToken=\(session.hasRefreshToken)"
@@ -7032,6 +7134,7 @@ final class CryptoViewModel: ObservableObject {
         updateAuthGate()
         connectPrivateTradingFeedIfNeeded(reason: source)
 
+        logAuthPhase(provider: method, phase: "postLoginBootstrapStart")
         if pendingPostLoginFeature == .exchangeConnections {
             await loadExchangeConnections()
         }
@@ -7041,11 +7144,60 @@ final class CryptoViewModel: ObservableObject {
             forceRefresh: true,
             reason: source
         )
+        logPostLoginBootstrapPartialFailures(provider: method)
 
         if pendingPostLoginFeature == .exchangeConnections {
             requestExchangeConnectionsPresentation(reason: "post_login_route")
         }
         pendingPostLoginFeature = nil
+    }
+
+    private func logAuthPhase(provider: String, phase: String) {
+        AppLogger.authConfiguration("[Auth] provider=\(provider) phase=\(phase)")
+    }
+
+    private func logAuthFailure(provider: String, failureKind: String) {
+        AppLogger.authConfiguration("[Auth] provider=\(provider) failureKind=\(failureKind)")
+    }
+
+    private func authFailureKind(for error: Error, defaultKind: String) -> String {
+        if isUserCancelledAuthentication(error) {
+            return "cancelled"
+        }
+        if let networkError = error as? NetworkServiceError {
+            switch networkError {
+            case .transportError:
+                return "network"
+            case .httpError, .authenticationRequired:
+                return "serverAuth"
+            case .invalidURL, .invalidResponse, .parsingFailed:
+                return defaultKind
+            }
+        }
+        return defaultKind
+    }
+
+    private func appleAuthFailureKind(for error: Error) -> String {
+        if let networkError = error as? NetworkServiceError,
+           case .parsingFailed(let message) = networkError,
+           message.contains("애플") || message.localizedCaseInsensitiveContains("apple") {
+            return "appleCredential"
+        }
+        return authFailureKind(for: error, defaultKind: "serverAuth")
+    }
+
+    private func logPostLoginBootstrapPartialFailures(provider: String) {
+        let failures: [(String, String?)] = [
+            ("news", newsState.errorMessage),
+            ("marketTrends", marketTrendsState.errorMessage),
+            ("market", marketState.errorMessage),
+            ("portfolio", portfolioState.errorMessage),
+            ("portfolioHistory", portfolioHistoryState.errorMessage),
+            ("exchangeConnections", exchangeConnectionsState.errorMessage)
+        ]
+        for failure in failures where failure.1 != nil {
+            AppLogger.authConfiguration("[Auth] provider=\(provider) phase=postLoginBootstrapPartialFailure affectedFeature=\(failure.0)")
+        }
     }
 
     private func runAuthenticatedRequest<Value>(

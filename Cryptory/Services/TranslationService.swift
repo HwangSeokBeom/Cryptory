@@ -126,6 +126,7 @@ struct AppleTranslationService: ClientTranslationServiceProtocol {
     ) async -> [TranslationResultItem] {
         guard #available(iOS 26.0, *) else {
             AppLogger.debug(.network, "[AppleTranslation] context=\(context) status=unavailable reason=ios_below_26 itemCount=\(items.count)")
+            AppLogger.debug(.network, "[Translation] skipped reason=unsupportedDeviceOrPairing sourceLocale=unknown targetLocale=\(targetLanguage)")
             return items.map {
                 TranslationResultItem(
                     id: $0.id,
@@ -171,6 +172,7 @@ private enum AppleTranslationRuntime {
             let status = await availability.status(from: source, to: target)
             guard status != .unsupported else {
                 AppLogger.debug(.network, "[AppleTranslation] context=\(context) source=\(sourceIdentifier) target=\(targetLanguage) status=unsupported itemCount=\(sourceItems.count)")
+                AppLogger.debug(.network, "[Translation] skipped reason=unsupportedDeviceOrPairing sourceLocale=\(sourceIdentifier) targetLocale=\(targetLanguage)")
                 results += sourceItems.map {
                     TranslationResultItem(
                         id: $0.id,
@@ -214,6 +216,7 @@ private enum AppleTranslationRuntime {
                 AppLogger.debug(.network, "[AppleTranslation] context=\(context) source=\(sourceIdentifier) target=\(targetLanguage) status=success itemCount=\(sourceItems.count) translatedCount=\(responses.count)")
             } catch {
                 AppLogger.debug(.network, "[AppleTranslation] context=\(context) source=\(sourceIdentifier) target=\(targetLanguage) status=fallback_original error=\(error.localizedDescription)")
+                AppLogger.debug(.network, "[Translation] fallbackToOriginal reason=\(error.localizedDescription)")
                 results += sourceItems.map {
                     TranslationResultItem(
                         id: $0.id,

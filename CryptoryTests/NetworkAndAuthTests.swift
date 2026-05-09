@@ -90,7 +90,7 @@ final class NetworkAndAuthTests: XCTestCase {
         )
 
         XCTAssertEqual(devRuntime.restBaseURL.absoluteString, "http://127.0.0.1:3002")
-        XCTAssertEqual(prodRuntime.restBaseURL.absoluteString, "http://crytory.duckdns.org")
+        XCTAssertEqual(prodRuntime.restBaseURL.absoluteString, "https://crytory.duckdns.org")
         XCTAssertEqual(devConfiguration.googleLoginPath, "/api/v1/auth/social/google")
         XCTAssertEqual(devConfiguration.appleLoginPath, "/api/v1/auth/social/apple")
         XCTAssertEqual(prodConfiguration.googleLoginPath, "/api/v1/auth/social/google")
@@ -108,11 +108,11 @@ final class NetworkAndAuthTests: XCTestCase {
         )
         XCTAssertEqual(
             try prodClient.makeRequest(path: prodConfiguration.googleLoginPath, method: "POST", accessRequirement: .publicAccess).url?.absoluteString,
-            "http://crytory.duckdns.org/api/v1/auth/social/google"
+            "https://crytory.duckdns.org/api/v1/auth/social/google"
         )
         XCTAssertEqual(
             try prodClient.makeRequest(path: prodConfiguration.appleLoginPath, method: "POST", accessRequirement: .publicAccess).url?.absoluteString,
-            "http://crytory.duckdns.org/api/v1/auth/social/apple"
+            "https://crytory.duckdns.org/api/v1/auth/social/apple"
         )
     }
 
@@ -162,10 +162,11 @@ final class NetworkAndAuthTests: XCTestCase {
         )
 
         XCTAssertEqual(configuration.environment, .production)
-        XCTAssertEqual(configuration.restBaseURL.absoluteString, "http://crytory.duckdns.org")
-        XCTAssertEqual(configuration.webBaseURL.absoluteString, "http://crytory.duckdns.org")
-        XCTAssertEqual(configuration.publicMarketWebSocketURL.absoluteString, "ws://crytory.duckdns.org/ws/market")
-        XCTAssertEqual(configuration.privateTradingWebSocketURL.absoluteString, "ws://crytory.duckdns.org/ws/trading")
+        XCTAssertEqual(configuration.restBaseURL.absoluteString, "https://crytory.duckdns.org")
+        XCTAssertEqual(configuration.webBaseURL.absoluteString, "https://crytory.duckdns.org")
+        XCTAssertEqual(configuration.publicMarketWebSocketURL.absoluteString, "wss://crytory.duckdns.org/ws/market")
+        XCTAssertEqual(configuration.privateTradingWebSocketURL.absoluteString, "wss://crytory.duckdns.org/ws/trading")
+        XCTAssertTrue(configuration.isATSSafe)
     }
 
     func testRuntimeConfigurationSupportsLocalHostOverrideForDeviceTesting() {
@@ -702,7 +703,9 @@ final class NetworkAndAuthTests: XCTestCase {
         )
 
         await vm.refreshMarketData(forceRefresh: true, reason: "unit_first_load")
-        try? await Task.sleep(nanoseconds: 250_000_000)
+        for _ in 0..<50 where vm.displayedMarketRows.isEmpty {
+            try? await Task.sleep(nanoseconds: 20_000_000)
+        }
 
         XCTAssertGreaterThan(vm.displayedMarketRows.count, 0)
         XCTAssertEqual(repository.fetchedTickers.count, 1)
