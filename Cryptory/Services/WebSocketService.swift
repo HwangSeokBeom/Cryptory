@@ -306,6 +306,11 @@ protocol PrivateWebSocketServicing: AnyObject {
     func updateSubscriptions(_ subscriptions: Set<PrivateTradingSubscription>)
 }
 
+@available(
+    *,
+    deprecated,
+    message: "Replaced by MarketStreamEngine + MarketStreamUIAdapter (Services/Realtime). Kept until the private feed migrates; see Docs/ADR/0001-actor-isolated-realtime-engine.md."
+)
 final class WebSocketService: PublicWebSocketServicing, @unchecked Sendable {
     private let instanceID = AppLogger.nextInstanceID(scope: "PublicWebSocketService")
     var onConnectionStateChange: ((PublicWebSocketConnectionState) -> Void)?

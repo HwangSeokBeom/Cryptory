@@ -1458,7 +1458,7 @@ final class CryptoViewModel: ObservableObject {
         self.deleteAccountUseCase = DeleteAccountUseCase(authenticationService: resolvedAuthService)
         self.authSessionStore = authSessionStore ?? Self.defaultAuthSessionStore()
         self.googleSignInProvider = googleSignInProvider ?? LiveGoogleSignInProvider.shared
-        self.publicWebSocketService = publicWebSocketService ?? WebSocketService()
+        self.publicWebSocketService = publicWebSocketService ?? MarketStreamUIAdapter()
         self.privateWebSocketService = privateWebSocketService ?? PrivateWebSocketService()
         self.marketSnapshotCacheStore = marketSnapshotCacheStore ?? Self.defaultMarketSnapshotCacheStore()
         self.assetImageClient = assetImageClient
@@ -20233,3 +20233,14 @@ private extension Array {
         return chunks
     }
 }
+
+#if DEBUG
+extension CryptoViewModel {
+    /// Engine behind the default public stream service, when the live adapter
+    /// is in use. Powers the DEBUG-only Realtime Pipeline Lab; nil under test
+    /// doubles.
+    var realtimeLabEngine: MarketStreamEngine? {
+        (publicWebSocketService as? MarketStreamUIAdapter)?.engine
+    }
+}
+#endif
