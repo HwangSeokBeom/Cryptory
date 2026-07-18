@@ -91,4 +91,4 @@ Two review-sensitive areas have dedicated docs in this repo: `Docs/ACCOUNT_DELET
 | Crash reporting | Not present. No Crashlytics (only FirebaseMessaging linked), no MetricKit collection. | MetricKit and/or Crashlytics integration is documented follow-up work, not implemented. |
 | Server-side alerting | Not documented anywhere in this repo. | Document backend alerting (gateway WS connection counts, refresh-failure rate, FCM send failures). |
 | Client heartbeat / staleness detection | No ping/heartbeat on either socket; half-open connections are invisible until a send/receive fails. | Addressed by the realtime engine refactor on this branch (heartbeat timeout is one of the planned deterministic test scenarios — see `Docs/TEST_STRATEGY.md`). |
-| Structured logging | `AppLogger` is print-based; no `os.Logger`, so no unified-log triage from sysdiagnose. | Migrate to `os.Logger` (follow-up). |
+| Structured logging | Legacy `AppLogger` is print-based; only the realtime pipeline (`RealtimeLog` categories `realtime.*`) writes to unified logging for sysdiagnose triage. | Migrate the rest of `AppLogger` to `os.Logger` (follow-up). |

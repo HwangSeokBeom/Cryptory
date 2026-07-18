@@ -26,7 +26,7 @@ Auth sessions (access/refresh tokens) are persisted in the iOS Keychain, not in 
 
 ## 3. Token and PII logging rules
 
-Logging goes through `enum AppLogger` (`Cryptory/Services/AppLogger.swift`, print-based; no `os.Logger` is used anywhere in the codebase — see gaps).
+Legacy logging goes through `enum AppLogger` (`Cryptory/Services/AppLogger.swift`, print-based — see gaps). The new realtime pipeline logs through `os.Logger` (`RealtimeLog` in `Cryptory/Services/Realtime/MarketStreamEngine.swift`) with privacy annotations; it logs states, generations, and counters — never payloads or identifiers.
 
 - `AppLogger.debug` / `debugOnce` are compiled out of Release builds (`#if DEBUG`).
 - `AppLogger.masked(_:)` reduces a value to first 3 + last 2 characters (fully starred at 6 characters or fewer); `sanitizedMetadata(_:)` automatically masks any metadata key containing `secret`, `token`, `access`, or `key`.
@@ -70,4 +70,4 @@ This section lists real, currently unresolved issues. They are documented rather
 | Release transport assertion compiled out | The https/wss enforcement in `assertProductionTransportSecurity()` is DEBUG-only; a misconfigured Release build would rely on ATS alone. | Low (defaults are https/wss; ATS blocks arbitrary plaintext loads). | Add a runtime hard-fail or fallback-to-default in Release when `isATSSafe == false`. |
 | No jailbreak / tamper detection | The app performs no jailbreak detection, debugger detection, or integrity checks. | Accepted for now; primarily relevant to Keychain/session theft on compromised devices. | Evaluate App Attest / DeviceCheck if threat model changes. |
 | No certificate pinning | TLS relies on the system trust store; no pinning of the backend certificate. | Accepted for now; a device with a user-installed root CA could be MITM'd with user cooperation. | Pin via `URLSessionDelegate` challenge handling if warranted; weigh against certificate-rotation operational cost (the backend uses a DuckDNS domain with rotating certificates). |
-| Print-based logging | No `os.Logger`/unified logging anywhere; log hygiene depends on call-site discipline plus `masked`/`sanitizedMetadata`. | Low. | Migrate `AppLogger` to `os.Logger` (documented follow-up work). |
+| Print-based legacy logging | Outside the new realtime pipeline (which uses `os.Logger` via `RealtimeLog`), logging is print-based; hygiene depends on call-site discipline plus `masked`/`sanitizedMetadata`. | Low. | Migrate the rest of `AppLogger` to `os.Logger` (documented follow-up work). |

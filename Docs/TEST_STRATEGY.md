@@ -1,6 +1,6 @@
 # Test Strategy
 
-This document records what the test suite actually covers today, the injection-based design that makes it possible, the gaps in current coverage, and the deterministic realtime test layer being added on this branch. Counts and file references below were verified against the repository; planned work is explicitly labeled as planned.
+This document records what the test suite actually covers today, the injection-based design that makes it possible, the gaps in current coverage, and the deterministic realtime test layer added on this branch. Counts and file references below were verified against the repository; planned work is explicitly labeled as planned.
 
 Last updated: 2026-07-18 (branch refactor/portfolio-realtime-foundation)
 
@@ -38,11 +38,11 @@ Test doubles in `TestDoubles.swift` follow the Stub/Spy/Recording/Manual taxonom
 - No tests for reconnect, backoff, heartbeat, race conditions, or the transport layer itself. `WebSocketService` owns a real `URLSessionWebSocketTask` with no injectable transport or clock, so its timing behavior (fixed 2s public reconnect, private exponential backoff) is untested and untestable as written.
 - Private WS delivery has no double beyond `NoOpPrivateWebSocketService` — private message flows into the ViewModel are not exercised.
 - `ManualPublicWebSocketService` lacks `emitOrderbook`, so orderbook delivery into the ViewModel is untested.
-- Test targets build with `SWIFT_VERSION` 5.0 while the app target is 6.0; aligning them is planned on this branch.
+- (Resolved on this branch) Test targets previously built with `SWIFT_VERSION` 5.0 while the app target was 6.0; both test targets now build with Swift 6.0.
 
-## 5. New deterministic realtime test layer (being added on this branch)
+## 5. Deterministic realtime test layer (added on this branch)
 
-This branch introduces an actor-isolated market stream engine (`Cryptory/Services/Realtime/`) behind the existing `PublicWebSocketServicing` protocol, designed for determinism-first testing. The accompanying test layer lives under `CryptoryTests/Realtime/`. These tests are being added in the same branch as this document; do not read this section as a claim that they already exist and pass.
+This branch introduces an actor-isolated market stream engine (`Cryptory/Services/Realtime/`) behind the existing `PublicWebSocketServicing` protocol, designed for determinism-first testing. The accompanying test layer lives under `CryptoryTests/Realtime/` (`MarketStreamEngineTests`, `RealtimeComponentTests`, `RealtimeReplayBenchmarkTests`, plus `ScriptedWebSocketTransport`, `ManualTestClock`, `RealtimeFixtureLoader`). All 40 deterministic realtime tests pass locally in the environment recorded in `Docs/PERFORMANCE_BASELINE.md`.
 
 Planned components:
 
@@ -82,6 +82,6 @@ xcodebuild test \
 
 Pick any installed simulator (`xcrun simctl list devices available`) — the suite has no device dependency. Verified environment: Xcode 26.6, iOS 26.3–26.5 simulator runtimes.
 
-## 7. CI hook (being added on this branch)
+## 7. CI hook (added on this branch)
 
-`scripts/ci_test.sh` and `.github/workflows/ios.yml` are being added on this branch (they do not exist on `main` as of this writing). The script wraps the `xcodebuild test` invocation above with dynamic simulator selection and `CODE_SIGNING_ALLOWED=NO`; the workflow runs it on pushes/PRs. Until that lands, tests are run locally via the command in section 6.
+`scripts/ci_test.sh` and `.github/workflows/ios.yml` are added on this branch (they do not exist on `main` as of this writing). The script wraps the `xcodebuild test` invocation above with dynamic simulator selection and `CODE_SIGNING_ALLOWED=NO`; the workflow runs it on pushes/PRs. Until this branch lands on `main`, CI does not run automatically; tests are run locally via the command in section 6.

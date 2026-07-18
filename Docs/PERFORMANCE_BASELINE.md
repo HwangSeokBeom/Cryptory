@@ -1,8 +1,8 @@
 # Performance Baseline
 
-This document holds measured performance values for the realtime pipeline — and only measured values. Anything not yet measured is explicitly marked UNVERIFIED rather than estimated. At this stage of the branch, almost nothing has been measured; this file therefore functions primarily as the methodology and the template that the replay benchmark will fill in.
+This document holds measured performance values for the realtime pipeline — and only measured values. Anything not yet measured is explicitly marked UNVERIFIED rather than estimated.
 
-Last updated: 2026-07-18 (branch refactor/portfolio-realtime-foundation)
+Last updated: 2026-07-19 (branch refactor/portfolio-realtime-foundation)
 
 ## 1. Purpose
 
@@ -12,11 +12,11 @@ Provide an honest before/after record for the realtime refactor (legacy `Cryptor
 
 | Field | Value |
 | --- | --- |
-| Machine | UNVERIFIED (to be recorded at measurement time) |
-| OS | macOS (Darwin 25.4.0) |
+| Machine | Mac17,4 (Apple M5, 32 GB RAM) |
+| OS | macOS 26.4.1 (25E253) |
 | Xcode | 26.6 (17F113) |
-| Simulator / runtime | UNVERIFIED (to be recorded; iOS 26.3–26.5 runtimes installed) |
-| Build configuration | UNVERIFIED (to be recorded; expected Debug-Dev for test-based runs) |
+| Simulator / runtime | iPhone 17e, iOS 26.5 |
+| Build configuration | Debug (Cryptory-Dev scheme, XCTest run) |
 
 ## 3. Baseline before refactor
 
@@ -32,26 +32,37 @@ Only qualitative characteristics of the legacy path are recorded, from code insp
 
 These are structural observations, not measurements; they motivate the metrics in section 4 but assert no numbers.
 
-## 4. After refactor
+## 4. After refactor (measured)
 
-To be produced by the replay benchmark (section 5). Every cell below is a placeholder until a measured run is pasted in.
+Produced by `RealtimeReplayBenchmarkTests.testReplayThroughputHundredThousandMessages` (section 5), two runs on 2026-07-19 in the environment of section 2:
 
-| Metric | Value |
-| --- | --- |
-| Fixture | to be filled with measured values (fixture name/size) |
-| Messages processed | to be filled with measured values |
-| Elapsed (wall clock) | to be filled with measured values |
-| Approx. throughput (msgs/s) | to be filled with measured values |
-| Decoded count | to be filled with measured values |
-| Emitted count | to be filled with measured values |
-| Coalesced count | to be filled with measured values |
-| Dropped count | to be filled with measured values |
-| Reconnect count during run | to be filled with measured values |
-| Measurement method / commit | to be filled with measured values |
+| Metric | Run 1 | Run 2 |
+| --- | --- | --- |
+| Fixture | multi-market high-volume, 100,000 ticker messages, 20 markets × 2 exchanges | same |
+| Messages processed | 100,000 | 100,000 |
+| Elapsed (feed start → fully decoded, wall clock) | 14.32 s | 14.07 s |
+| Approx. throughput | 6,982 msgs/s | 7,107 msgs/s |
+| Decoded count | 100,000 | 100,000 |
+| Emitted count | 100,000 | 100,000 |
+| Coalesced count | 0 (consumer kept up; max pending buffer = 2) | 0 |
+| Explicitly dropped count | 0 | 0 |
+| Decode failures | 0 | 0 |
+| Reconnect count during run | 0 | 0 |
+| Max consumer buffer usage | 2 | 2 |
+| Emission latency p50 / p95 (buffer enqueue → dequeue) | 0.17 ms / 0.19 ms | 0.02 ms / 0.03 ms |
+| First market event delivery latency (`testFirstMarketEventDeliveryLatency`) | 0.102 ms | 0.120 ms |
+
+Notes on interpretation (honest limits):
+
+- Conservation held in both runs: emitted + coalesced + dropped = messages, i.e. nothing was silently lost.
+- Coalescing shows 0 because the benchmark consumer drains continuously; the coalescing path is exercised and asserted separately by the deterministic tests (`testTickerCoalescingEmitsNewestValueForSlowConsumer`).
+- Elapsed time includes the benchmark's own cooperative polling loop awaiting drain, so throughput is a conservative lower bound for the engine itself.
+- Emission-latency percentiles vary between runs at the tens-of-microseconds level; treat them as order-of-magnitude, not precise.
+- No comparable legacy number exists (section 3), so no before/after improvement is claimed — only the post-refactor measurements above.
 
 ## 5. Measurement method
 
-- XCTest-based replay benchmark in `CryptoryTests/Realtime/` (being added on this branch; see `Docs/TEST_STRATEGY.md`).
+- XCTest-based replay benchmark: `CryptoryTests/Realtime/RealtimeReplayBenchmarkTests.swift` (see `Docs/TEST_STRATEGY.md`).
 - `ScriptedWebSocketTransport` feeds N scripted events (e.g. the high-volume 100k-event fixture) into the engine with no network involved.
 - Wall-clock elapsed time is taken via `ContinuousClock` around the replay; counters (decoded/emitted/coalesced/dropped/reconnects) are read from the pipeline's diagnostics.
 - Runs are repeated (report the run count with results); a single run is not a baseline.
@@ -66,7 +77,6 @@ To be produced by the replay benchmark (section 5). Every cell below is a placeh
 
 Not yet implemented; listed as follow-ups, not capabilities:
 
-- First-event latency (connect → first ticker emitted to the ViewModel).
 - Reconnect recovery time (scripted failure → subscriptions replayed → first post-reconnect emission).
 - Main-thread update counts via `os_signpost` instrumentation, to quantify the coalescing win over the legacy per-message double main-hop.
 - MetricKit collection in the shipping app for field data (also listed as an observability gap in `Docs/INCIDENT_PLAYBOOK.md`).
