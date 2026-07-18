@@ -37,6 +37,10 @@ actor MarketStreamEngine {
     private var registry = MarketSubscriptionRegistry()
     private var reconnectAttempts = 0
     private var connectionProvenUseful = false
+    private var pingWaiter: CheckedContinuation<Bool, Never>?
+    private var pingEpoch: UInt64 = 0
+    private var pingTask: Task<Void, Never>?
+    private var pingTimeoutTask: Task<Void, Never>?
     private var suspended = false
     private var manuallyDisconnected = false
     private var connectedAt: Duration?
@@ -87,6 +91,12 @@ actor MarketStreamEngine {
     /// Removes a consumer: ends its stream and releases its subscriptions.
     func unregister(_ id: UUID) {
         guard var consumer = consumers.removeValue(forKey: id) else { return }
+        // Pending events discarded with the consumer are explicit drops —
+        // the conservation invariant (decoded == emitted + coalesced +
+        // dropped) must hold at every point; nothing is lost silently.
+        if consumer.buffer.count > 0 {
+            metrics.recordEventsDropped(consumer.buffer.count)
+        }
         consumer.waiter?.resume(returning: nil)
         consumer.waiter = nil
         let unsubscribed = registry.removeOwner(id)
@@ -267,6 +277,7 @@ actor MarketStreamEngine {
     private func teardownConnection() {
         heartbeatTask?.cancel()
         heartbeatTask = nil
+        resolvePing(epoch: pingEpoch, result: false)
         senderTask?.cancel()
         senderTask = nil
         outbox = []
@@ -444,11 +455,7 @@ actor MarketStreamEngine {
                 return
             }
 
-            let pongReceived = await Self.pingWithTimeout(
-                connection,
-                timeout: heartbeatPolicy.pongTimeout,
-                clock: clock
-            )
+            let pongReceived = await awaitPingResult(on: connection)
 
             // A pong (or timeout) that races a generation change is stale and
             // must not touch state.
@@ -469,23 +476,42 @@ actor MarketStreamEngine {
         }
     }
 
-    private static func pingWithTimeout(
-        _ connection: any WebSocketTransportConnection,
-        timeout: Duration,
-        clock: any RealtimeClock
-    ) async -> Bool {
-        await withTaskGroup(of: Bool.self) { group in
-            group.addTask {
-                (try? await connection.sendPing()) != nil
+    /// Races the transport ping against the pong timeout.
+    ///
+    /// Implemented with an explicit continuation resolved by two plain
+    /// actor-inherited tasks (first resolution wins; the loser is cancelled).
+    /// A `withTaskGroup` implementation intermittently hung here: with
+    /// actor-inherited children, `group.next()` sometimes never delivered the
+    /// completed ping child (observed under full-suite load: ping sent,
+    /// timeout child suspended, parent stuck 30s). The continuation pattern
+    /// matches the engine's other timers and is deterministic under the
+    /// manual test clock.
+    private func awaitPingResult(on connection: any WebSocketTransportConnection) async -> Bool {
+        pingEpoch &+= 1
+        let epoch = pingEpoch
+        return await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+            pingWaiter = continuation
+            pingTask = Task {
+                let pongReceived = (try? await connection.sendPing()) != nil
+                self.resolvePing(epoch: epoch, result: pongReceived)
             }
-            group.addTask {
-                try? await clock.sleep(for: timeout)
-                return false
+            pingTimeoutTask = Task {
+                try? await self.clock.sleep(for: self.heartbeatPolicy.pongTimeout)
+                self.resolvePing(epoch: epoch, result: false)
             }
-            let first = await group.next() ?? false
-            group.cancelAll()
-            return first
         }
+    }
+
+    /// First resolution for the current epoch wins; stale resolutions are
+    /// no-ops. Cancels the losing task so no timer outlives the ping.
+    private func resolvePing(epoch: UInt64, result: Bool) {
+        guard epoch == pingEpoch, let waiter = pingWaiter else { return }
+        pingWaiter = nil
+        pingTask?.cancel()
+        pingTask = nil
+        pingTimeoutTask?.cancel()
+        pingTimeoutTask = nil
+        waiter.resume(returning: result)
     }
 
     // MARK: - Outbound sends

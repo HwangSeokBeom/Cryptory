@@ -103,7 +103,7 @@ All buffering state lives in the engine. Policies are **per event kind** — ord
 | Trades | Appended in order; pending trade events per market bounded to the most recent 64 batches, oldest dropped **with the drop counted** | Recent-trades UI shows a short tail; unbounded queuing is worse than losing the oldest batch |
 | Candles | Merged by (interval, candle timestamp): a newer update for the same candle replaces the pending one | Matches existing `mergeCandleUpdate` semantics in the view model |
 
-Backstop: each consumer stream additionally uses `AsyncStream` buffering with capacity **1024** (newest-wins). In steady state coalescing keeps the pending set far below this; the backstop only trips if a consumer stalls entirely. Backstop drops are counted in metrics (`explicitly dropped events`) — nothing is dropped silently. Connection-state events can only be lost by a fully stalled consumer, which is recorded and surfaced in the Pipeline Lab.
+Backstop: each consumer's pending buffer is engine-owned and bounded at capacity **1024**; on overflow the oldest non-connection-state event is dropped first (state events are dropped only as a last resort). In steady state coalescing keeps the pending set far below this; the backstop only trips if a consumer stalls entirely. All drops are counted in metrics (`explicitly dropped events`) — including events still pending when a consumer unregisters, so the conservation invariant (decoded = emitted + coalesced + dropped) holds at every point and nothing is dropped silently. Connection-state events can only be lost to a fully stalled or departing consumer, which is recorded and surfaced in the Pipeline Lab.
 
 ## Lifecycle policy
 
