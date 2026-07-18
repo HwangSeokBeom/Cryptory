@@ -703,7 +703,11 @@ final class NetworkAndAuthTests: XCTestCase {
         )
 
         await vm.refreshMarketData(forceRefresh: true, reason: "unit_first_load")
-        for _ in 0..<50 where vm.displayedMarketRows.isEmpty {
+        // Row publishing lands asynchronously after the awaited refresh; shared
+        // CI runners can exceed a 1s window, so allow up to 10s like the other
+        // bootstrap-race waits. A second refresh is not an option here — the
+        // assertions below require exactly one ticker fetch.
+        for _ in 0..<500 where vm.displayedMarketRows.isEmpty {
             try? await Task.sleep(nanoseconds: 20_000_000)
         }
 
