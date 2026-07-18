@@ -38,7 +38,7 @@ Exchange API connections are **read-only by product contract**. The app never as
 - Firebase Messaging (push), GoogleSignIn-iOS, Sign in with Apple
 - Keychain for session storage; `UserDefaults` for non-sensitive snapshot caches
 - XCTest unit + UI tests; GitHub Actions CI (`.github/workflows/ios.yml`)
-- Xcode 26.x, deployment target iOS 26.4
+- Xcode 26.x, deployment target iOS 26.0
 
 ## Architecture summary
 
@@ -113,8 +113,8 @@ Measured results (and explicit `UNVERIFIED` markers where measurement was not po
 
 - `CryptoViewModel` remains a ~20k-line single file; decomposition is deliberately out of scope for this branch (see ADR 0001).
 - The private trading WebSocket still uses the legacy `@unchecked Sendable` implementation (documented follow-up).
-- Deployment target iOS 26.4 restricts the app to current-OS devices; see [Docs/ARCHITECTURE.md](Docs/ARCHITECTURE.md) for the audit of that choice.
-- GitHub-hosted CI runners may lack an iOS 26.4 simulator runtime; the workflow documents this limitation.
+- Deployment target iOS 26.0 restricts the app to iOS 26-generation devices; see [Docs/ARCHITECTURE.md](Docs/ARCHITECTURE.md) for the audit of that choice.
+- CI requires a runner with any iOS 26.x simulator runtime; the workflow documents this baseline.
 - No crash reporting (Crashlytics/MetricKit) is integrated yet.
 
 ## Roadmap

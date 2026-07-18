@@ -54,8 +54,17 @@ select_simulator_destination() {
       echo "ERROR: no usable iOS Simulator destination found."
       echo "Scheme: ${scheme}"
       echo "Xcode: $(xcodebuild -version 2>/dev/null | tr '\n' ' ' || echo 'xcodebuild unavailable')"
+      echo "Configured IPHONEOS_DEPLOYMENT_TARGET:"
+      xcodebuild -showBuildSettings -project "$project" -scheme "$scheme" 2>/dev/null \
+        | grep -m1 'IPHONEOS_DEPLOYMENT_TARGET' || echo "  (unavailable)"
+      echo "Installed SDKs (xcodebuild -showsdks):"
+      xcodebuild -showsdks 2>/dev/null || echo "  (unavailable)"
+      echo "Installed simulator runtimes (xcrun simctl list runtimes):"
+      xcrun simctl list runtimes 2>/dev/null || echo "  (unavailable)"
       echo "Full xcodebuild -showdestinations output:"
       printf '%s\n' "$destinations"
+      echo "Hint: an empty destination list usually means no installed simulator"
+      echo "runtime satisfies the project's minimum deployment target."
     } >&2
     return 2
   fi

@@ -69,11 +69,12 @@ jobs:
 
 # Known limitations (documented, not hidden):
 # - GitHub-hosted macOS runners provide a limited set of Xcode versions and
-#   iOS simulator runtimes. If the repository's deployment target (iOS 26.4)
-#   is newer than the runner's newest simulator runtime, the build/test steps
-#   will fail on the hosted runner even though they pass locally. In that
-#   case run this workflow on a self-hosted runner with a matching Xcode, or
-#   wait for runner images to catch up. See Docs/TEST_STRATEGY.md.
+#   iOS simulator runtimes. The deployment target is iOS 26.0 (the project's
+#   audited API baseline), so any Xcode 26.x runner image exposes a usable
+#   simulator runtime. If the deployment target is ever raised above the
+#   runner's newest simulator runtime, `xcodebuild -showdestinations` returns
+#   no concrete simulators and the destination helper fails with full
+#   diagnostics (SDKs, runtimes, deployment target). See Docs/TEST_STRATEGY.md.
 # - UI tests are not run in CI by default (simulator UI-test infrastructure
 #   is flaky on shared runners); run them locally via
 #   xcodebuild test -only-testing:CryptoryUITests.

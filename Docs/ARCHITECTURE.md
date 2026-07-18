@@ -62,13 +62,13 @@ Rationale, alternatives, and consequences: [ADR 0001](ADR/0001-actor-isolated-re
 - App target builds with `SWIFT_VERSION = 6.0` and `SWIFT_APPROACHABLE_CONCURRENCY = YES`.
 - Remaining `@unchecked Sendable` in the app target is documented in [SECURITY_AND_PRIVACY.md](SECURITY_AND_PRIVACY.md) and ADR 0001; the new realtime path introduces none (any exception is documented at the declaration).
 
-## Deployment-target audit (iOS 26.4)
+## Deployment-target audit (iOS 26.0)
 
-The project sets `IPHONEOS_DEPLOYMENT_TARGET = 26.4` at the project level for all targets.
+The project sets `IPHONEOS_DEPLOYMENT_TARGET = 26.0` at the project level and in the unit-test target; the app and UI-test targets inherit the project value.
 
-- **Is it accidental or intentional?** It matches the Xcode 26.x default for a recently created/updated project rather than a documented product decision; no code comment or doc records a deliberate choice. It is therefore *presumed tooling-default*, not user-researched.
-- **What currently requires it?** No API audit found app code that strictly needs 26.4 over earlier 26.x; the codebase relies on Swift 6 concurrency and current SwiftUI, which recent OS majors also provide. A precise minimum-version audit across all SwiftUI/os APIs used has not been performed and would be required before lowering.
-- **Policy for this branch:** the target is **not** lowered. Lowering it merely to widen device support without auditing every API and testing on older runtimes would risk unverifiable claims. If broader support becomes a goal, the audit above plus compatibility wrappers (e.g., availability-gated SwiftUI modifiers) are the documented path.
+- **History:** the project was created with the tooling-default `26.4` (the local Xcode's SDK version at creation time), not a documented product decision. GitHub-hosted runners with Xcode 26.3 exposed no simulator runtime satisfying 26.4, so `xcodebuild -showdestinations` returned only placeholder destinations and CI could not run (GitHub Actions run #29653999898).
+- **Audit for 26.0:** the only OS-gated APIs in the codebase are the Apple Translation APIs in `TranslationService.swift`, already guarded with `@available(iOS 26.0, *)` / `#available(iOS 26.0, *)`. No source references any 26.1–26.4 API; all package dependencies have minimums far below iOS 26. Swift's compiler-enforced availability checking (plus `CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE`) makes a clean build at 26.0 the exhaustive check.
+- **Policy:** iOS 26.0 is the supported baseline — the intended iOS 26 design generation, forward-compatible with every 26.x runtime, and not tied to any single patch-level simulator runtime on CI. Raising the target requires a real API need documented here.
 
 ## Environment configuration
 
