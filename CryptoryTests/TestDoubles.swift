@@ -1,3 +1,4 @@
+import Synchronization
 import XCTest
 @testable import Cryptory
 
@@ -1096,7 +1097,8 @@ final class SpyPublicContentRepository: PublicContentRepositoryProtocol {
     }
 }
 
-final class NoOpPublicWebSocketService: PublicWebSocketServicing {
+@MainActor
+final class NoOpPublicWebSocketService: @MainActor PublicWebSocketServicing {
     var onConnectionStateChange: ((PublicWebSocketConnectionState) -> Void)?
     var onTickerReceived: ((TickerStreamPayload) -> Void)?
     var onOrderbookReceived: ((OrderbookStreamPayload) -> Void)?
@@ -1113,7 +1115,8 @@ final class NoOpPublicWebSocketService: PublicWebSocketServicing {
     func updateSubscriptions(_ subscriptions: Set<PublicMarketSubscription>) {}
 }
 
-final class RecordingPublicWebSocketService: PublicWebSocketServicing {
+@MainActor
+final class RecordingPublicWebSocketService: @MainActor PublicWebSocketServicing {
     var onConnectionStateChange: ((PublicWebSocketConnectionState) -> Void)?
     var onTickerReceived: ((TickerStreamPayload) -> Void)?
     var onOrderbookReceived: ((OrderbookStreamPayload) -> Void)?
@@ -1173,7 +1176,8 @@ final class ManualPublicWebSocketService: PublicWebSocketServicing {
     }
 }
 
-final class NoOpPrivateWebSocketService: PrivateWebSocketServicing {
+@MainActor
+final class NoOpPrivateWebSocketService: @MainActor PrivateWebSocketServicing {
     var onConnectionStateChange: ((PrivateWebSocketConnectionState) -> Void)?
     var onOrderReceived: ((OrderStreamPayload) -> Void)?
     var onFillReceived: ((FillStreamPayload) -> Void)?
@@ -1189,35 +1193,76 @@ final class NoOpPrivateWebSocketService: PrivateWebSocketServicing {
 }
 
 final class URLProtocolSpy: URLProtocol {
-    static var requestCount = 0
-    static var responseStatusCode = 200
-    static var responseData = Data("{}".utf8)
-    static var lastRequest: URLRequest?
-    static var lastRequestBody: Data?
-    static var responseQueue: [(statusCode: Int, data: Data)] = []
-    static var requestedPaths: [String] = []
+    // URLProtocol callbacks arrive on URLSession's loading queues while tests
+    // read these values from the test executor, so all shared state lives
+    // behind a Mutex to satisfy Swift 6 isolation without unsafe opt-outs.
+    private struct Storage: Sendable {
+        var requestCount = 0
+        var responseStatusCode = 200
+        var responseData = Data("{}".utf8)
+        var lastRequest: URLRequest?
+        var lastRequestBody: Data?
+        var responseQueue: [(statusCode: Int, data: Data)] = []
+        var requestedPaths: [String] = []
+    }
+
+    private static let storage = Mutex(Storage())
+
+    static var requestCount: Int {
+        get { storage.withLock { $0.requestCount } }
+        set { storage.withLock { $0.requestCount = newValue } }
+    }
+
+    static var responseStatusCode: Int {
+        get { storage.withLock { $0.responseStatusCode } }
+        set { storage.withLock { $0.responseStatusCode = newValue } }
+    }
+
+    static var responseData: Data {
+        get { storage.withLock { $0.responseData } }
+        set { storage.withLock { $0.responseData = newValue } }
+    }
+
+    static var lastRequest: URLRequest? {
+        get { storage.withLock { $0.lastRequest } }
+        set { storage.withLock { $0.lastRequest = newValue } }
+    }
+
+    static var lastRequestBody: Data? {
+        get { storage.withLock { $0.lastRequestBody } }
+        set { storage.withLock { $0.lastRequestBody = newValue } }
+    }
+
+    static var responseQueue: [(statusCode: Int, data: Data)] {
+        get { storage.withLock { $0.responseQueue } }
+        set { storage.withLock { $0.responseQueue = newValue } }
+    }
+
+    static var requestedPaths: [String] {
+        get { storage.withLock { $0.requestedPaths } }
+        set { storage.withLock { $0.requestedPaths = newValue } }
+    }
 
     static func reset() {
-        requestCount = 0
-        responseStatusCode = 200
-        responseData = Data("{}".utf8)
-        lastRequest = nil
-        lastRequestBody = nil
-        responseQueue = []
-        requestedPaths = []
+        storage.withLock { $0 = Storage() }
     }
 
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
     override func startLoading() {
-        Self.requestCount += 1
-        Self.lastRequest = request
-        Self.lastRequestBody = request.httpBody ?? request.httpBodyStream?.readAllData()
-        Self.requestedPaths.append(request.url?.path ?? "")
-        let queuedResponse = Self.responseQueue.isEmpty ? nil : Self.responseQueue.removeFirst()
-        let statusCode = queuedResponse?.statusCode ?? Self.responseStatusCode
-        let data = queuedResponse?.data ?? Self.responseData
+        let body = request.httpBody ?? request.httpBodyStream?.readAllData()
+        let (statusCode, data): (Int, Data) = Self.storage.withLock { storage in
+            storage.requestCount += 1
+            storage.lastRequest = request
+            storage.lastRequestBody = body
+            storage.requestedPaths.append(request.url?.path ?? "")
+            let queuedResponse = storage.responseQueue.isEmpty ? nil : storage.responseQueue.removeFirst()
+            return (
+                queuedResponse?.statusCode ?? storage.responseStatusCode,
+                queuedResponse?.data ?? storage.responseData
+            )
+        }
         let response = HTTPURLResponse(url: request.url!, statusCode: statusCode, httpVersion: nil, headerFields: nil)!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: data)
