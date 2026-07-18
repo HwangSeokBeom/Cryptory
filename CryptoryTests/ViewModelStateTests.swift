@@ -1728,7 +1728,12 @@ final class ViewModelStateTests: XCTestCase {
     }
 
     @MainActor
-    func testTickerSnapshotImageURLIsMergedIntoDisplayedRow() async {
+    func testTickerSnapshotImageURLIsMergedIntoDisplayedRow() async throws {
+        // A local temp PNG keeps the image fetch deterministic: fixtures that
+        // point at a dead remote host race the OS's negative-DNS cache, which
+        // earlier tests can warm (fast terminal image failure) or leave cold
+        // (slow failure), flipping the assertion outcome by suite order.
+        let imageFileURL = try makeTemporaryPNGURL(color: .systemBlue)
         let marketRepository = SpyMarketRepository()
         marketRepository.marketCatalogSnapshots[.upbit] = MarketCatalogSnapshot(
             exchange: .upbit,
@@ -1749,7 +1754,7 @@ final class ViewModelStateTests: XCTestCase {
                     symbol: "BTC",
                     displayName: "비트코인",
                     englishName: "Bitcoin",
-                    imageURL: "https://assets.example.com/btc.png"
+                    imageURL: imageFileURL.absoluteString
                 )
             ],
             tickers: [
@@ -1775,20 +1780,35 @@ final class ViewModelStateTests: XCTestCase {
             exchangeConnectionsRepository: SpyExchangeConnectionsRepository(),
             authService: StubAuthenticationService(),
             publicWebSocketService: NoOpPublicWebSocketService(),
-            privateWebSocketService: NoOpPrivateWebSocketService()
+            privateWebSocketService: NoOpPrivateWebSocketService(),
+            assetImageClient: AssetImageClient(namespace: UUID().uuidString)
         )
 
         vm.onAppear()
         await waitUntil {
-            vm.displayedMarketRows.first?.imageURL == "https://assets.example.com/btc.png"
+            vm.displayedMarketRows.isEmpty == false
+        }
+
+        // Bootstrap intentionally races the ticker-resolved and the
+        // catalog-merged universe builds; whichever publish lands last wins
+        // until the next update cycle. Production converges through its
+        // continuous update stream — drive one deterministic refresh cycle
+        // (the catalog universe is now resolved in memory, so every
+        // subsequent merge preserves the image) before asserting.
+        await vm.refreshMarketData(forceRefresh: true, reason: "test_post_bootstrap_convergence")
+        await waitUntil(timeoutNanoseconds: 10_000_000_000) {
+            vm.displayedMarketRows.first?.imageURL == imageFileURL.absoluteString
         }
 
         XCTAssertEqual(vm.displayedMarketRows.first?.symbol, "BTC")
-        XCTAssertEqual(vm.displayedMarketRows.first?.imageURL, "https://assets.example.com/btc.png")
+        XCTAssertEqual(vm.displayedMarketRows.first?.imageURL, imageFileURL.absoluteString)
     }
 
     @MainActor
-    func testCatalogImageURLIsPreservedWhenTickerSnapshotImageURLIsNil() async {
+    func testCatalogImageURLIsPreservedWhenTickerSnapshotImageURLIsNil() async throws {
+        // Local temp PNG for the same reason as the ticker-merge test above:
+        // no live DNS in the assertion path.
+        let imageFileURL = try makeTemporaryPNGURL(color: .systemGreen)
         let marketRepository = SpyMarketRepository()
         marketRepository.marketCatalogSnapshots[.upbit] = MarketCatalogSnapshot(
             exchange: .upbit,
@@ -1797,7 +1817,7 @@ final class ViewModelStateTests: XCTestCase {
                     symbol: "BTC",
                     displayName: "비트코인",
                     englishName: "Bitcoin",
-                    imageURL: "https://assets.example.com/btc.png"
+                    imageURL: imageFileURL.absoluteString
                 )
             ],
             supportedIntervalsBySymbol: ["BTC": ["1h"]],
@@ -1836,15 +1856,27 @@ final class ViewModelStateTests: XCTestCase {
             exchangeConnectionsRepository: SpyExchangeConnectionsRepository(),
             authService: StubAuthenticationService(),
             publicWebSocketService: NoOpPublicWebSocketService(),
-            privateWebSocketService: NoOpPrivateWebSocketService()
+            privateWebSocketService: NoOpPrivateWebSocketService(),
+            assetImageClient: AssetImageClient(namespace: UUID().uuidString)
         )
 
         vm.onAppear()
         await waitUntil {
-            vm.displayedMarketRows.first?.imageURL == "https://assets.example.com/btc.png"
+            vm.displayedMarketRows.isEmpty == false
         }
 
-        XCTAssertEqual(vm.displayedMarketRows.first?.imageURL, "https://assets.example.com/btc.png")
+        // Bootstrap intentionally races the ticker-resolved and the
+        // catalog-merged universe builds; whichever publish lands last wins
+        // until the next update cycle. Production converges through its
+        // continuous update stream — drive one deterministic refresh cycle
+        // (the catalog universe is now resolved in memory, so every
+        // subsequent merge preserves the image) before asserting.
+        await vm.refreshMarketData(forceRefresh: true, reason: "test_post_bootstrap_convergence")
+        await waitUntil(timeoutNanoseconds: 10_000_000_000) {
+            vm.displayedMarketRows.first?.imageURL == imageFileURL.absoluteString
+        }
+
+        XCTAssertEqual(vm.displayedMarketRows.first?.imageURL, imageFileURL.absoluteString)
     }
 
     @MainActor
@@ -3383,16 +3415,24 @@ final class ViewModelStateTests: XCTestCase {
     }
 
     @MainActor
-    func testDuplicateShortSymbolsAcrossExchangesKeepDistinctMarketIdentityState() async {
+    func testDuplicateShortSymbolsAcrossExchangesKeepDistinctMarketIdentityState() async throws {
         let symbols = ["T", "G", "A", "W", "IN", "IP", "BTC", "ETH"]
+        // Local temp PNGs per (exchange, symbol): image assertions must never
+        // depend on live DNS for a dead host (see the catalog-image test).
+        var fixtureImageURLs: [String: String] = [:]
+        for exchange in ["upbit", "bithumb", "korbit"] {
+            for symbol in symbols {
+                fixtureImageURLs["\(exchange)|\(symbol)"] = try makeTemporaryPNGURL().absoluteString
+            }
+        }
         let upbitEntries = symbols.map { symbol in
-            (marketId: "upbit-\(symbol)", symbol: symbol, imageURL: "https://assets.example.com/upbit/\(symbol.lowercased()).png")
+            (marketId: "upbit-\(symbol)", symbol: symbol, imageURL: fixtureImageURLs["upbit|\(symbol)"]!)
         }
         let bithumbEntries = symbols.map { symbol in
-            (marketId: "bithumb-\(symbol)", symbol: symbol, imageURL: "https://assets.example.com/bithumb/\(symbol.lowercased()).png")
+            (marketId: "bithumb-\(symbol)", symbol: symbol, imageURL: fixtureImageURLs["bithumb|\(symbol)"]!)
         }
         let korbitEntries = symbols.map { symbol in
-            (marketId: "korbit-\(symbol)", symbol: symbol, imageURL: "https://assets.example.com/korbit/\(symbol.lowercased()).png")
+            (marketId: "korbit-\(symbol)", symbol: symbol, imageURL: fixtureImageURLs["korbit|\(symbol)"]!)
         }
 
         let repository = DelayedMarketRepository(
@@ -3448,7 +3488,8 @@ final class ViewModelStateTests: XCTestCase {
             exchangeConnectionsRepository: SpyExchangeConnectionsRepository(),
             authService: StubAuthenticationService(),
             publicWebSocketService: RecordingPublicWebSocketService(),
-            privateWebSocketService: NoOpPrivateWebSocketService()
+            privateWebSocketService: NoOpPrivateWebSocketService(),
+            assetImageClient: AssetImageClient(namespace: UUID().uuidString)
         )
 
         let upbitTIdentity = MarketIdentity(exchange: .upbit, marketId: "upbit-T", symbol: "T")
@@ -3462,7 +3503,7 @@ final class ViewModelStateTests: XCTestCase {
         }
 
         XCTAssertEqual(Set(vm.displayedMarketRows.map(\.symbol)), Set(symbols))
-        XCTAssertEqual(vm.displayedMarketRows.first(where: { $0.marketIdentity == upbitTIdentity })?.imageURL, "https://assets.example.com/upbit/t.png")
+        XCTAssertEqual(vm.displayedMarketRows.first(where: { $0.marketIdentity == upbitTIdentity })?.imageURL, fixtureImageURLs["upbit|T"])
 
         vm.updateExchange(.bithumb, source: "duplicate_symbol_switch")
         await waitUntil(timeoutNanoseconds: 2_000_000_000) {
@@ -3470,7 +3511,7 @@ final class ViewModelStateTests: XCTestCase {
                 == Set(bithumbEntries.map { MarketIdentity(exchange: .bithumb, marketId: $0.marketId, symbol: $0.symbol).cacheKey })
         }
 
-        XCTAssertEqual(vm.displayedMarketRows.first(where: { $0.marketIdentity == bithumbTIdentity })?.imageURL, "https://assets.example.com/bithumb/t.png")
+        XCTAssertEqual(vm.displayedMarketRows.first(where: { $0.marketIdentity == bithumbTIdentity })?.imageURL, fixtureImageURLs["bithumb|T"])
 
         vm.updateExchange(.korbit, source: "duplicate_symbol_switch")
         await waitUntil(timeoutNanoseconds: 2_000_000_000) {
@@ -3478,7 +3519,7 @@ final class ViewModelStateTests: XCTestCase {
                 == Set(korbitEntries.map { MarketIdentity(exchange: .korbit, marketId: $0.marketId, symbol: $0.symbol).cacheKey })
         }
 
-        XCTAssertEqual(vm.displayedMarketRows.first(where: { $0.marketIdentity == korbitTIdentity })?.imageURL, "https://assets.example.com/korbit/t.png")
+        XCTAssertEqual(vm.displayedMarketRows.first(where: { $0.marketIdentity == korbitTIdentity })?.imageURL, fixtureImageURLs["korbit|T"])
         XCTAssertEqual(
             Set(vm.pricesByMarketIdentity.keys.filter { $0.symbol == "T" }),
             Set([upbitTIdentity, bithumbTIdentity, korbitTIdentity])
@@ -3486,10 +3527,10 @@ final class ViewModelStateTests: XCTestCase {
 
         vm.updateExchange(.upbit, source: "duplicate_symbol_return")
         await waitUntil(timeoutNanoseconds: 2_000_000_000) {
-            vm.displayedMarketRows.first(where: { $0.marketIdentity == upbitTIdentity })?.imageURL == "https://assets.example.com/upbit/t.png"
+            vm.displayedMarketRows.first(where: { $0.marketIdentity == upbitTIdentity })?.imageURL == fixtureImageURLs["upbit|T"]
         }
 
-        XCTAssertEqual(vm.displayedMarketRows.first(where: { $0.marketIdentity == upbitTIdentity })?.imageURL, "https://assets.example.com/upbit/t.png")
+        XCTAssertEqual(vm.displayedMarketRows.first(where: { $0.marketIdentity == upbitTIdentity })?.imageURL, fixtureImageURLs["upbit|T"])
     }
 
     func testPublicMarketSubscriptionSetKeepsDuplicateSymbolsDistinctAcrossExchangesAndMarketIDs() {
@@ -4900,15 +4941,23 @@ final class ViewModelStateTests: XCTestCase {
 
         vm.chartPeriod = "1m"
         vm.onAppear()
-        await waitUntil {
+        await waitUntil(timeoutNanoseconds: 10_000_000_000) {
             vm.displayedMarketRows.contains(where: { $0.symbol == "BTC" })
         }
 
         vm.selectedCoin = CoinCatalog.coin(symbol: "BTC")
         vm.setActiveTab(.chart)
-        await waitUntil {
+        await waitUntil(timeoutNanoseconds: 10_000_000_000) {
             vm.candles.count >= 2
         }
+
+        // Anchor the trade inside the bucket of the candle the view model
+        // actually created. Stamping the trade with the test's own Date()
+        // races the wall-clock minute boundary: if hydration crossed into the
+        // next minute, CandleAggregator treats the trade as belonging to a
+        // closed bucket and drops it, which made this test order/time flaky.
+        let currentBucketTime = vm.candles.last?.time ?? Int(now.timeIntervalSince1970)
+        let tradeDate = Date(timeIntervalSince1970: TimeInterval(currentBucketTime) + 1)
 
         let liveTrade = PublicTrade(
             id: "live-trade-1",
@@ -4916,7 +4965,7 @@ final class ViewModelStateTests: XCTestCase {
             quantity: 0.25,
             side: "buy",
             executedAt: "12:00:01",
-            executedDate: now
+            executedDate: tradeDate
         )
         publicWebSocketService.emitTrades(
             TradesStreamPayload(
@@ -4926,7 +4975,7 @@ final class ViewModelStateTests: XCTestCase {
             )
         )
 
-        await waitUntil {
+        await waitUntil(timeoutNanoseconds: 10_000_000_000) {
             vm.candles.last?.close == 126_100_000
                 && (vm.candles.last?.volume ?? 0) >= 1
         }

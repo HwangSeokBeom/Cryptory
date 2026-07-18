@@ -37,16 +37,18 @@ final class MarketStreamEngineTests: XCTestCase {
         return (engine, transport, clock)
     }
 
-    /// Bounded cooperative wait. Fails (returning false) instead of hanging.
+    /// Bounded cooperative wait. The condition is the synchronization; the
+    /// wall-clock deadline only guards against deadlock (returning false
+    /// instead of hanging). A yield-count bound proved scheduler-dependent
+    /// under full-suite load.
     @discardableResult
     private func waitUntil(
-        maxYields: Int = 200_000,
+        timeout: Duration = .seconds(30),
         _ condition: () async -> Bool
     ) async -> Bool {
-        var yields = 0
+        let deadline = ContinuousClock.now.advanced(by: timeout)
         while !(await condition()) {
-            if yields >= maxYields { return false }
-            yields += 1
+            if ContinuousClock.now >= deadline { return false }
             await Task.yield()
         }
         return true
@@ -61,7 +63,7 @@ final class MarketStreamEngineTests: XCTestCase {
 
     private func engineStateDescription(_ engine: MarketStreamEngine) async -> String {
         let snapshot = await engine.metricsSnapshot()
-        return "state=\(snapshot.connectionState) gen=\(snapshot.generation) received=\(snapshot.messagesReceived) decoded=\(snapshot.messagesDecoded) dropped=\(snapshot.eventsDropped) reconnects=\(snapshot.reconnectCount)"
+        return "state=\(snapshot.connectionState) gen=\(snapshot.generation) received=\(snapshot.messagesReceived) decoded=\(snapshot.messagesDecoded) dropped=\(snapshot.eventsDropped) reconnects=\(snapshot.reconnectCount) hbSuccess=\(snapshot.heartbeatSuccessCount) hbFailure=\(snapshot.heartbeatFailureCount) stale=\(snapshot.staleEventsIgnored)"
     }
 
     /// XCTAssertTrue variant whose failure message includes engine state
@@ -77,6 +79,18 @@ final class MarketStreamEngineTests: XCTestCase {
             let description = await engineStateDescription(engine)
             XCTFail("\(note) \(description)", file: file, line: line)
         }
+    }
+
+    /// Asserts that at least `count` tasks reach a suspension on the manual
+    /// clock (async work is not allowed inside XCTest autoclosure messages).
+    private func expectSleepers(
+        _ clock: ManualTestClock,
+        atLeast count: Int = 1,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async {
+        let armed = await clock.waitForSleepers(atLeast: count)
+        XCTAssertTrue(armed, "expected a pending clock timer", file: file, line: line)
     }
 
     /// Waits until the engine is in `.waitingToReconnect` (optionally for a
@@ -412,11 +426,11 @@ final class MarketStreamEngineTests: XCTestCase {
         // Ping hangs; the pong-timeout sleeper (10s) arms next.
         let pingSent = await waitUntil { first.pingCount == 1 }
         XCTAssertTrue(pingSent)
-        await clock.waitForSleepers(atLeast: 1)
+        await expectSleepers(clock)
         clock.advance(by: .seconds(10))
 
         // Timeout → one reconnect scheduled (1s backoff).
-        await clock.waitForSleepers(atLeast: 1)
+        await expectSleepers(clock)
         clock.advance(by: .seconds(1))
         let reopened = await waitUntil { transport.openCount == 2 }
         await assertTrue(reopened, engine: engine)
@@ -433,7 +447,7 @@ final class MarketStreamEngineTests: XCTestCase {
         connection.setPingBehavior(.hang)
         connection.scriptOpened()
 
-        await clock.waitForSleepers(atLeast: 1)
+        await expectSleepers(clock)
         clock.advance(by: .seconds(20))
         await waitUntil { connection.pingCount == 1 }
 
@@ -457,11 +471,16 @@ final class MarketStreamEngineTests: XCTestCase {
         let connection = try! XCTUnwrap(transport.lastConnection)
         connection.scriptOpened()
 
-        await clock.waitForSleepers(atLeast: 1)
+        await expectSleepers(clock)
         clock.advance(by: .seconds(20))
-        let success = await waitUntil { await engine.metricsSnapshot().heartbeatSuccessCount == 1 }
-        await assertTrue(success, engine: engine)
+        let success = await waitUntil { await engine.metricsSnapshot().heartbeatSuccessCount >= 1 }
+        await assertTrue(
+            success,
+            engine: engine,
+            "sleepers=\(clock.sleeperCount) pings=\(connection.pingCount)"
+        )
         let snapshot = await engine.metricsSnapshot()
+        XCTAssertEqual(snapshot.heartbeatSuccessCount, 1, "exactly one ping interval elapsed")
         XCTAssertEqual(snapshot.consecutiveReconnectFailures, 0)
     }
 
@@ -628,7 +647,7 @@ final class MarketStreamEngineTests: XCTestCase {
             connection.scriptText(message)
         }
 
-        let drained = await waitUntil(maxYields: 5_000_000) {
+        let drained = await waitUntil(timeout: .seconds(120)) {
             await engine.metricsSnapshot().messagesDecoded == 100_000
         }
         await assertTrue(drained, engine: engine)

@@ -69,14 +69,15 @@ final class ManualTestClock: RealtimeClock {
     }
 
     /// Cooperatively waits until at least `count` tasks are suspended on this
-    /// clock. Bounded: fails the test path by returning `false` after
-    /// `maxYields` scheduler yields instead of hanging.
+    /// clock. The condition is the synchronization; the wall-clock deadline is
+    /// only a deadlock guard so a failure surfaces as `false` instead of a
+    /// hang. (A yield-count bound proved scheduler-dependent and flaky under
+    /// full-suite load.)
     @discardableResult
-    func waitForSleepers(atLeast count: Int, maxYields: Int = 100_000) async -> Bool {
-        var yields = 0
+    func waitForSleepers(atLeast count: Int, timeout: Duration = .seconds(30)) async -> Bool {
+        let deadline = ContinuousClock.now.advanced(by: timeout)
         while sleeperCount < count {
-            if yields >= maxYields { return false }
-            yields += 1
+            if ContinuousClock.now >= deadline { return false }
             await Task.yield()
         }
         return true
