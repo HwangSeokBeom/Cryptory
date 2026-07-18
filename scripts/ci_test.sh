@@ -42,17 +42,17 @@ if [[ -e "$RESULT_BUNDLE_PATH" ]]; then
 fi
 
 section "Simulator selection"
-DEST_ID="$(xcrun simctl list devices available --json | /usr/bin/python3 -c '
-import json, sys
-data = json.load(sys.stdin)
-devices = [d for devs in data["devices"].values() for d in devs if d.get("isAvailable")]
-iphones = [d for d in devices if d["name"].startswith("iPhone")]
-pick = (iphones or devices)
-if not pick:
-    sys.exit(1)
-print(pick[0]["udid"])
-')" || { echo "ERROR: no available simulator found" >&2; exit 2; }
-echo "Selected simulator id: ${DEST_ID}"
+# Ask xcodebuild itself which simulator destinations the scheme can use;
+# simctl device sets do not always match xcodebuild's destination set.
+DEST_NAME="$(xcodebuild -showdestinations -project "$PROJECT" -scheme "$SCHEME" 2>/dev/null \
+  | grep 'platform:iOS Simulator' \
+  | grep -v 'placeholder' \
+  | sed -En 's/.*name:([^,}]+).*/\1/p' \
+  | sed 's/[[:space:]]*$//' \
+  | { grep '^iPhone' || cat; } \
+  | head -1)"
+[[ -n "$DEST_NAME" ]] || { echo "ERROR: no available iOS Simulator destination found" >&2; exit 2; }
+echo "Selected simulator: ${DEST_NAME}"
 
 EXTRA_ARGS=()
 if [[ -n "$ONLY_TESTING" ]]; then
