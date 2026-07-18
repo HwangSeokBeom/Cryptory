@@ -44,15 +44,9 @@ fi
 section "Simulator selection"
 # Ask xcodebuild itself which simulator destinations the scheme can use;
 # simctl device sets do not always match xcodebuild's destination set.
-DEST_NAME="$(xcodebuild -showdestinations -project "$PROJECT" -scheme "$SCHEME" 2>/dev/null \
-  | grep 'platform:iOS Simulator' \
-  | grep -v 'placeholder' \
-  | sed -En 's/.*name:([^,}]+).*/\1/p' \
-  | sed 's/[[:space:]]*$//' \
-  | { grep '^iPhone' || cat; } \
-  | head -1)"
-[[ -n "$DEST_NAME" ]] || { echo "ERROR: no available iOS Simulator destination found" >&2; exit 2; }
-echo "Selected simulator: ${DEST_NAME}"
+source "${REPO_ROOT}/scripts/ci_destination.sh"
+select_simulator_destination "$PROJECT" "$SCHEME"
+echo "Selected simulator: ${DEST_NAME} (id=${DEST_ID})"
 
 EXTRA_ARGS=()
 if [[ -n "$ONLY_TESTING" ]]; then
