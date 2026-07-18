@@ -36,6 +36,25 @@ struct ProfileView: View {
                     supportAndPolicyCard
                     accountActionCard
 
+                    #if DEBUG
+                    if let engine = vm.realtimeLabEngine {
+                        NavigationLink {
+                            RealtimePipelineLabView(engine: engine)
+                        } label: {
+                            HStack {
+                                Text("Realtime Pipeline Lab (DEBUG)")
+                                    .font(.system(size: 13, weight: .medium))
+                                Spacer()
+                                Image(systemName: "chevron.right")
+                                    .font(.system(size: 11))
+                            }
+                            .foregroundColor(.textMuted)
+                            .padding(.horizontal, 4)
+                        }
+                        .accessibilityLabel("Realtime Pipeline Lab, debug diagnostics")
+                    }
+                    #endif
+
                     Text("앱 버전 \(appVersionText)")
                         .font(.system(size: 11, weight: .medium))
                         .foregroundColor(.textMuted)
