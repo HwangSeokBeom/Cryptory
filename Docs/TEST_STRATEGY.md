@@ -43,7 +43,7 @@ Test doubles in `TestDoubles.swift` follow the Stub/Spy/Recording/Manual taxonom
 
 ## 5. Deterministic realtime test layer (added on this branch)
 
-This branch introduces an actor-isolated market stream engine (`Cryptory/Services/Realtime/`) behind the existing `PublicWebSocketServicing` protocol, designed for determinism-first testing. The accompanying test layer lives under `CryptoryTests/Realtime/` (`MarketStreamEngineTests`, `RealtimeComponentTests`, `RealtimeReplayBenchmarkTests`, plus `ScriptedWebSocketTransport`, `ManualTestClock`, `RealtimeFixtureLoader`). All 40 deterministic realtime tests pass locally in the environment recorded in `Docs/PERFORMANCE_BASELINE.md`.
+This branch introduces an actor-isolated market stream engine (`Cryptory/Services/Realtime/`) behind the existing `PublicWebSocketServicing` protocol, designed for determinism-first testing. The accompanying test layer lives under `CryptoryTests/Realtime/` (`MarketStreamEngineTests`, `RealtimeComponentTests`, `RealtimeTransportTests`, `RealtimeLifecycleTests`, `RealtimeMetricsSemanticsTests`, `RealtimeReplayBenchmarkTests`, plus `ScriptedWebSocketTransport`, `ManualTestClock`, `RealtimeFixtureLoader`; the presentation-publication contract is covered by `CryptoryTests/MarketPresentationPublicationTests`). The suite is the source of truth for its own count — run `scripts/ci_test.sh CryptoryTests/MarketStreamEngineTests` (or the full unit suite) rather than trusting a number written here; every test passes in the environment recorded in `Docs/PERFORMANCE_BASELINE.md`.
 
 Planned components:
 
@@ -66,6 +66,14 @@ Planned coverage: 30 deterministic scenarios across these categories:
 | Lifecycle policy | Scene-phase transitions produce the intended connect/disconnect behavior |
 | Coalescing | Burst updates coalesce into bounded main-thread emissions |
 | Bounded buffers | Backpressure drops/limits instead of unbounded queueing |
+| Backoff preservation | Subscription churn during `waitingToReconnect` never cancels/resets the timer; explicit `connect()` is the documented bypass |
+| Sender ownership | A stale sender resuming after teardown cannot clear the new sender, drain a newer outbox, or fail a newer generation |
+| Idle-close convergence | A → [] → B during a suspended send keeps the socket and converges to the final set |
+| Consumer cancellation | Cancelling a consumer task releases the consumer, its buffer (counted drops), registry ownership, and closes the socket for the final owner |
+| Adapter lifecycle | Explicit `shutdown()` and last-reference deallocation both release engine ownership; no callbacks after shutdown |
+| Transport ingress bound | At most one `receive()` outstanding; producer bursts never build an app-side raw-frame queue (incl. 100k replay) |
+| Metrics semantics | Global ingress vs per-consumer delivery counters stay separate; documented conservation equations hold |
+| Presentation publication | `refreshMarketData()` returns only after rows publish; a superseded row builder cannot overwrite newer rows |
 | Malformed-message resilience | Bad payloads are dropped without tearing down the stream |
 | 100k-event replay | High-volume fixture replays to completion with stable counts (also feeds `Docs/PERFORMANCE_BASELINE.md`) |
 

@@ -28,11 +28,11 @@ The app targets Swift 6 with approachable concurrency; the rest of the codebase 
 Replace the public market WebSocket path with an actor-isolated pipeline in `Cryptory/Services/Realtime/`:
 
 1. **`MarketStreamEngine` is an `actor`** and the sole owner of connection state, socket generation, subscription registry, reconnect/heartbeat state, event buffers, and metrics. Compiler-enforced isolation replaces `@unchecked Sendable`.
-2. **Transport behind a protocol** (`WebSocketTransport`): the engine never touches `URLSessionWebSocketTask`; production uses `URLSessionWebSocketTransport`, tests use a scripted transport. The transport cannot mutate UI or engine state; it only yields transport events.
+2. **Transport behind a protocol** (`WebSocketTransport`): the engine never touches `URLSessionWebSocketTask`; production uses `URLSessionWebSocketTransport`, tests use a scripted transport. The transport cannot mutate UI or engine state; the engine pulls events one at a time via `receive()`, so at most one raw frame is held app-side before decoding (see REALTIME_PIPELINE.md, "Transport ingress").
 3. **Monotonic connection generation**: every attempt gets a new generation; all transport events and timer callbacks are generation-tagged and stale ones are ignored for state, events, reconnect, subscriptions, and heartbeat.
 4. **Events via `AsyncStream<MarketStreamEvent>`** with engine-owned bounded buffering and per-kind coalescing policies (tickers latest-per-market; orderbook snapshot replacement; bounded trade batches; candle merge by interval+timestamp) — documented in [REALTIME_PIPELINE.md](../REALTIME_PIPELINE.md).
 5. **Deterministic policies as values**: `ReconnectPolicy` (exponential backoff, bounded jitter, cap, documented reset condition) and `HeartbeatPolicy` (ping interval, pong timeout) are plain structs; the engine takes an injected clock abstraction so tests never sleep on the wall clock.
-6. **Compatibility adapter, not call-site rewrite**: `MarketStreamUIAdapter` implements the existing `PublicWebSocketServicing` protocol verbatim on `MainActor`. `CryptoViewModel`'s binding code is unchanged; only the default service instance switches to the adapter. The legacy public `WebSocketService` is deprecated but kept compiling.
+6. **Compatibility adapter, not call-site rewrite**: `MarketStreamUIAdapter` implements the existing `PublicWebSocketServicing` protocol on `MainActor` (the protocol's callback closures are declared `@MainActor`, letting the view model apply state synchronously). `CryptoViewModel`'s binding code is unchanged; only the default service instance switches to the adapter. The legacy public `WebSocketService` is deprecated but kept compiling.
 7. **Private socket excluded**: `PrivateWebSocketService` is not migrated in this change (its auth-token lifecycle deserves its own design pass); it remains on the legacy implementation and is a documented follow-up.
 
 ## Alternatives considered
@@ -49,7 +49,7 @@ Replace the public market WebSocket path with an actor-isolated pipeline in `Cry
 
 Positive:
 
-- Data races in the public path become compile-time impossible (actor isolation, `Sendable` events, no `@unchecked Sendable` in the new path).
+- Data races in the public path become compile-time impossible (actor isolation, `Sendable` events; the single `@unchecked Sendable` remaining in the new path is the documented, mutex-guarded URLSession transport boundary).
 - Every scenario — reconnect storms, stale callbacks, heartbeat timeouts, 100k-event replays — is deterministically testable via scripted transport + manual clock.
 - Main-thread pressure drops from two hops per message to one adapter delivery per coalesced batch.
 - Metrics and diagnostics (Pipeline Lab) come for free from single ownership.

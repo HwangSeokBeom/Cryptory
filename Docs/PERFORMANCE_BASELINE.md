@@ -54,7 +54,7 @@ Produced by `RealtimeReplayBenchmarkTests.testReplayThroughputHundredThousandMes
 
 Notes on interpretation (honest limits):
 
-- Conservation held in both runs: emitted + coalesced + dropped = messages, i.e. nothing was silently lost.
+- Single-consumer delivery conservation held in both runs: consumer-delivered + coalesced + counted drops = messages (valid because the benchmark registers exactly one consumer; see the counter groups in `Docs/REALTIME_PIPELINE.md`), i.e. nothing was silently lost.
 - Coalescing shows 0 because the benchmark consumer drains continuously; the coalescing path is exercised and asserted separately by the deterministic tests (`testTickerCoalescingEmitsNewestValueForSlowConsumer`).
 - Elapsed time includes the benchmark's own cooperative polling loop awaiting drain, so throughput is a conservative lower bound for the engine itself.
 - Emission-latency percentiles vary between runs at the tens-of-microseconds level; treat them as order-of-magnitude, not precise.
@@ -78,5 +78,5 @@ Notes on interpretation (honest limits):
 Not yet implemented; listed as follow-ups, not capabilities:
 
 - Reconnect recovery time (scripted failure → subscriptions replayed → first post-reconnect emission).
-- Main-thread update counts via `os_signpost` instrumentation, to quantify the coalescing win over the legacy per-message double main-hop.
+- Main-thread update counts via `os_signpost` instrumentation, to quantify the coalescing win over the legacy per-message double main-hop. (No signposts are implemented anywhere in the realtime path today.)
 - MetricKit collection in the shipping app for field data (also listed as an observability gap in `Docs/INCIDENT_PLAYBOOK.md`).

@@ -50,7 +50,7 @@ The public market stream was rebuilt as an actor-isolated pipeline (`Cryptory/Se
 
 - **`MarketStreamEngine` (actor)** is the only owner of connection state, socket generation, subscriptions, reconnect/heartbeat state, buffers, and metrics.
 - **`WebSocketTransport` (protocol)** isolates `URLSessionWebSocketTask`; the engine never sees URLSession types, tests use a scripted transport.
-- **`MarketStreamUIAdapter`** consumes the engine's `AsyncStream` and delivers on `MainActor`, implementing the legacy `PublicWebSocketServicing` protocol verbatim so `CryptoViewModel` and every screen remain behaviorally unchanged.
+- **`MarketStreamUIAdapter`** consumes the engine's `AsyncStream` and delivers on `MainActor`, implementing the legacy `PublicWebSocketServicing` protocol (its callbacks are declared `@MainActor`, applied synchronously by `CryptoViewModel`) so every screen remains behaviorally unchanged. Explicit `shutdown()` releases all engine-side ownership.
 - The **private** trading socket (`PrivateWebSocketService`) intentionally still uses the legacy implementation; migrating it is a documented follow-up, not silently included here.
 
 Rationale, alternatives, and consequences: [ADR 0001](ADR/0001-actor-isolated-realtime-engine.md).
@@ -60,7 +60,7 @@ Rationale, alternatives, and consequences: [ADR 0001](ADR/0001-actor-isolated-re
 - UI state: `@MainActor` (`CryptoViewModel` and SwiftUI views).
 - Realtime: actor isolation (`MarketStreamEngine`); events cross to the main actor exactly once, in the adapter.
 - App target builds with `SWIFT_VERSION = 6.0` and `SWIFT_APPROACHABLE_CONCURRENCY = YES`.
-- Remaining `@unchecked Sendable` in the app target is documented in [SECURITY_AND_PRIVACY.md](SECURITY_AND_PRIVACY.md) and ADR 0001; the new realtime path introduces none (any exception is documented at the declaration).
+- Remaining `@unchecked Sendable` in the app target is documented in [SECURITY_AND_PRIVACY.md](SECURITY_AND_PRIVACY.md) and ADR 0001; the new realtime path carries exactly one, documented at its declaration: `URLSessionWebSocketTransportConnection`, the compatibility boundary around non-`Sendable` URLSession types (its shared state is mutex-guarded).
 
 ## Deployment-target audit (iOS 26.0)
 
