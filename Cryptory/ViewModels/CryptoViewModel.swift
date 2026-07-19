@@ -1279,6 +1279,18 @@ final class CryptoViewModel: ObservableObject {
     private var marketHydrationTask: Task<Void, Never>?
     private var marketImageHydrationTask: Task<Void, Never>?
     private var marketRowPatchTask: Task<Void, Never>?
+    /// Owned presentation-build task: staging cancel-replaces the previous
+    /// build, and the ownership token below gates publication so a stale
+    /// builder can never overwrite a newer generation. `refreshMarketData()`
+    /// awaits this task before returning (publication contract).
+    private var marketPresentationBuildTask: Task<Void, Never>?
+    private var marketPresentationBuildToken: UInt64 = 0
+#if DEBUG
+    /// Test seam: suspends a presentation build (keyed by its ownership
+    /// token) so publication-order interleavings can be scripted
+    /// deterministically. Never set in production code.
+    var debugMarketPresentationBuildGate: (@MainActor (UInt64) async -> Void)?
+#endif
     private var sparklineHydrationTask: Task<Void, Never>?
     private var priorityVisibleSparklineTask: Task<Void, Never>?
     private var topCardSparklinePrefetchTask: Task<Void, Never>?
@@ -1521,6 +1533,7 @@ final class CryptoViewModel: ObservableObject {
         marketHydrationTask?.cancel()
         marketImageHydrationTask?.cancel()
         marketRowPatchTask?.cancel()
+        marketPresentationBuildTask?.cancel()
         sparklineHydrationTask?.cancel()
         priorityVisibleSparklineTask?.cancel()
         topCardSparklinePrefetchTask?.cancel()
@@ -6166,6 +6179,10 @@ final class CryptoViewModel: ObservableObject {
             ?? CoinCatalog.coin(symbol: symbol, exchange: exchange).name
     }
 
+    /// Publication contract: this method returns only after any presentation
+    /// build staged during the refresh has finished publishing (or was
+    /// superseded by a newer build that finished instead), so callers can
+    /// observe the refreshed rows immediately after awaiting it.
     func refreshMarketData(forceRefresh: Bool = true, reason: String = "manual") async {
         if activeMarketPresentationSnapshot?.exchange == selectedExchange {
             beginSameExchangeMarketReuse(reason: reason)
@@ -6179,10 +6196,26 @@ final class CryptoViewModel: ObservableObject {
                 .network,
                 "[MarketPipeline] exchange=\(selectedExchange.rawValue) quote=\(selectedQuoteCurrency.rawValue) phase=markets_hydration_skipped reason=ticker_first_policy trigger=\(reason)"
             )
+            await awaitMarketPresentationPublication()
             return
         }
         await loadMarkets(for: selectedExchange, forceRefresh: forceRefresh, reason: "\(reason)_markets")
         refreshMarketStateForSelectedExchange(reason: reason)
+        await awaitMarketPresentationPublication()
+    }
+
+    /// Awaits the newest staged presentation build. If the awaited build was
+    /// superseded while suspended, loops onto its replacement so the caller
+    /// resumes only after the final build has run to completion.
+    private func awaitMarketPresentationPublication() async {
+        while true {
+            let tokenBefore = marketPresentationBuildToken
+            guard let task = marketPresentationBuildTask else { return }
+            await task.value
+            if marketPresentationBuildToken == tokenBefore {
+                return
+            }
+        }
     }
 
     func refreshKimchiPremium(forceRefresh: Bool = true, reason: String = "manual") async {
@@ -16261,9 +16294,28 @@ final class CryptoViewModel: ObservableObject {
         updateMarketRowsApplyTiming(exchange: exchange, generation: requestContext.generation) { context in
             context.viewStateBuildStartedAt = buildStartedAt
         }
-        Task { [weak self] in
+        // Ownership: exactly one presentation build may publish. A newer
+        // staging replaces (and cancels) the previous build; the token check
+        // after the async build gates publication, so a stale builder that
+        // resumes late can never overwrite a newer generation's rows.
+        marketPresentationBuildToken &+= 1
+        let buildToken = marketPresentationBuildToken
+        marketPresentationBuildTask?.cancel()
+        marketPresentationBuildTask = Task { [weak self] in
             guard let self else { return }
+#if DEBUG
+            if let gate = self.debugMarketPresentationBuildGate {
+                await gate(buildToken)
+            }
+#endif
             let snapshot = await self.prepareMarketPresentationSnapshot(from: buildInput)
+            guard self.marketPresentationBuildToken == buildToken else {
+                AppLogger.debug(
+                    .lifecycle,
+                    "[MarketScreen] superseded presentation build dropped exchange=\(exchange.rawValue) token=\(buildToken)"
+                )
+                return
+            }
             guard self.shouldAcceptCursorPaginationResponse(snapshot, requestContext: requestContext) else {
                 return
             }
