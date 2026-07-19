@@ -45,7 +45,10 @@ extension URLSessionWebSocketTask: WebSocketSocketDriver {}
 /// state: one `opened`, one consumable terminal close/error, plus at most one
 /// text frame (the documented canceled-waiter slot). The terminal result is
 /// distinct from the permanent `ended` state, so consuming it cannot reopen
-/// the connection. No repository-owned queue of raw frames can form.
+/// the connection. First terminal wins: explicit `close()` establishes ended
+/// state only when it is itself the first terminal transition and never
+/// erases an already accepted terminal result, which stays consumable by
+/// exactly one `receive()`. No repository-owned queue of raw frames can form.
 /// Foundation/network-stack internal buffering is
 /// opaque and outside this bound; producer pressure beyond it stays in the
 /// network/kernel buffers under TCP flow control.
@@ -222,6 +225,15 @@ final class URLSessionWebSocketTransportConnection: WebSocketTransportConnection
                 }
                 beforeReceiveWaiterInstall?()
                 let action: Action = shared.withLock { state in
+                    // Cancel-before-install closes the gap where onCancel ran
+                    // before a waiter existed and therefore found nothing to
+                    // remove. Checked first, under the same mutex that owns
+                    // the slot, so a cancelled receive can never consume
+                    // mailbox state — in particular it cannot swallow the
+                    // single consumable terminal result.
+                    guard !Task.isCancelled else {
+                        return .fail(CancellationError())
+                    }
                     if !state.pendingControl.isEmpty {
                         let event = state.pendingControl.removeFirst()
                         return .resume(event)
@@ -247,12 +259,6 @@ final class URLSessionWebSocketTransportConnection: WebSocketTransportConnection
                     // silently dropping either continuation.
                     guard state.waiter == nil else {
                         return .fail(WebSocketTransportError.ended)
-                    }
-                    // Cancel-before-install closes the gap where onCancel ran
-                    // before a waiter existed and therefore found nothing to
-                    // remove. Check under the same mutex that owns the slot.
-                    guard !Task.isCancelled else {
-                        return .fail(CancellationError())
                     }
                     state.waiter = (waiterID, continuation)
                     if state.receiveInFlight {
@@ -359,10 +365,19 @@ final class URLSessionWebSocketTransportConnection: WebSocketTransportConnection
         let closeAction: (CheckedContinuation<WebSocketTransportEvent, Error>?, Bool) = shared.withLock { state in
             guard !state.closeRequested else { return (nil, false) }
             state.closeRequested = true
-            state.ended = true
-            state.pendingControl.removeAll(keepingCapacity: false)
-            state.pendingText = nil
-            state.pendingTerminal = nil
+            if !state.ended {
+                // Explicit close is itself the first terminal transition:
+                // establish permanent ended state with no consumable terminal
+                // result (later receives fail as ended).
+                state.ended = true
+                state.pendingControl.removeAll(keepingCapacity: false)
+                state.pendingText = nil
+            }
+            // When a delegate close or driver error was already accepted,
+            // first-terminal-wins: the stored pendingTerminal stays consumable
+            // and is cleared only by the receive() that consumes it. Explicit
+            // close must never erase it. (An accepted terminal cannot coexist
+            // with a parked waiter, so the extraction below is a no-op then.)
             let waiter = state.waiter
             state.waiter = nil
             return (waiter?.continuation, true)
