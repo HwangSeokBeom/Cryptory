@@ -66,6 +66,24 @@ struct PublicMarketSubscription: Hashable {
             && lhs.quoteCurrency == rhs.quoteCurrency
             && lhs.interval == rhs.interval
     }
+
+    /// Quote-independent channel identity: (channel, exchange, symbol, and
+    /// interval for candles). Must mirror the incoming-event key
+    /// (`MarketStreamEvent.channelIdentityKey`) so the engine can attribute
+    /// wire events — which carry exchange/symbol but not always a quote — to
+    /// the single live subscription identity for this key. `nil` when the
+    /// subscription has no exchange/symbol to match events against.
+    var channelIdentityKey: String? {
+        guard let exchange, let symbol else { return nil }
+        let intervalComponent = channel == .candles ? (interval?.lowercased() ?? "-") : "-"
+        return "\(channel.rawValue)|\(exchange.lowercased())|\(symbol.uppercased())|\(intervalComponent)"
+    }
+
+    /// Stable, total ordering key so registry conflict resolution is
+    /// deterministic regardless of `Set` iteration order.
+    var stableOrderingKey: String {
+        "\(channel.rawValue)|\(exchange ?? "*")|\(marketId ?? "-")|\(symbol ?? "*")|\(quoteCurrency?.rawValue ?? "-")|\(interval ?? "-")"
+    }
 }
 
 struct PrivateTradingSubscription: Hashable {
@@ -74,22 +92,52 @@ struct PrivateTradingSubscription: Hashable {
     let symbol: String?
 }
 
+// Stream payload identity: `exchange` + `symbol` come from every gateway
+// envelope; `quoteCurrency` completes the market identity. It is taken from
+// the envelope when the gateway echoes it, otherwise the realtime engine
+// stamps it from the live subscription registry at decode time (never from
+// mutable UI state after the event arrives) — see MarketStreamEngine.
+
 struct TickerStreamPayload {
     let symbol: String
     let exchange: String
     let ticker: TickerData
+    var quoteCurrency: MarketQuoteCurrency?
+
+    init(symbol: String, exchange: String, ticker: TickerData, quoteCurrency: MarketQuoteCurrency? = nil) {
+        self.symbol = symbol
+        self.exchange = exchange
+        self.ticker = ticker
+        self.quoteCurrency = quoteCurrency
+    }
 }
 
 struct OrderbookStreamPayload {
     let symbol: String
     let exchange: String
     let orderbook: OrderbookData
+    var quoteCurrency: MarketQuoteCurrency?
+
+    init(symbol: String, exchange: String, orderbook: OrderbookData, quoteCurrency: MarketQuoteCurrency? = nil) {
+        self.symbol = symbol
+        self.exchange = exchange
+        self.orderbook = orderbook
+        self.quoteCurrency = quoteCurrency
+    }
 }
 
 struct TradesStreamPayload {
     let symbol: String
     let exchange: String
     let trades: [PublicTrade]
+    var quoteCurrency: MarketQuoteCurrency?
+
+    init(symbol: String, exchange: String, trades: [PublicTrade], quoteCurrency: MarketQuoteCurrency? = nil) {
+        self.symbol = symbol
+        self.exchange = exchange
+        self.trades = trades
+        self.quoteCurrency = quoteCurrency
+    }
 }
 
 struct CandleStreamPayload {
@@ -97,6 +145,15 @@ struct CandleStreamPayload {
     let exchange: String
     let interval: String
     let candles: [CandleData]
+    var quoteCurrency: MarketQuoteCurrency?
+
+    init(symbol: String, exchange: String, interval: String, candles: [CandleData], quoteCurrency: MarketQuoteCurrency? = nil) {
+        self.symbol = symbol
+        self.exchange = exchange
+        self.interval = interval
+        self.candles = candles
+        self.quoteCurrency = quoteCurrency
+    }
 }
 
 struct OrderStreamPayload {
@@ -143,6 +200,11 @@ enum MarketWebSocketMessageParser {
         }
 
         let payload = (json["data"] as? [String: Any]) ?? json
+        // The gateway may echo the subscribed quote currency on the envelope
+        // (it is always sent on subscribe). When present it is authoritative
+        // market identity; when absent the engine resolves it from the live
+        // subscription registry.
+        let quoteCurrency = websocketQuoteCurrency(json) ?? websocketQuoteCurrency(payload)
 
         switch type {
         case PublicStreamChannel.ticker.rawValue:
@@ -162,7 +224,7 @@ enum MarketWebSocketMessageParser {
                 delivery: .live
             )
 
-            return .ticker(TickerStreamPayload(symbol: symbol, exchange: exchange, ticker: ticker))
+            return .ticker(TickerStreamPayload(symbol: symbol, exchange: exchange, ticker: ticker, quoteCurrency: quoteCurrency))
 
         case PublicStreamChannel.orderbook.rawValue:
             let asks = websocketOrderbookEntries(payload["asks"] ?? payload["sell"], priceKeys: ["price", "askPrice"], sizeKeys: ["quantity", "size", "askSize"])
@@ -176,7 +238,7 @@ enum MarketWebSocketMessageParser {
                 isStale: websocketBool(payload, keys: ["stale", "isStale"]) ?? false
             )
 
-            return .orderbook(OrderbookStreamPayload(symbol: symbol, exchange: exchange, orderbook: orderbook))
+            return .orderbook(OrderbookStreamPayload(symbol: symbol, exchange: exchange, orderbook: orderbook, quoteCurrency: quoteCurrency))
 
         case PublicStreamChannel.trades.rawValue:
             guard let rawTrades = payload["trades"] as? [Any] else {
@@ -207,7 +269,7 @@ enum MarketWebSocketMessageParser {
             }
 
             guard !trades.isEmpty else { return nil }
-            return .trades(TradesStreamPayload(symbol: symbol, exchange: exchange, trades: trades))
+            return .trades(TradesStreamPayload(symbol: symbol, exchange: exchange, trades: trades, quoteCurrency: quoteCurrency))
 
         case PublicStreamChannel.candles.rawValue, "candle", "market.candle":
             let interval = websocketString(payload, keys: ["timeframe", "interval"])
@@ -237,7 +299,7 @@ enum MarketWebSocketMessageParser {
             }
 
             guard !candles.isEmpty else { return nil }
-            return .candles(CandleStreamPayload(symbol: symbol, exchange: exchange, interval: interval.lowercased(), candles: candles))
+            return .candles(CandleStreamPayload(symbol: symbol, exchange: exchange, interval: interval.lowercased(), candles: candles, quoteCurrency: quoteCurrency))
 
         default:
             return nil
@@ -806,6 +868,13 @@ final class PrivateWebSocketService: PrivateWebSocketServicing, @unchecked Senda
         let symbol = subscription.symbol ?? "*"
         return "channel=\(subscription.channel.rawValue) exchange=\(exchange) symbol=\(symbol)"
     }
+}
+
+private func websocketQuoteCurrency(_ dictionary: [String: Any]) -> MarketQuoteCurrency? {
+    guard let rawValue = websocketString(dictionary, keys: ["quoteCurrency", "quote_currency", "quote"]) else {
+        return nil
+    }
+    return MarketQuoteCurrency(rawValue: rawValue.uppercased())
 }
 
 private func websocketString(_ dictionary: [String: Any], keys: [String]) -> String? {

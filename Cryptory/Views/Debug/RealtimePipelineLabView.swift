@@ -50,6 +50,7 @@ struct RealtimePipelineLabView: View {
                 metricRow("Candle updates merged", "\(viewModel.snapshot.candleUpdatesMergedOrReplaced)")
                 metricRow("Trade batches dropped (bounded)", "\(viewModel.snapshot.tradeEventsDropped)")
                 metricRow("Buffer drops (counted)", "\(viewModel.snapshot.bufferEventsDropped)")
+                metricRow("Stale identity drops", "\(viewModel.snapshot.staleIdentityEventsDropped)")
             }
 
             Section("Latency") {

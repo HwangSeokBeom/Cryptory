@@ -41,6 +41,17 @@ actor MarketStreamEngine {
     private var closeWhenOutboxDrained = false
 
     private var registry = MarketSubscriptionRegistry()
+    /// Live quote identity per channel key (channel|exchange|symbol|interval).
+    /// The wire protocol identifies events by exchange/symbol and only
+    /// optionally echoes the quote, so the engine attributes events to the
+    /// single live subscription identity for their channel key — registry
+    /// state at decode time, never mutable UI state after the event arrived.
+    /// The token increments on every quote replacement; buffered events whose
+    /// token no longer matches at dequeue are discarded as stale (counted).
+    /// Entries persist after unsubscribe so a later re-subscribe with a
+    /// different quote still invalidates older pending events; memory is
+    /// bounded by the set of distinct channel keys ever subscribed.
+    private var liveIdentityByChannelKey: [String: LiveIdentity] = [:]
     private var reconnectAttempts = 0
     private var connectionProvenUseful = false
     private var pingWaiter: CheckedContinuation<Bool, Never>?
@@ -57,6 +68,11 @@ actor MarketStreamEngine {
     private struct Consumer {
         var buffer = MarketStreamEventBuffer()
         var waiter: CheckedContinuation<MarketStreamEvent?, Never>?
+    }
+
+    private struct LiveIdentity {
+        var quoteCurrency: MarketQuoteCurrency?
+        var token: UInt64
     }
 
     // MARK: - Init
@@ -213,6 +229,7 @@ actor MarketStreamEngine {
         snapshot.candleUpdatesMergedOrReplaced = metrics.candleUpdatesMergedOrReplaced
         snapshot.tradeEventsDropped = metrics.tradeEventsDropped
         snapshot.bufferEventsDropped = metrics.bufferEventsDropped
+        snapshot.staleIdentityEventsDropped = metrics.staleIdentityEventsDropped
         snapshot.staleEventsIgnored = metrics.staleEventsIgnored
         snapshot.reconnectCount = metrics.reconnectCount
         snapshot.consecutiveReconnectFailures = metrics.consecutiveReconnectFailures
@@ -232,7 +249,59 @@ actor MarketStreamEngine {
 
     // MARK: - Subscription reconciliation
 
+    /// Applies a registry diff to the live-identity registry. New channel
+    /// keys register token 0; a subscribe whose quote differs from the key's
+    /// current identity replaces it and bumps the token, invalidating every
+    /// buffered event stamped under the previous identity. Unsubscribes leave
+    /// entries in place (see `liveIdentityByChannelKey`).
+    private func updateLiveIdentities(for diff: MarketSubscriptionRegistry.Diff) {
+        for subscription in diff.subscribe {
+            guard let key = subscription.channelIdentityKey else { continue }
+            if var existing = liveIdentityByChannelKey[key] {
+                if existing.quoteCurrency != subscription.quoteCurrency {
+                    existing.quoteCurrency = subscription.quoteCurrency
+                    existing.token &+= 1
+                    liveIdentityByChannelKey[key] = existing
+                }
+            } else {
+                liveIdentityByChannelKey[key] = LiveIdentity(
+                    quoteCurrency: subscription.quoteCurrency,
+                    token: 0
+                )
+            }
+        }
+    }
+
+    /// Token an event must carry to remain deliverable; 0 for events outside
+    /// the live-identity registry (connection state, never-subscribed keys).
+    private func identityToken(for event: MarketStreamEvent) -> UInt64 {
+        guard let key = event.channelIdentityKey else { return 0 }
+        return liveIdentityByChannelKey[key]?.token ?? 0
+    }
+
+    /// Resolves the event's complete market identity before dispatch.
+    ///
+    /// - Wire-echoed quote: authoritative. A mismatch with a live explicit
+    ///   identity for the channel key means the event belongs to a replaced
+    ///   subscription and is discarded (`nil`).
+    /// - No wire quote: the event is stamped with the live registry identity
+    ///   for its channel key. Events for never-subscribed keys pass through
+    ///   unstamped (legacy parity for unsolicited messages).
+    private func identityResolvedEvent(for parsed: MarketWebSocketParsedMessage) -> MarketStreamEvent? {
+        var event = Self.streamEvent(for: parsed)
+        guard let key = event.channelIdentityKey, let live = liveIdentityByChannelKey[key] else {
+            return event
+        }
+        if let wireQuote = event.quoteCurrency {
+            guard live.quoteCurrency == nil || live.quoteCurrency == wireQuote else { return nil }
+            return event
+        }
+        event.stampQuoteCurrency(live.quoteCurrency)
+        return event
+    }
+
     private func applyRegistryChange(diff: MarketSubscriptionRegistry.Diff) {
+        updateLiveIdentities(for: diff)
         if registry.isEmpty {
             // Zero subscriptions: no socket is kept alive. Flush pending
             // unsubscribes, then close (legacy parity: empty set tears down).
@@ -411,7 +480,13 @@ actor MarketStreamEngine {
         case .event(let parsed):
             metrics.recordMessageDecoded()
             markConnectionUseful(generation: gen)
-            dispatch(Self.streamEvent(for: parsed))
+            if let event = identityResolvedEvent(for: parsed) {
+                dispatch(event)
+            } else {
+                // Wire-echoed quote conflicts with the live identity for its
+                // channel key: the event belongs to a replaced subscription.
+                metrics.recordStaleEventIgnored()
+            }
         case .control:
             metrics.recordControlMessage()
         case .failure:
@@ -628,6 +703,7 @@ actor MarketStreamEngine {
         // the two counts are deliberately separate (see RealtimeMetrics).
         metrics.recordLogicalEventEmitted()
         let now = clock.now
+        let identityToken = identityToken(for: event)
         for (id, var consumer) in consumers {
             metrics.recordConsumerEnqueue()
             if let waiter = consumer.waiter {
@@ -641,7 +717,8 @@ actor MarketStreamEngine {
                 event,
                 at: now,
                 capacity: bufferCapacity,
-                maxTradeBatchesPerMarket: maxTradeBatchesPerMarket
+                maxTradeBatchesPerMarket: maxTradeBatchesPerMarket,
+                identityToken: identityToken
             )
             consumers[id] = consumer
             if result.coalescedTicker {
@@ -669,11 +746,21 @@ actor MarketStreamEngine {
             unregister(id)
             return nil
         }
-        if var consumer = consumers[id], let queued = consumer.buffer.dequeue() {
+        if var consumer = consumers[id] {
+            while let queued = consumer.buffer.dequeue() {
+                // Token validation: a buffered event whose channel-key
+                // identity was replaced while pending is stale and must not
+                // reach the consumer.
+                guard identityToken(for: queued.event) == queued.identityToken else {
+                    metrics.recordStaleIdentityEventDropped()
+                    continue
+                }
+                consumers[id] = consumer
+                let latency = (clock.now - queued.enqueuedAt).asSeconds
+                metrics.recordConsumerDelivery(latency: latency)
+                return queued.event
+            }
             consumers[id] = consumer
-            let latency = (clock.now - queued.enqueuedAt).asSeconds
-            metrics.recordConsumerDelivery(latency: latency)
-            return queued.event
         }
         return await withTaskCancellationHandler {
             await withCheckedContinuation { (continuation: CheckedContinuation<MarketStreamEvent?, Never>) in

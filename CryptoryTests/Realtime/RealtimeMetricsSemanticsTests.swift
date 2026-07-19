@@ -61,6 +61,7 @@ final class RealtimeMetricsSemanticsTests: XCTestCase {
                 + snapshot.candleUpdatesMergedOrReplaced
                 + snapshot.tradeEventsDropped
                 + snapshot.bufferEventsDropped
+                + snapshot.staleIdentityEventsDropped
                 + pendingBuffered,
             "delivery conservation must hold: \(note) — \(snapshot)",
             file: file,

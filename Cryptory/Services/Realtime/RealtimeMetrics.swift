@@ -17,13 +17,14 @@ import Foundation
 /// **Delivery (aggregated across consumers):** each dispatched event is
 /// enqueued once per registered consumer (`consumerEnqueues`), after which it
 /// is either delivered (`consumerDeliveries`), coalesced/replaced/merged by
-/// the per-kind buffer policy, dropped by an explicit bound, or discarded
-/// (counted) when its consumer unregisters. Valid conservation at any
-/// quiescent point:
+/// the per-kind buffer policy, dropped by an explicit bound, discarded at
+/// dequeue because its market identity was replaced while pending
+/// (`staleIdentityEventsDropped`), or discarded (counted) when its consumer
+/// unregisters. Valid conservation at any quiescent point:
 /// `consumerEnqueues == consumerDeliveries + tickerEventsCoalesced
 ///  + orderbookSnapshotsReplaced + candleUpdatesMergedOrReplaced
-///  + tradeEventsDropped + bufferEventsDropped + (events still pending in
-///  live consumer buffers)`.
+///  + tradeEventsDropped + bufferEventsDropped + staleIdentityEventsDropped
+///  + (events still pending in live consumer buffers)`.
 ///
 /// Global decoded counts must never be compared against per-consumer
 /// delivery counts — with N consumers one decoded event fans out N times.
@@ -51,6 +52,9 @@ struct RealtimeMetrics {
     /// Events dropped by the total-capacity backstop or discarded (counted)
     /// when their consumer unregistered or was cancelled.
     private(set) var bufferEventsDropped = 0
+    /// Buffered events discarded at dequeue because their market identity
+    /// (channel-key quote) was replaced while they were pending.
+    private(set) var staleIdentityEventsDropped = 0
 
     private(set) var staleEventsIgnored = 0
 
@@ -85,6 +89,7 @@ struct RealtimeMetrics {
     mutating func recordCandleUpdateMerged() { candleUpdatesMergedOrReplaced += 1 }
     mutating func recordTradeEventsDropped(_ count: Int) { tradeEventsDropped += count }
     mutating func recordBufferEventsDropped(_ count: Int) { bufferEventsDropped += count }
+    mutating func recordStaleIdentityEventDropped() { staleIdentityEventsDropped += 1 }
     mutating func recordStaleEventIgnored() { staleEventsIgnored += 1 }
     mutating func recordHeartbeatSuccess() { heartbeatSuccessCount += 1 }
     mutating func recordHeartbeatFailure() { heartbeatFailureCount += 1 }

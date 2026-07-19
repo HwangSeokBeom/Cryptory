@@ -13,11 +13,19 @@ enum RealtimeFixtureLoader {
         exchange: String = "upbit",
         symbol: String = "BTC",
         price: Double,
-        sequence: Int = 0
+        sequence: Int = 0,
+        quote: String? = nil
     ) -> String {
         """
-        {"type":"ticker","exchange":"\(exchange)","symbol":"\(symbol)","data":{"price":\(price),"changePercent":1.5,"volume24h":1000,"high24":\(price + 10),"low24":\(price - 10),"timestamp":\(baseTimestampMillis + sequence)}}
+        {"type":"ticker","exchange":"\(exchange)","symbol":"\(symbol)",\(quoteField(quote))"data":{"price":\(price),"changePercent":1.5,"volume24h":1000,"high24":\(price + 10),"low24":\(price - 10),"timestamp":\(baseTimestampMillis + sequence)}}
         """
+    }
+
+    /// Optional envelope quote echo (`"quoteCurrency":"KRW",`); empty when
+    /// the modeled gateway does not echo the quote.
+    private static func quoteField(_ quote: String?) -> String {
+        guard let quote else { return "" }
+        return "\"quoteCurrency\":\"\(quote)\","
     }
 
     static func orderbookMessage(

@@ -2170,17 +2170,23 @@ final class CryptoViewModel: ObservableObject {
         exchange: Exchange,
         symbol: String,
         marketId: String? = nil,
-        preferSelectedCoinIdentity: Bool = true
+        preferSelectedCoinIdentity: Bool = true,
+        quoteCurrency: MarketQuoteCurrency? = nil
     ) -> MarketIdentity {
+        // Stream payloads carry the quote identity resolved by the realtime
+        // engine at decode time; only quote-less (legacy/REST) callers fall
+        // back to the currently selected quote.
+        let resolvedQuoteCurrency = quoteCurrency ?? selectedQuoteCurrency
         if let marketId, marketId.isEmpty == false {
-            return MarketIdentity(exchange: exchange, marketId: marketId, symbol: symbol, quoteCurrency: selectedQuoteCurrency)
+            return MarketIdentity(exchange: exchange, marketId: marketId, symbol: symbol, quoteCurrency: resolvedQuoteCurrency)
         }
 
         if preferSelectedCoinIdentity,
            let selectedCoin,
            selectedExchange == exchange,
-           selectedCoin.symbol == symbol {
-            return selectedCoin.marketIdentity(exchange: exchange, quoteCurrency: selectedQuoteCurrency)
+           selectedCoin.symbol == symbol,
+           resolvedQuoteCurrency == selectedQuoteCurrency {
+            return selectedCoin.marketIdentity(exchange: exchange, quoteCurrency: resolvedQuoteCurrency)
         }
 
         let candidates = (marketsByExchange[exchange] ?? [])
@@ -2210,11 +2216,11 @@ final class CryptoViewModel: ObservableObject {
             let leftScore = marketIdentityLookupScore(for: $0)
             let rightScore = marketIdentityLookupScore(for: $1)
             if leftScore == rightScore {
-                return $0.marketIdentity(exchange: exchange, quoteCurrency: selectedQuoteCurrency).cacheKey < $1.marketIdentity(exchange: exchange, quoteCurrency: selectedQuoteCurrency).cacheKey
+                return $0.marketIdentity(exchange: exchange, quoteCurrency: resolvedQuoteCurrency).cacheKey < $1.marketIdentity(exchange: exchange, quoteCurrency: resolvedQuoteCurrency).cacheKey
             }
             return leftScore < rightScore
         }) {
-            let resolved = bestCandidate.marketIdentity(exchange: exchange, quoteCurrency: selectedQuoteCurrency)
+            let resolved = bestCandidate.marketIdentity(exchange: exchange, quoteCurrency: resolvedQuoteCurrency)
             if resolved.symbol != symbol || (marketId != nil && resolved.marketId != marketId) {
                 AppLogger.debug(
                     .network,
@@ -2224,7 +2230,7 @@ final class CryptoViewModel: ObservableObject {
             return resolved
         }
 
-        return MarketIdentity(exchange: exchange, symbol: symbol, quoteCurrency: selectedQuoteCurrency)
+        return MarketIdentity(exchange: exchange, symbol: symbol, quoteCurrency: resolvedQuoteCurrency)
     }
 
     private func normalizedGraphSymbolCandidates(symbol: String, marketId: String?) -> Set<String> {
@@ -9415,7 +9421,8 @@ final class CryptoViewModel: ObservableObject {
             self.applyTickerUpdate(payload)
             if self.activeTab == .chart,
                self.selectedCoin?.symbol == payload.symbol,
-               self.exchange.rawValue == payload.exchange {
+               self.exchange.rawValue == payload.exchange,
+               payload.quoteCurrency == nil || payload.quoteCurrency == self.selectedQuoteCurrency {
                 self.refreshChartSummaryStates(reason: "ticker_stream_update")
                 self.applyLiveChartPriceUpdate(
                     price: payload.ticker.price,
@@ -9428,6 +9435,10 @@ final class CryptoViewModel: ObservableObject {
         publicWebSocketService.onOrderbookReceived = { [weak self] payload in
             guard let self else { return }
             guard self.selectedCoin?.symbol == payload.symbol, self.exchange.rawValue == payload.exchange else { return }
+            // Identity guard: a payload stamped with a different quote
+            // belongs to a replaced market and must not update the visible
+            // orderbook.
+            guard payload.quoteCurrency == nil || payload.quoteCurrency == self.selectedQuoteCurrency else { return }
             let key = self.chartResourceKey(exchange: self.exchange, symbol: payload.symbol)
             let entry = OrderbookCacheEntry(
                 key: key,
@@ -9453,6 +9464,7 @@ final class CryptoViewModel: ObservableObject {
         publicWebSocketService.onTradesReceived = { [weak self] payload in
             guard let self else { return }
             guard self.selectedCoin?.symbol == payload.symbol, self.exchange.rawValue == payload.exchange else { return }
+            guard payload.quoteCurrency == nil || payload.quoteCurrency == self.selectedQuoteCurrency else { return }
             let key = self.chartResourceKey(exchange: self.exchange, symbol: payload.symbol)
             let entry = TradesCacheEntry(
                 key: key,
@@ -9479,6 +9491,7 @@ final class CryptoViewModel: ObservableObject {
         publicWebSocketService.onCandlesReceived = { [weak self] payload in
             guard let self else { return }
             guard self.selectedCoin?.symbol == payload.symbol, self.exchange.rawValue == payload.exchange else { return }
+            guard payload.quoteCurrency == nil || payload.quoteCurrency == self.selectedQuoteCurrency else { return }
             let mappedInterval = self.resolvedChartInterval(
                 requestedInterval: self.chartPeriod,
                 symbol: payload.symbol,
@@ -10144,6 +10157,10 @@ final class CryptoViewModel: ObservableObject {
     }
 
     private func applyTickerUpdate(_ payload: TickerStreamPayload) {
+        // The payload's quote identity was resolved by the realtime engine at
+        // decode time; attribution must use it, not the currently selected
+        // quote (which may have changed while the event was in flight).
+        let payloadQuote = payload.quoteCurrency
         guard shouldApplyVisibleTickerUpdate(for: payload.exchange) else {
             if selectedExchange.rawValue != payload.exchange {
                 AppLogger.debug(
@@ -10151,18 +10168,18 @@ final class CryptoViewModel: ObservableObject {
                     "[MarketScreen] visible ticker patch skipped exchange=\(payload.exchange) route=\(activeTab.rawValue) generation=\(marketPresentationGeneration) reason=route_or_exchange_mismatch source=websocket"
                 )
             }
-            mergeTicker(symbol: payload.symbol, exchange: payload.exchange, incoming: payload.ticker)
+            mergeTicker(symbol: payload.symbol, exchange: payload.exchange, incoming: payload.ticker, quoteCurrency: payloadQuote)
             return
         }
         if let exchange = Exchange(rawValue: payload.exchange), firstTickerStreamEventsByExchange.insert(exchange).inserted {
-            let marketIdentity = resolvedMarketIdentity(exchange: exchange, symbol: payload.symbol)
+            let marketIdentity = resolvedMarketIdentity(exchange: exchange, symbol: payload.symbol, quoteCurrency: payloadQuote)
             AppLogger.debug(.websocket, "[PublicWS] first stream event received \(marketIdentity.logFields)")
         }
-        mergeTicker(symbol: payload.symbol, exchange: payload.exchange, incoming: payload.ticker)
+        mergeTicker(symbol: payload.symbol, exchange: payload.exchange, incoming: payload.ticker, quoteCurrency: payloadQuote)
         let affectedRowCount: Int
         let marketLogFields: String
         if let exchange = Exchange(rawValue: payload.exchange) {
-            let marketIdentity = resolvedMarketIdentity(exchange: exchange, symbol: payload.symbol)
+            let marketIdentity = resolvedMarketIdentity(exchange: exchange, symbol: payload.symbol, quoteCurrency: payloadQuote)
             marketLogFields = marketIdentity.logFields
             affectedRowCount = applyTargetedMarketRowUpdate(
                 marketIdentity: marketIdentity,
@@ -10223,11 +10240,11 @@ final class CryptoViewModel: ObservableObject {
         return didEnqueue ? 1 : 0
     }
 
-    private func mergeTicker(symbol: String, exchange: String, incoming: TickerData, seedHistoryIfNeeded: Bool = false) {
+    private func mergeTicker(symbol: String, exchange: String, incoming: TickerData, seedHistoryIfNeeded: Bool = false, quoteCurrency: MarketQuoteCurrency? = nil) {
         guard let parsedExchange = Exchange(rawValue: exchange) else {
             return
         }
-        let marketIdentity = resolvedMarketIdentity(exchange: parsedExchange, symbol: symbol)
+        let marketIdentity = resolvedMarketIdentity(exchange: parsedExchange, symbol: symbol, quoteCurrency: quoteCurrency)
         let previous = pricesByMarketIdentity[marketIdentity]
         var ticker = incoming
         if ticker.sourceExchange == nil {

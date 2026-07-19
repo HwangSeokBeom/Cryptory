@@ -38,6 +38,7 @@ struct RealtimeMetricsSnapshot: Equatable, Sendable {
     var candleUpdatesMergedOrReplaced = 0
     var tradeEventsDropped = 0
     var bufferEventsDropped = 0
+    var staleIdentityEventsDropped = 0
 
     var staleEventsIgnored = 0
 

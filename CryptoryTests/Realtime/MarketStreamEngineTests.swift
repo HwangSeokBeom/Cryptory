@@ -990,7 +990,8 @@ final class MarketStreamEngineTests: XCTestCase {
         // exactly one consumer is registered; with N consumers the
         // delivery-side counters scale by N.)
         XCTAssertEqual(
-            emitted + snapshot.tickerEventsCoalesced + snapshot.tradeEventsDropped + snapshot.bufferEventsDropped,
+            emitted + snapshot.tickerEventsCoalesced + snapshot.tradeEventsDropped + snapshot.bufferEventsDropped
+                + snapshot.staleIdentityEventsDropped,
             100_000,
             "every ticker is delivered, coalesced, or explicitly dropped — never silently lost"
         )

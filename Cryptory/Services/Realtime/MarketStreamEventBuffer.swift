@@ -16,6 +16,10 @@ struct MarketStreamEventBuffer {
     struct Queued {
         var event: MarketStreamEvent
         var enqueuedAt: Duration
+        /// Live-identity token captured at enqueue; the engine discards the
+        /// entry at dequeue when the token no longer matches (the identity
+        /// was replaced while the event was pending).
+        var identityToken: UInt64 = 0
     }
 
     struct EnqueueResult {
@@ -46,14 +50,15 @@ struct MarketStreamEventBuffer {
         _ event: MarketStreamEvent,
         at now: Duration,
         capacity: Int,
-        maxTradeBatchesPerMarket: Int
+        maxTradeBatchesPerMarket: Int,
+        identityToken: UInt64 = 0
     ) -> EnqueueResult {
         var result = EnqueueResult()
 
         if let key = event.coalescingKey, let index = pendingKeyIndex[key] {
             let previous = storage[index]?.event
             let merged = Self.merge(pending: previous, incoming: event)
-            storage[index] = Queued(event: merged, enqueuedAt: now)
+            storage[index] = Queued(event: merged, enqueuedAt: now, identityToken: identityToken)
             switch event {
             case .ticker:
                 result.coalescedTicker = true
@@ -82,7 +87,7 @@ struct MarketStreamEventBuffer {
         if let key = event.coalescingKey {
             pendingKeyIndex[key] = storage.count
         }
-        storage.append(Queued(event: event, enqueuedAt: now))
+        storage.append(Queued(event: event, enqueuedAt: now, identityToken: identityToken))
         liveCount += 1
 
         if liveCount > capacity {

@@ -6,6 +6,16 @@ import Foundation
 /// sends one upstream `subscribe` when the first owner arrives and one
 /// `unsubscribe` when the last owner leaves. Owned and mutated only by
 /// `MarketStreamEngine`.
+///
+/// **Single live identity per channel key** — the wire protocol identifies
+/// incoming events by exchange/symbol (quote echo is optional), so two
+/// subscriptions that differ only in quote currency for the same
+/// (channel, exchange, symbol, interval) would make event attribution
+/// ambiguous. Acquiring a subscription with an explicit quote atomically
+/// evicts any active subscription for the same channel key with a different
+/// explicit quote (all owners released, one upstream unsubscribe). Quote-less
+/// subscriptions never conflict. Eviction order is deterministic: additions
+/// are processed in sorted order.
 struct MarketSubscriptionRegistry {
     /// Net upstream effect of a registry mutation.
     struct Diff: Equatable {
@@ -45,12 +55,45 @@ struct MarketSubscriptionRegistry {
                 diff.unsubscribe.insert(subscription)
             }
         }
-        for subscription in newSubscriptions.subtracting(previous) {
+        // Sorted additions make conflict eviction deterministic even when one
+        // replacement set contains conflicting identities itself.
+        let additions = newSubscriptions.subtracting(previous).sorted { $0.stableOrderingKey < $1.stableOrderingKey }
+        for subscription in additions {
+            for evicted in evictConflictingIdentities(with: subscription) {
+                if diff.subscribe.contains(evicted) {
+                    // Evicted before its subscribe ever reached the wire.
+                    diff.subscribe.remove(evicted)
+                } else {
+                    diff.unsubscribe.insert(evicted)
+                }
+            }
             if acquire(owner: owner, subscription: subscription) {
                 diff.subscribe.insert(subscription)
             }
         }
         return diff
+    }
+
+    /// Removes every active subscription that shares `subscription`'s channel
+    /// key but carries a different explicit quote identity. Returns the
+    /// evicted subscriptions (their owners lose them; one upstream
+    /// unsubscribe each is required).
+    private mutating func evictConflictingIdentities(
+        with subscription: PublicMarketSubscription
+    ) -> [PublicMarketSubscription] {
+        guard let channelKey = subscription.channelIdentityKey,
+              let quote = subscription.quoteCurrency else {
+            return []
+        }
+        let conflicting = owners.keys.filter { existing in
+            existing.channelIdentityKey == channelKey
+                && existing.quoteCurrency != nil
+                && existing.quoteCurrency != quote
+        }
+        for conflict in conflicting {
+            owners.removeValue(forKey: conflict)
+        }
+        return conflicting.sorted { $0.stableOrderingKey < $1.stableOrderingKey }
     }
 
     /// Removes every subscription owned by `owner`, returning subscriptions
