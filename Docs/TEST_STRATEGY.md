@@ -1,10 +1,10 @@
 # Test Strategy
 
-This document records what the test suite actually covers today, the injection-based design that makes it possible, the gaps in current coverage, and the deterministic realtime test layer added on this branch. Planned work is explicitly labeled as planned.
+This document records what the test suite actually covers today, the injection-based design that makes it possible, the gaps in current coverage, and the deterministic realtime test layer added on this branch. Remaining gaps and follow-up work are explicitly labeled as such.
 
 Volatile inventory numbers (per-file line counts, per-class test tallies, source line references) are deliberately **not** recorded here — they drift with every commit and stale copies are worse than none. To regenerate current numbers: run the suite (`scripts/ci_test.sh test`, or `test CryptoryTests/<Class>` for one class) and read the `Executed N tests` summary, or `grep -c "func test" CryptoryTests/<File>.swift` for a static tally. The authoritative full-suite count is the `Executed N tests` line of the latest hosted CI run referenced in PR #1.
 
-Last updated: 2026-07-19 (branch refactor/portfolio-realtime-foundation)
+Last updated: 2026-07-20 (branch refactor/portfolio-realtime-foundation)
 
 ## 1. Current state: CryptoryTests (unit)
 
@@ -34,9 +34,9 @@ Test doubles in `TestDoubles.swift` follow the Stub/Spy/Recording/Manual taxonom
 
 ## 3. Testing philosophy
 
-- Protocol-based constructor injection. `CryptoViewModel` takes optional protocol parameters defaulting to `nil` and resolves `Live*` implementations in `init` (`Cryptory/ViewModels/CryptoViewModel.swift:1449–1465`). Tests pass doubles for any subset (repositories, auth service, WS services, session store).
+- Protocol-based constructor injection. `CryptoViewModel` takes optional protocol parameters defaulting to `nil` and resolves `Live*` implementations in `init` (`Cryptory/ViewModels/CryptoViewModel.swift`). Tests pass doubles for any subset (repositories, auth service, WS services, session store).
 - No live network in tests. All network is served by stubs or `URLProtocolSpy`; all realtime data by manual WS doubles.
-- Contract tests at seams. Parser tests pin the gateway envelope contract (`Cryptory/Services/WebSocketService.swift:124–246`) independent of transport.
+- Contract tests at seams. Parser tests pin the gateway envelope contract (`Cryptory/Services/WebSocketService.swift`) independent of transport.
 - Per-test state isolation. Any test asserting symbol-image state injects a fresh `AssetImageClient(namespace: UUID().uuidString)` instead of the `.shared` singleton, whose URL-keyed failure cooldowns otherwise leak across tests that reuse fixture image URLs (`TestIsolationRegressionTests` pins the instance boundary). Image fixtures that will actually be fetched use local temp PNG files, never remote URLs: a dead remote host makes the assertion race the OS negative-DNS cache, which earlier tests warm (fast terminal failure) or leave cold (slow failure), flipping outcomes by suite order. Tests exercising live candle merges anchor trade timestamps to the candle bucket the view model actually created, never to a test-captured `Date()` that can race a minute boundary. Bounded waits are wall-clock deadlines around exact conditions — the condition is the synchronization; the deadline only guards against hangs.
 
 ## 4. Current gaps (honest)
@@ -44,6 +44,7 @@ Test doubles in `TestDoubles.swift` follow the Stub/Spy/Recording/Manual taxonom
 - The **legacy** `WebSocketService` (deprecated) still owns a real `URLSessionWebSocketTask` with no injectable transport or clock, so its timing behavior (fixed 2s public reconnect, private exponential backoff) remains untested as written. The **new** realtime path is fully covered: engine behavior via `ScriptedWebSocketTransport` + `ManualTestClock`, and the production `URLSessionWebSocketTransportConnection` state machine directly via the internal `WebSocketSocketDriver` seam (`URLSessionTransportStateMachineTests`).
 - Private WS delivery has no double beyond `NoOpPrivateWebSocketService` — private message flows into the ViewModel are not exercised.
 - `ManualPublicWebSocketService` lacks `emitOrderbook`, so orderbook delivery into the ViewModel is untested.
+- `DelayedKimchiPremiumRepository` (test double): cancellation that lands during its legacy fixed-delay path, before the `KimchiSnapshotGate` is consulted, is not separately exercised — a LOW, non-blocking test-double follow-up.
 - Live production WSS endpoints are never exercised by any automated test; Foundation/network-stack internal buffering is opaque and outside the proven repository-owned memory bound.
 - (Resolved on this branch) Test targets previously built with `SWIFT_VERSION` 5.0 while the app target was 6.0; both test targets now build with Swift 6.0.
 
@@ -51,13 +52,13 @@ Test doubles in `TestDoubles.swift` follow the Stub/Spy/Recording/Manual taxonom
 
 This branch introduces an actor-isolated market stream engine (`Cryptory/Services/Realtime/`) behind the existing `PublicWebSocketServicing` protocol, designed for determinism-first testing. The accompanying test layer lives under `CryptoryTests/Realtime/` (`MarketStreamEngineTests`, `RealtimeComponentTests`, `RealtimeTransportTests`, `RealtimeLifecycleTests`, `RealtimeMetricsSemanticsTests`, `RealtimeReplayBenchmarkTests`, `MarketIdentityTests` — complete exchange/quote/symbol identity, single-live-identity enforcement, stale-identity token validation — and `URLSessionTransportStateMachineTests` — the production transport wrapper's state machine driven through the internal `WebSocketSocketDriver` seam; plus `ScriptedWebSocketTransport`, `ManualTestClock`, `RealtimeFixtureLoader`; the presentation-publication contract is covered by `CryptoryTests/MarketPresentationPublicationTests`). The suite is the source of truth for its own count — run `scripts/ci_test.sh test CryptoryTests/MarketStreamEngineTests` (or the full unit suite) rather than trusting a number written here; every test passes in the environment recorded in `Docs/PERFORMANCE_BASELINE.md`.
 
-Planned components:
+Implemented components:
 
 - `ScriptedWebSocketTransport` — an injected transport whose events (connect results, messages, failures, closes) are scripted per test, replacing `URLSessionWebSocketTask`.
 - `ManualTestClock` — an injected clock; tests advance time explicitly, so no arbitrary `sleep` is used for correctness (reconnect delays, heartbeat timeouts, and backoff are asserted against advanced time, not wall time).
 - `RealtimeFixtureLoader` — replays JSON fixtures through the scripted transport. Fixture classes: normal stream, duplicate messages, out-of-order messages, malformed messages, reconnect sequences, and high-volume streams. Fixtures are privacy-safe (synthetic symbols/values, no real account data).
 
-Planned coverage: 30 deterministic scenarios across these categories:
+Implemented coverage: deterministic scenarios across these categories (the suite itself is the source of truth for the count — see above):
 
 | Category | What it pins down |
 | --- | --- |
