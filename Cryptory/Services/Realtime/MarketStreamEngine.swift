@@ -320,6 +320,9 @@ actor MarketStreamEngine {
         senderEpoch &+= 1
         outbox = []
         closeWhenOutboxDrained = false
+        // Cancel the receive loop; connection.close() below also resumes any
+        // pending receive() by throwing, so no loop survives teardown.
+        receiveTask?.cancel()
         receiveTask = nil
         connectedAt = nil
         connectionProvenUseful = false
@@ -334,41 +337,46 @@ actor MarketStreamEngine {
         reconnectTask = nil
     }
 
+    /// Pull-based receive loop: exactly one `receive()` is outstanding, and
+    /// the next frame is not requested until the current one was accepted by
+    /// the engine — pre-decode memory is bounded to a single frame by
+    /// construction (see the `WebSocketTransportConnection` contract).
     private func runReceiveLoop(
         _ connection: any WebSocketTransportConnection,
         generation gen: UInt64
     ) async {
-        do {
-            for try await event in connection.events {
-                // Generation must match AND a live connection must exist:
-                // a manual disconnect tears the connection down without
-                // bumping the generation, and buffered events from the old
-                // socket must not be processed after that.
+        while true {
+            let event: WebSocketTransportEvent
+            do {
+                event = try await connection.receive()
+            } catch {
                 guard gen == generation, self.connection != nil else {
                     metrics.recordStaleEventIgnored()
                     return
                 }
-                switch event {
-                case .opened:
-                    handleOpened(generation: gen)
-                case .text(let text):
-                    handleText(text, generation: gen)
-                case .closed(let code, _):
-                    handleConnectionFailure(generation: gen, reason: .connectionClosed(code: code))
-                    return
-                }
+                handleConnectionFailure(
+                    generation: gen,
+                    reason: .transportError(Self.shortDescription(of: error))
+                )
+                return
             }
-            guard gen == generation, self.connection != nil else { return }
-            handleConnectionFailure(generation: gen, reason: .connectionClosed(code: nil))
-        } catch {
+            // Generation must match AND a live connection must exist: a
+            // manual disconnect tears the connection down without bumping
+            // the generation, and events from the old socket must not be
+            // processed after that.
             guard gen == generation, self.connection != nil else {
                 metrics.recordStaleEventIgnored()
                 return
             }
-            handleConnectionFailure(
-                generation: gen,
-                reason: .transportError(Self.shortDescription(of: error))
-            )
+            switch event {
+            case .opened:
+                handleOpened(generation: gen)
+            case .text(let text):
+                handleText(text, generation: gen)
+            case .closed(let code, _):
+                handleConnectionFailure(generation: gen, reason: .connectionClosed(code: code))
+                return
+            }
         }
     }
 

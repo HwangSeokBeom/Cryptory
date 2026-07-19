@@ -49,6 +49,12 @@ final class ScriptedWebSocketTransport: WebSocketTransport {
     }
 }
 
+/// Pull-based scripted connection modeling the production transport contract:
+/// the scripted event queue represents the REMOTE side (network/kernel
+/// buffers where TCP flow control applies); the app-side transport hands over
+/// at most the single frame requested by the current `receive()` call and
+/// never builds an app-side queue. `maxConcurrentReceiveWaiters` proves the
+/// engine keeps at most one receive outstanding.
 final class ScriptedWebSocketConnection: WebSocketTransportConnection {
     enum PingBehavior: Sendable {
         /// Pong arrives immediately.
@@ -65,6 +71,11 @@ final class ScriptedWebSocketConnection: WebSocketTransportConnection {
         let continuation: CheckedContinuation<Void, Error>
     }
 
+    private struct ReceiveWaiter {
+        let id: UUID
+        let continuation: CheckedContinuation<WebSocketTransportEvent, Error>
+    }
+
     private struct State {
         var sentMessages: [String] = []
         var sendError: Error?
@@ -79,17 +90,18 @@ final class ScriptedWebSocketConnection: WebSocketTransportConnection {
         var suspendingSends = false
         var respectsSendCancellation = false
         var suspendedSends: [SuspendedSend] = []
+
+        /// Network-side backlog of scripted events (FIFO); `.failure` models
+        /// a transport error surfaced by the next receive.
+        var scriptedEvents: [Result<WebSocketTransportEvent, Error>] = []
+        var ended = false
+        var receiveWaiters: [ReceiveWaiter] = []
+        var maxConcurrentReceiveWaiters = 0
+        /// Frames actually handed to the engine via `receive()`.
+        var deliveredFrameCount = 0
     }
 
-    let events: AsyncThrowingStream<WebSocketTransportEvent, Error>
-    private let continuation: AsyncThrowingStream<WebSocketTransportEvent, Error>.Continuation
     private let state = Mutex(State())
-
-    init() {
-        let (stream, continuation) = AsyncThrowingStream<WebSocketTransportEvent, Error>.makeStream()
-        self.events = stream
-        self.continuation = continuation
-    }
 
     // MARK: - Test inspection
 
@@ -103,6 +115,27 @@ final class ScriptedWebSocketConnection: WebSocketTransportConnection {
 
     var pingCount: Int {
         state.withLock { $0.pingCount }
+    }
+
+    /// Events scripted but not yet pulled — the modeled network-side backlog.
+    var pendingScriptedEventCount: Int {
+        state.withLock { $0.scriptedEvents.count }
+    }
+
+    /// Peak number of concurrently outstanding `receive()` calls; the engine
+    /// contract requires this never to exceed 1.
+    var maxConcurrentReceiveWaiters: Int {
+        state.withLock { $0.maxConcurrentReceiveWaiters }
+    }
+
+    var hasPendingReceiveWaiter: Bool {
+        state.withLock { !$0.receiveWaiters.isEmpty }
+    }
+
+    /// Frames handed to the engine (accepted); reconciles against the
+    /// engine's received counter plus control events.
+    var deliveredFrameCount: Int {
+        state.withLock { $0.deliveredFrameCount }
     }
 
     func sentMessages(action: String) -> [String] {
@@ -171,24 +204,103 @@ final class ScriptedWebSocketConnection: WebSocketTransportConnection {
         state.withLock { $0.sendError = error }
     }
 
+    /// Enqueues one event on the modeled network side, or hands it directly
+    /// to a waiting `receive()` call.
+    private func script(_ result: Result<WebSocketTransportEvent, Error>) {
+        let waiter: ReceiveWaiter? = state.withLock { state in
+            guard !state.ended else { return nil }
+            if let waiter = state.receiveWaiters.first, state.scriptedEvents.isEmpty {
+                state.receiveWaiters.removeFirst()
+                switch result {
+                case .success(let event):
+                    state.deliveredFrameCount += 1
+                    if case .closed = event { state.ended = true }
+                case .failure:
+                    state.ended = true
+                }
+                return waiter
+            }
+            state.scriptedEvents.append(result)
+            return nil
+        }
+        switch (waiter, result) {
+        case (let waiter?, .success(let event)):
+            waiter.continuation.resume(returning: event)
+        case (let waiter?, .failure(let error)):
+            waiter.continuation.resume(throwing: error)
+        case (nil, _):
+            break
+        }
+    }
+
     func scriptOpened() {
-        continuation.yield(.opened)
+        script(.success(.opened))
     }
 
     func scriptText(_ text: String) {
-        continuation.yield(.text(text))
+        script(.success(.text(text)))
     }
 
     func scriptClosed(code: Int? = nil, reason: String? = nil) {
-        continuation.yield(.closed(code: code, reason: reason))
-        continuation.finish()
+        script(.success(.closed(code: code, reason: reason)))
     }
 
     func scriptFailure(_ message: String = "scripted failure") {
-        continuation.finish(throwing: ScriptedTransportError.scriptedFailure(message))
+        script(.failure(ScriptedTransportError.scriptedFailure(message)))
     }
 
     // MARK: - WebSocketTransportConnection
+
+    func receive() async throws -> WebSocketTransportEvent {
+        let waiterID = UUID()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<WebSocketTransportEvent, Error>) in
+                enum Action {
+                    case resume(WebSocketTransportEvent)
+                    case fail(Error)
+                    case wait
+                }
+                let action: Action = state.withLock { state in
+                    if !state.scriptedEvents.isEmpty {
+                        switch state.scriptedEvents.removeFirst() {
+                        case .success(let event):
+                            state.deliveredFrameCount += 1
+                            if case .closed = event { state.ended = true }
+                            return .resume(event)
+                        case .failure(let error):
+                            state.ended = true
+                            return .fail(error)
+                        }
+                    }
+                    if state.ended || state.closed {
+                        return .fail(WebSocketTransportError.ended)
+                    }
+                    state.receiveWaiters.append(ReceiveWaiter(id: waiterID, continuation: continuation))
+                    state.maxConcurrentReceiveWaiters = max(
+                        state.maxConcurrentReceiveWaiters,
+                        state.receiveWaiters.count
+                    )
+                    return .wait
+                }
+                switch action {
+                case .resume(let event):
+                    continuation.resume(returning: event)
+                case .fail(let error):
+                    continuation.resume(throwing: error)
+                case .wait:
+                    break
+                }
+            }
+        } onCancel: {
+            let continuation: CheckedContinuation<WebSocketTransportEvent, Error>? = state.withLock { state in
+                guard let index = state.receiveWaiters.firstIndex(where: { $0.id == waiterID }) else {
+                    return nil
+                }
+                return state.receiveWaiters.remove(at: index).continuation
+            }
+            continuation?.resume(throwing: CancellationError())
+        }
+    }
 
     func send(text: String) async throws {
         enum Disposition {
@@ -260,15 +372,21 @@ final class ScriptedWebSocketConnection: WebSocketTransportConnection {
     }
 
     func close() {
-        let pending: [CheckedContinuation<Void, Error>] = state.withLock { state in
+        let (pendingPings, pendingReceives): ([CheckedContinuation<Void, Error>], [ReceiveWaiter]) = state.withLock { state in
             state.closed = true
+            state.ended = true
             let hanging = Array(state.hangingPings.values)
             state.hangingPings = [:]
-            return hanging
+            let receives = state.receiveWaiters
+            state.receiveWaiters = []
+            return (hanging, receives)
         }
-        for continuation in pending {
+        for continuation in pendingPings {
             continuation.resume(throwing: CancellationError())
         }
-        continuation.finish()
+        // Production parity: closing the task fails the pending receive.
+        for waiter in pendingReceives {
+            waiter.continuation.resume(throwing: CancellationError())
+        }
     }
 }
