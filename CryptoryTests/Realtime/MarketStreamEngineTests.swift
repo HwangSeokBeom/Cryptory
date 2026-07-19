@@ -343,6 +343,332 @@ final class MarketStreamEngineTests: XCTestCase {
         }
     }
 
+    // MARK: - Backoff preservation during subscription churn
+
+    func testSameSubscriptionSetWhileWaitingToReconnectPreservesBackoffTimer() async {
+        let (engine, transport, clock) = makeEngine()
+        let owner = UUID()
+        await engine.replaceSubscriptions(owner: owner, with: [tickerBTC])
+        let first = try! XCTUnwrap(transport.lastConnection)
+        first.scriptOpened()
+        first.scriptFailure()
+        let waiting = await waitForReconnectPending(engine, clock, attempt: 1)
+        await assertTrue(waiting, engine: engine, "attempt 1 pending")
+
+        // A same-set refresh during the outage (e.g. the UI re-applying its
+        // subscriptions) must neither connect nor reset the timer.
+        await engine.replaceSubscriptions(owner: owner, with: [tickerBTC])
+        await settle()
+        XCTAssertEqual(transport.openCount, 1, "same-set update must not bypass the reconnect wait")
+        guard case .waitingToReconnect(_, let attempt, _) = await engine.currentState else {
+            let description = await engineStateDescription(engine)
+            return XCTFail("expected waitingToReconnect; \(description)")
+        }
+        XCTAssertEqual(attempt, 1, "backoff attempt must not reset")
+        XCTAssertEqual(clock.sleeperCount, 1, "reconnect timer must remain armed")
+
+        clock.advance(by: .seconds(1))
+        let reopened = await waitUntil { transport.openCount == 2 }
+        await assertTrue(reopened, engine: engine, "timer fire connects")
+        let second = try! XCTUnwrap(transport.lastConnection)
+        await waitUntil { second.sentMessages(action: "subscribe").count >= 1 }
+        await settle()
+        XCTAssertEqual(second.sentMessages(action: "subscribe").count, 1, "final set replayed exactly once")
+    }
+
+    func testChangedSubscriptionSetWhileWaitingToReconnectReconcilesWithoutConnecting() async {
+        let (engine, transport, clock) = makeEngine()
+        let owner = UUID()
+        await engine.replaceSubscriptions(owner: owner, with: [tickerBTC])
+        let first = try! XCTUnwrap(transport.lastConnection)
+        first.scriptOpened()
+        first.scriptFailure()
+        let waiting = await waitForReconnectPending(engine, clock, attempt: 1)
+        await assertTrue(waiting, engine: engine)
+
+        await engine.replaceSubscriptions(owner: owner, with: [tickerETH])
+        await settle()
+        XCTAssertEqual(transport.openCount, 1, "changed set must not bypass the reconnect wait")
+        let active = await engine.activeSubscriptions
+        XCTAssertEqual(active, [tickerETH], "registry ownership reconciles while waiting")
+
+        clock.advance(by: .seconds(1))
+        let reopened = await waitUntil { transport.openCount == 2 }
+        await assertTrue(reopened, engine: engine)
+        let second = try! XCTUnwrap(transport.lastConnection)
+        await waitUntil { second.sentMessages(action: "subscribe").count >= 1 }
+        await settle()
+        let subscribes = second.sentMessages(action: "subscribe")
+        XCTAssertEqual(subscribes.count, 1, "exactly one replay of the final set")
+        XCTAssertTrue(subscribes[0].contains("ETH"), "replay carries the final set, not the original")
+        XCTAssertEqual(second.sentMessages(action: "unsubscribe").count, 0)
+    }
+
+    func testRapidSubscriptionChangesWhileWaitingToReconnectConvergeOnTimerFire() async {
+        let (engine, transport, clock) = makeEngine()
+        let owner = UUID()
+        await engine.replaceSubscriptions(owner: owner, with: [tickerBTC])
+        let first = try! XCTUnwrap(transport.lastConnection)
+        first.scriptOpened()
+        first.scriptFailure()
+        let waiting = await waitForReconnectPending(engine, clock, attempt: 1)
+        await assertTrue(waiting, engine: engine)
+
+        await engine.replaceSubscriptions(owner: owner, with: [tickerETH])
+        await engine.replaceSubscriptions(owner: owner, with: [tickerBTC, tradesBTC])
+        await engine.replaceSubscriptions(owner: owner, with: [tradesBTC])
+        await settle()
+        XCTAssertEqual(transport.openCount, 1, "only one transport connection may exist before the timer fires")
+        XCTAssertEqual(clock.sleeperCount, 1, "rapid churn must not cancel the reconnect timer")
+
+        clock.advance(by: .seconds(1))
+        let reopened = await waitUntil { transport.openCount == 2 }
+        await assertTrue(reopened, engine: engine)
+        let second = try! XCTUnwrap(transport.lastConnection)
+        await waitUntil { second.sentMessages(action: "subscribe").count >= 1 }
+        await settle()
+        let subscribes = second.sentMessages(action: "subscribe")
+        XCTAssertEqual(subscribes.count, 1, "converged final set replays exactly once")
+        XCTAssertTrue(subscribes[0].contains("\"channel\":\"trades\""))
+        XCTAssertEqual(second.sentMessages(action: "unsubscribe").count, 0)
+    }
+
+    func testExplicitConnectWhileWaitingToReconnectBypassesWaitByDocumentedPolicy() async {
+        let (engine, transport, clock) = makeEngine()
+        await engine.replaceSubscriptions(owner: UUID(), with: [tickerBTC])
+        let first = try! XCTUnwrap(transport.lastConnection)
+        first.scriptOpened()
+        first.scriptFailure()
+        let waiting = await waitForReconnectPending(engine, clock, attempt: 1)
+        await assertTrue(waiting, engine: engine)
+
+        // Documented bypass: a deliberate connect() call skips the wait.
+        await engine.connect()
+        let reopened = await waitUntil { transport.openCount == 2 }
+        await assertTrue(reopened, engine: engine, "explicit connect bypasses backoff")
+
+        // The superseded timer must be cancelled — no third connection later.
+        transport.connections[1].scriptOpened()
+        await waitUntil { await engine.currentState.isConnected }
+        clock.advance(by: .seconds(300))
+        await settle()
+        XCTAssertEqual(transport.openCount, 2, "cancelled backoff timer must not fire")
+    }
+
+    // MARK: - Idle-close convergence (A → [] → B)
+
+    func testNewSubscriptionDuringSuspendedUnsubscribeSendCancelsIdleClose() async {
+        let (engine, transport, _) = makeEngine()
+        let owner = UUID()
+        await engine.replaceSubscriptions(owner: owner, with: [tickerBTC])
+        let connection = try! XCTUnwrap(transport.lastConnection)
+        connection.scriptOpened()
+        await waitUntil { connection.sentMessages(action: "subscribe").count >= 1 }
+
+        connection.beginSuspendingSends()
+        await engine.replaceSubscriptions(owner: owner, with: [])
+        let suspended = await waitUntil { connection.suspendedSendCount == 1 }
+        await assertTrue(suspended, engine: engine, "unsubscribe send suspended")
+        var sender = await engine.debugSenderState()
+        XCTAssertTrue(sender.closeWhenOutboxDrained, "empty registry arms the idle close")
+
+        await engine.replaceSubscriptions(owner: owner, with: [tickerETH])
+        sender = await engine.debugSenderState()
+        XCTAssertFalse(sender.closeWhenOutboxDrained, "non-empty registry must cancel the pending idle close")
+
+        connection.resumeSuspendedSends()
+        let subscribedETH = await waitUntil {
+            connection.sentMessages(action: "subscribe").contains { $0.contains("ETH") }
+        }
+        await assertTrue(subscribedETH, engine: engine)
+        await settle()
+        XCTAssertFalse(connection.isClosed, "socket must survive A → [] → B")
+        XCTAssertEqual(transport.openCount, 1, "no reconnect is needed to recover")
+        XCTAssertEqual(connection.sentMessages(action: "unsubscribe").count, 1)
+        let active = await engine.activeSubscriptions
+        XCTAssertEqual(active, [tickerETH])
+        let snapshot = await engine.metricsSnapshot()
+        XCTAssertEqual(snapshot.upstreamSubscriptionCount, 1)
+        XCTAssertTrue(snapshot.connectionState.isConnected, "state, registry, and metrics agree")
+    }
+
+    func testReplacementDuringSuspendedSubscribeSendPreservesSocket() async {
+        let (engine, transport, _) = makeEngine()
+        transport.setSuspendSendsOnOpen(true)
+        let owner = UUID()
+        await engine.replaceSubscriptions(owner: owner, with: [tickerBTC])
+        let connection = try! XCTUnwrap(transport.lastConnection)
+        connection.scriptOpened()
+        let suspended = await waitUntil { connection.suspendedSendCount == 1 }
+        await assertTrue(suspended, engine: engine, "initial subscribe suspended")
+
+        await engine.replaceSubscriptions(owner: owner, with: [])
+        var sender = await engine.debugSenderState()
+        XCTAssertTrue(sender.closeWhenOutboxDrained)
+        await engine.replaceSubscriptions(owner: owner, with: [tickerETH])
+        sender = await engine.debugSenderState()
+        XCTAssertFalse(sender.closeWhenOutboxDrained)
+
+        connection.resumeSuspendedSends()
+        let subscribedETH = await waitUntil {
+            connection.sentMessages(action: "subscribe").contains { $0.contains("ETH") }
+        }
+        await assertTrue(subscribedETH, engine: engine)
+        await settle()
+        XCTAssertFalse(connection.isClosed)
+        XCTAssertEqual(transport.openCount, 1)
+        let active = await engine.activeSubscriptions
+        XCTAssertEqual(active, [tickerETH])
+        let sent = connection.sentMessages
+        XCTAssertEqual(sent.filter { $0.contains("\"action\":\"subscribe\"") && $0.contains("BTC") }.count, 1)
+        XCTAssertEqual(sent.filter { $0.contains("\"action\":\"unsubscribe\"") && $0.contains("BTC") }.count, 1)
+        XCTAssertEqual(sent.filter { $0.contains("\"action\":\"subscribe\"") && $0.contains("ETH") }.count, 1)
+    }
+
+    func testMultipleEmptyNonemptyTransitionsConvergeToFinalSet() async {
+        let (engine, transport, _) = makeEngine()
+        let owner = UUID()
+        await engine.replaceSubscriptions(owner: owner, with: [tickerBTC])
+        let connection = try! XCTUnwrap(transport.lastConnection)
+        connection.scriptOpened()
+        await waitUntil { connection.sentMessages(action: "subscribe").count >= 1 }
+
+        connection.beginSuspendingSends()
+        await engine.replaceSubscriptions(owner: owner, with: [])
+        await engine.replaceSubscriptions(owner: owner, with: [tickerETH])
+        await engine.replaceSubscriptions(owner: owner, with: [])
+        await engine.replaceSubscriptions(owner: owner, with: [tradesBTC])
+        let sender = await engine.debugSenderState()
+        XCTAssertFalse(sender.closeWhenOutboxDrained, "final non-empty set cancels the idle close")
+
+        connection.resumeSuspendedSends()
+        let converged = await waitUntil {
+            connection.sentMessages(action: "subscribe").contains { $0.contains("\"channel\":\"trades\"") }
+        }
+        await assertTrue(converged, engine: engine)
+        await settle()
+        XCTAssertFalse(connection.isClosed)
+        XCTAssertEqual(transport.openCount, 1)
+        let active = await engine.activeSubscriptions
+        XCTAssertEqual(active, [tradesBTC])
+        func net(_ predicate: (String) -> Bool) -> Int {
+            connection.sentMessages(action: "subscribe").filter(predicate).count
+                - connection.sentMessages(action: "unsubscribe").filter(predicate).count
+        }
+        XCTAssertEqual(net { $0.contains("\"channel\":\"trades\"") }, 1)
+        XCTAssertEqual(net { $0.contains("BTC") && $0.contains("\"channel\":\"ticker\"") }, 0)
+        XCTAssertEqual(net { $0.contains("ETH") }, 0)
+    }
+
+    func testIdleCloseStillHappensWhenRegistryStaysEmptyAcrossSuspendedSend() async {
+        let (engine, transport, _) = makeEngine()
+        let owner = UUID()
+        await engine.replaceSubscriptions(owner: owner, with: [tickerBTC])
+        let connection = try! XCTUnwrap(transport.lastConnection)
+        connection.scriptOpened()
+        await waitUntil { connection.sentMessages(action: "subscribe").count >= 1 }
+
+        connection.beginSuspendingSends()
+        await engine.replaceSubscriptions(owner: owner, with: [])
+        let suspended = await waitUntil { connection.suspendedSendCount == 1 }
+        await assertTrue(suspended, engine: engine)
+
+        connection.resumeSuspendedSends()
+        let closed = await waitUntil { connection.isClosed }
+        await assertTrue(closed, engine: engine, "truly empty registry still closes after the drain")
+        let state = await engine.currentState
+        XCTAssertEqual(state, .idle)
+    }
+
+    // MARK: - Sender task ownership
+
+    func testStaleSenderResumingSuccessfullyDoesNotClearNewSenderOwnership() async {
+        let (engine, transport, clock) = makeEngine()
+        transport.setSuspendSendsOnOpen(true)
+        let owner = UUID()
+        await engine.replaceSubscriptions(owner: owner, with: [tickerBTC])
+        let first = try! XCTUnwrap(transport.lastConnection)
+        first.scriptOpened()
+        let firstSuspended = await waitUntil { first.suspendedSendCount == 1 }
+        await assertTrue(firstSuspended, engine: engine, "sender 1 suspended in send")
+
+        // Teardown while sender 1 is suspended (non-cooperative: the gate
+        // ignores cancellation, like URLSession can).
+        first.scriptFailure()
+        let waiting = await waitForReconnectPending(engine, clock, attempt: 1)
+        await assertTrue(waiting, engine: engine)
+        clock.advance(by: .seconds(1))
+        let reopened = await waitUntil { transport.openCount == 2 }
+        await assertTrue(reopened, engine: engine)
+        let second = try! XCTUnwrap(transport.lastConnection)
+        second.scriptOpened()
+        let secondSuspended = await waitUntil { second.suspendedSendCount == 1 }
+        await assertTrue(secondSuspended, engine: engine, "sender 2 suspended in replayed subscribe")
+
+        // Old sender resumes successfully after the new generation started.
+        first.resumeSuspendedSends()
+        await settle()
+        let sender = await engine.debugSenderState()
+        XCTAssertTrue(sender.hasSenderTask, "stale sender must not clear the new sender's ownership")
+
+        // A later subscription update must not start a duplicate sender: the
+        // owned sender 2 is still suspended, so no second suspended send may
+        // appear on connection 2.
+        await engine.replaceSubscriptions(owner: owner, with: [tickerBTC, tickerETH])
+        await settle()
+        XCTAssertEqual(second.suspendedSendCount, 1, "no duplicate sender may drain the outbox")
+
+        second.resumeSuspendedSends()
+        let drained = await waitUntil { second.sentMessages(action: "subscribe").count == 2 }
+        await assertTrue(drained, engine: engine, "owned sender drains the queued update")
+        await settle()
+        let subscribes = second.sentMessages(action: "subscribe")
+        XCTAssertEqual(subscribes.count, 2, "subscription replay and update sent exactly once each")
+        XCTAssertTrue(subscribes[0].contains("BTC"), "replay precedes the later update")
+        XCTAssertTrue(subscribes[1].contains("ETH"))
+        XCTAssertEqual(transport.openCount, 2, "stale sender must not trigger reconnects")
+    }
+
+    func testStaleSenderResumingByThrowingDoesNotFailNewGeneration() async {
+        let (engine, transport, clock) = makeEngine()
+        transport.setSuspendSendsOnOpen(true)
+        let owner = UUID()
+        await engine.replaceSubscriptions(owner: owner, with: [tickerBTC])
+        let first = try! XCTUnwrap(transport.lastConnection)
+        first.scriptOpened()
+        let firstSuspended = await waitUntil { first.suspendedSendCount == 1 }
+        await assertTrue(firstSuspended, engine: engine)
+
+        first.scriptFailure()
+        let waiting = await waitForReconnectPending(engine, clock, attempt: 1)
+        await assertTrue(waiting, engine: engine)
+        clock.advance(by: .seconds(1))
+        await waitUntil { transport.openCount == 2 }
+        let second = try! XCTUnwrap(transport.lastConnection)
+        second.scriptOpened()
+        let secondSuspended = await waitUntil { second.suspendedSendCount == 1 }
+        await assertTrue(secondSuspended, engine: engine)
+        await waitUntil { await engine.currentState.isConnected }
+        let reconnectsBefore = await engine.metricsSnapshot().reconnectCount
+
+        // Old sender resumes by throwing after the new generation started:
+        // it must not report a connection failure for the new generation.
+        first.failSuspendedSends()
+        await settle()
+        let snapshot = await engine.metricsSnapshot()
+        XCTAssertTrue(snapshot.connectionState.isConnected, "new generation must stay connected")
+        XCTAssertEqual(snapshot.reconnectCount, reconnectsBefore, "stale sender must not schedule a reconnect")
+        XCTAssertEqual(transport.openCount, 2)
+        let sender = await engine.debugSenderState()
+        XCTAssertTrue(sender.hasSenderTask, "new sender remains owned")
+
+        second.resumeSuspendedSends()
+        let drained = await waitUntil { second.sentMessages(action: "subscribe").count == 1 }
+        await assertTrue(drained, engine: engine)
+        await settle()
+        XCTAssertEqual(second.sentMessages(action: "subscribe").count, 1, "exact-once replay is intact")
+    }
+
     // MARK: - Stale generation and old-socket suppression
 
     func testStaleEventsAfterTeardownCannotResurrectConnection() async {

@@ -12,6 +12,7 @@ enum ScriptedTransportError: Error {
 final class ScriptedWebSocketTransport: WebSocketTransport {
     private struct State {
         var connections: [ScriptedWebSocketConnection] = []
+        var suspendSendsOnOpen = false
     }
 
     private let state = Mutex(State())
@@ -28,9 +29,22 @@ final class ScriptedWebSocketTransport: WebSocketTransport {
         state.withLock { $0.connections.last }
     }
 
+    /// New connections start with their send gate closed, so the very first
+    /// outbound message suspends deterministically (no race between opening
+    /// the connection and arming the gate).
+    func setSuspendSendsOnOpen(_ enabled: Bool) {
+        state.withLock { $0.suspendSendsOnOpen = enabled }
+    }
+
     func open(url: URL) -> any WebSocketTransportConnection {
         let connection = ScriptedWebSocketConnection()
-        state.withLock { $0.connections.append(connection) }
+        let gated: Bool = state.withLock { state in
+            state.connections.append(connection)
+            return state.suspendSendsOnOpen
+        }
+        if gated {
+            connection.beginSuspendingSends()
+        }
         return connection
     }
 }
@@ -45,6 +59,12 @@ final class ScriptedWebSocketConnection: WebSocketTransportConnection {
         case fail
     }
 
+    private struct SuspendedSend {
+        let id: UUID
+        let message: String
+        let continuation: CheckedContinuation<Void, Error>
+    }
+
     private struct State {
         var sentMessages: [String] = []
         var sendError: Error?
@@ -52,6 +72,13 @@ final class ScriptedWebSocketConnection: WebSocketTransportConnection {
         var pingCount = 0
         var hangingPings: [UUID: CheckedContinuation<Void, Error>] = [:]
         var closed = false
+        /// While true, `send(text:)` suspends instead of completing. Suspended
+        /// sends ignore task cancellation by default (modeling URLSession,
+        /// which may resume a send after cancellation) so stale-sender
+        /// interleavings can be scripted deterministically.
+        var suspendingSends = false
+        var respectsSendCancellation = false
+        var suspendedSends: [SuspendedSend] = []
     }
 
     let events: AsyncThrowingStream<WebSocketTransportEvent, Error>
@@ -80,6 +107,58 @@ final class ScriptedWebSocketConnection: WebSocketTransportConnection {
 
     func sentMessages(action: String) -> [String] {
         sentMessages.filter { $0.contains("\"action\":\"\(action)\"") }
+    }
+
+    // MARK: - Send gate scripting
+
+    var suspendedSendCount: Int {
+        state.withLock { $0.suspendedSends.count }
+    }
+
+    var suspendedSendMessages: [String] {
+        state.withLock { $0.suspendedSends.map(\.message) }
+    }
+
+    /// Every subsequent `send(text:)` suspends until resumed or failed.
+    /// With `respectingCancellation: false` (default) a suspended send stays
+    /// suspended across task cancellation — required for stale-sender tests.
+    func beginSuspendingSends(respectingCancellation: Bool = false) {
+        state.withLock {
+            $0.suspendingSends = true
+            $0.respectsSendCancellation = respectingCancellation
+        }
+    }
+
+    /// Resumes all currently suspended sends as successes (recording their
+    /// messages in arrival order). Reopens the gate by default.
+    func resumeSuspendedSends(reopenGate: Bool = true) {
+        let resumable: [SuspendedSend] = state.withLock { state in
+            if reopenGate { state.suspendingSends = false }
+            let pending = state.suspendedSends
+            state.suspendedSends = []
+            state.sentMessages.append(contentsOf: pending.map(\.message))
+            return pending
+        }
+        for send in resumable {
+            send.continuation.resume()
+        }
+    }
+
+    /// Resumes all currently suspended sends by throwing. Messages are not
+    /// recorded as sent. Reopens the gate by default.
+    func failSuspendedSends(
+        _ error: Error = ScriptedTransportError.scriptedFailure("suspended send failed"),
+        reopenGate: Bool = true
+    ) {
+        let resumable: [SuspendedSend] = state.withLock { state in
+            if reopenGate { state.suspendingSends = false }
+            let pending = state.suspendedSends
+            state.suspendedSends = []
+            return pending
+        }
+        for send in resumable {
+            send.continuation.resume(throwing: error)
+        }
     }
 
     // MARK: - Test scripting
@@ -112,11 +191,46 @@ final class ScriptedWebSocketConnection: WebSocketTransportConnection {
     // MARK: - WebSocketTransportConnection
 
     func send(text: String) async throws {
-        try state.withLock { state in
+        enum Disposition {
+            case complete
+            case fail(Error)
+            case suspend(UUID, Bool)
+        }
+        let id = UUID()
+        let disposition: Disposition = state.withLock { state in
             if let error = state.sendError {
-                throw error
+                return .fail(error)
+            }
+            if state.suspendingSends {
+                return .suspend(id, state.respectsSendCancellation)
             }
             state.sentMessages.append(text)
+            return .complete
+        }
+        switch disposition {
+        case .complete:
+            return
+        case .fail(let error):
+            throw error
+        case .suspend(let id, let respectsCancellation):
+            try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                    state.withLock {
+                        $0.suspendedSends.append(
+                            SuspendedSend(id: id, message: text, continuation: continuation)
+                        )
+                    }
+                }
+            } onCancel: {
+                guard respectsCancellation else { return }
+                let continuation: CheckedContinuation<Void, Error>? = state.withLock { state in
+                    guard let index = state.suspendedSends.firstIndex(where: { $0.id == id }) else {
+                        return nil
+                    }
+                    return state.suspendedSends.remove(at: index).continuation
+                }
+                continuation?.resume(throwing: CancellationError())
+            }
         }
     }
 

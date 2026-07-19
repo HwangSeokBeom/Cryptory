@@ -31,6 +31,12 @@ actor MarketStreamEngine {
     private var heartbeatTask: Task<Void, Never>?
     private var reconnectTask: Task<Void, Never>?
     private var senderTask: Task<Void, Never>?
+    /// Ownership token for the current sender task. Incremented whenever a
+    /// sender is created or the connection is torn down, so a stale sender
+    /// resuming from a suspended `send(text:)` after teardown can never
+    /// mutate the state of a newer sender or connection (URLSession and test
+    /// doubles may resume a send even after cancellation).
+    private var senderEpoch: UInt64 = 0
     private var outbox: [String] = []
     private var closeWhenOutboxDrained = false
 
@@ -121,6 +127,11 @@ actor MarketStreamEngine {
 
     /// Idempotent. Opens a connection when at least one subscription is
     /// active; with zero subscriptions the engine stays idle by policy.
+    ///
+    /// Documented bypass: an explicit `connect()` while the engine is in
+    /// `waitingToReconnect` cancels the scheduled backoff timer and connects
+    /// immediately — it is a deliberate user/caller action, unlike
+    /// subscription reconciliation, which never bypasses the wait.
     func connect() {
         manuallyDisconnected = false
         guard connection == nil else { return }
@@ -220,7 +231,18 @@ actor MarketStreamEngine {
             return
         }
 
+        // The registry is non-empty again: any pending idle-close intent is
+        // obsolete — the socket must stay alive for the current subscriptions
+        // (A → [] → B during a suspended send must not close B's connection).
+        closeWhenOutboxDrained = false
+
         if connection == nil {
+            // While waiting to reconnect, only reconcile the registry: the
+            // scheduled timer replays the full active set exactly once when
+            // it fires. Subscription churn (e.g. repeated UI refreshes
+            // during an outage) must never cancel or reset backoff; only the
+            // timer itself or an explicit `connect()` bypasses the wait.
+            if case .waitingToReconnect = state { return }
             if !suspended, !manuallyDisconnected {
                 startConnectionIfNeeded()
             }
@@ -280,6 +302,10 @@ actor MarketStreamEngine {
         resolvePing(epoch: pingEpoch, result: false)
         senderTask?.cancel()
         senderTask = nil
+        // Invalidate any sender still suspended inside `send(text:)`: when it
+        // eventually resumes (even ignoring cancellation) its epoch no longer
+        // matches and it exits without touching newer state.
+        senderEpoch &+= 1
         outbox = []
         closeWhenOutboxDrained = false
         receiveTask = nil
@@ -518,17 +544,28 @@ actor MarketStreamEngine {
 
     private func ensureSender(_ connection: any WebSocketTransportConnection, generation gen: UInt64) {
         guard senderTask == nil else { return }
-        senderTask = Task { await self.drainOutbox(connection, generation: gen) }
+        senderEpoch &+= 1
+        let epoch = senderEpoch
+        senderTask = Task { await self.drainOutbox(connection, generation: gen, senderEpoch: epoch) }
     }
 
-    private func drainOutbox(_ connection: any WebSocketTransportConnection, generation gen: UInt64) async {
-        while gen == generation, !outbox.isEmpty, !Task.isCancelled {
+    /// Drains the outbox for exactly one sender epoch. Every shared-state
+    /// mutation is guarded by the epoch (and generation) captured at spawn:
+    /// a stale sender resuming from a suspended send after teardown must not
+    /// clear a newer `senderTask`, drain a newer outbox, trigger idle close,
+    /// or schedule a reconnect for a newer generation.
+    private func drainOutbox(
+        _ connection: any WebSocketTransportConnection,
+        generation gen: UInt64,
+        senderEpoch epoch: UInt64
+    ) async {
+        while epoch == senderEpoch, gen == generation, !outbox.isEmpty, !Task.isCancelled {
             let message = outbox.removeFirst()
             do {
                 try await connection.send(text: message)
             } catch {
+                guard epoch == senderEpoch, gen == generation else { return }
                 senderTask = nil
-                guard gen == generation else { return }
                 handleConnectionFailure(
                     generation: gen,
                     reason: .transportError(Self.shortDescription(of: error))
@@ -536,7 +573,9 @@ actor MarketStreamEngine {
                 return
             }
         }
+        guard epoch == senderEpoch else { return }
         senderTask = nil
+        guard gen == generation else { return }
         finishIdleCloseIfNeeded()
     }
 
@@ -642,6 +681,28 @@ actor MarketStreamEngine {
 }
 
 #if DEBUG
+// Test/diagnostic introspection. DEBUG-only; read-only snapshots of
+// actor-owned state for deterministic assertions.
+extension MarketStreamEngine {
+    struct DebugSenderState: Sendable, Equatable {
+        var hasSenderTask: Bool
+        var senderEpoch: UInt64
+        var outboxCount: Int
+        var closeWhenOutboxDrained: Bool
+    }
+
+    func debugSenderState() -> DebugSenderState {
+        DebugSenderState(
+            hasSenderTask: senderTask != nil,
+            senderEpoch: senderEpoch,
+            outboxCount: outbox.count,
+            closeWhenOutboxDrained: closeWhenOutboxDrained
+        )
+    }
+
+    var debugConsumerCount: Int { consumers.count }
+}
+
 // Simulation hooks for the Realtime Pipeline Lab. DEBUG-only: they act on
 // this local engine instance and cannot reach production users, credentials,
 // or other devices. Not compiled into Release builds.
