@@ -673,23 +673,51 @@ final class SpyKimchiPremiumRepository: KimchiPremiumRepositoryProtocol {
     }
 }
 
+/// Latching release gate for snapshot delivery: a fetch parked on `wait()`
+/// stays parked until the test calls `open()`, and every later fetch passes
+/// straight through. Replaces wall-clock delays so "the switch target's
+/// snapshot has not arrived yet" is a state the test controls, not a race
+/// against the host's scheduler.
+actor KimchiSnapshotGate {
+    private var isOpen = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        if isOpen { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func open() {
+        isOpen = true
+        let parked = waiters
+        waiters = []
+        parked.forEach { $0.resume() }
+    }
+}
+
 final class DelayedKimchiPremiumRepository: KimchiPremiumRepositoryProtocol {
     var snapshotsByExchange: [Exchange: KimchiPremiumSnapshot]
     var delaysByExchange: [Exchange: UInt64]
+    var gatesByExchange: [Exchange: KimchiSnapshotGate]
     private(set) var requestedContexts: [(exchange: Exchange, symbols: [String])] = []
 
     init(
         snapshotsByExchange: [Exchange: KimchiPremiumSnapshot],
-        delaysByExchange: [Exchange: UInt64] = [:]
+        delaysByExchange: [Exchange: UInt64] = [:],
+        gatesByExchange: [Exchange: KimchiSnapshotGate] = [:]
     ) {
         self.snapshotsByExchange = snapshotsByExchange
         self.delaysByExchange = delaysByExchange
+        self.gatesByExchange = gatesByExchange
     }
 
     func fetchSnapshot(exchange: Exchange, symbols: [String]) async throws -> KimchiPremiumSnapshot {
         requestedContexts.append((exchange, symbols))
         if let delay = delaysByExchange[exchange], delay > 0 {
             try? await Task.sleep(nanoseconds: delay)
+        }
+        if let gate = gatesByExchange[exchange] {
+            await gate.wait()
         }
         return snapshotsByExchange[exchange] ?? StubKimchiPremiumRepository().snapshot
     }

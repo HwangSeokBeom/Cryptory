@@ -5279,6 +5279,7 @@ final class ViewModelStateTests: XCTestCase {
             supportedIntervalsBySymbol: ["BTC": ["1m", "1h"]],
             meta: .empty
         )
+        let bithumbGate = KimchiSnapshotGate()
         let delayedRepository = DelayedKimchiPremiumRepository(
             snapshotsByExchange: [
                 .upbit: KimchiPremiumSnapshot(
@@ -5300,7 +5301,7 @@ final class ViewModelStateTests: XCTestCase {
                     failedSymbols: []
                 )
             ],
-            delaysByExchange: [.bithumb: 300_000_000]
+            gatesByExchange: [.bithumb: bithumbGate]
         )
         let vm = CryptoViewModel(
             marketRepository: marketRepository,
@@ -5319,8 +5320,14 @@ final class ViewModelStateTests: XCTestCase {
         }
 
         vm.updateSelectedDomesticKimchiExchange(.bithumb, source: "kimchi_switch")
-        try? await Task.sleep(for: .milliseconds(120))
-        await Task.yield()
+        // Shell rows are published only after the route refresh hydrates the
+        // bithumb catalog, so wait for that observable state; the parked gate
+        // guarantees the real snapshot cannot overwrite it in the meantime.
+        await waitUntil {
+            vm.kimchiPresentationState.transitionState.phase == .exchangeChanged
+                && !vm.kimchiPresentationState.representativeRowsState.rows.isEmpty
+                && vm.kimchiPremiumState.value?.first?.status == .loading
+        }
 
         XCTAssertEqual(vm.selectedExchange, .bithumb)
         XCTAssertEqual(vm.kimchiPresentationState.selectedExchange, .bithumb)
@@ -5336,6 +5343,7 @@ final class ViewModelStateTests: XCTestCase {
         }
         XCTAssertEqual(shellRows.first?.status, .loading)
 
+        await bithumbGate.open()
         await waitUntil {
             vm.kimchiPremiumState.value?.first?.cells.first?.exchange == .bithumb
                 && vm.kimchiPremiumState.value?.first?.status != .loading
