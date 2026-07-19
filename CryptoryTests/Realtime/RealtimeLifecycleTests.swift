@@ -52,7 +52,7 @@ final class RealtimeLifecycleTests: XCTestCase {
     private func engineDescription(_ engine: MarketStreamEngine) async -> String {
         let snapshot = await engine.metricsSnapshot()
         let consumers = await engine.debugConsumerCount
-        return "state=\(snapshot.connectionState) consumers=\(consumers) upstream=\(snapshot.upstreamSubscriptionCount) dropped=\(snapshot.eventsDropped)"
+        return "state=\(snapshot.connectionState) consumers=\(consumers) upstream=\(snapshot.upstreamSubscriptionCount) dropped=\(snapshot.bufferEventsDropped)"
     }
 
     // MARK: - Consumer cancellation releases ownership
@@ -116,7 +116,7 @@ final class RealtimeLifecycleTests: XCTestCase {
         connection.scriptText(RealtimeFixtureLoader.tickerMessage(symbol: "ETH", price: 11, sequence: 3))
         await waitUntil { await engine.metricsSnapshot().messagesDecoded == 4 }
 
-        let droppedBefore = await engine.metricsSnapshot().eventsDropped
+        let droppedBefore = await engine.metricsSnapshot().bufferEventsDropped
         let consumerTask = Task { for await _ in events {} }
         consumerTask.cancel()
         _ = await consumerTask.value
@@ -126,7 +126,7 @@ final class RealtimeLifecycleTests: XCTestCase {
         XCTAssertTrue(released, description)
         let snapshot = await engine.metricsSnapshot()
         XCTAssertEqual(
-            snapshot.eventsDropped - droppedBefore,
+            snapshot.bufferEventsDropped - droppedBefore,
             4,
             "buffered events discarded by cancellation are explicit, counted drops; \(description)"
         )
@@ -177,13 +177,13 @@ final class RealtimeLifecycleTests: XCTestCase {
         consumerTask.cancel()
         _ = await consumerTask.value
         await waitUntil { await engine.debugConsumerCount == 0 }
-        let droppedAfterCancel = await engine.metricsSnapshot().eventsDropped
+        let droppedAfterCancel = await engine.metricsSnapshot().bufferEventsDropped
 
         await engine.unregister(consumerID)
         let consumers = await engine.debugConsumerCount
         XCTAssertEqual(consumers, 0)
         let snapshot = await engine.metricsSnapshot()
-        XCTAssertEqual(snapshot.eventsDropped, droppedAfterCancel, "second release must not double-count drops")
+        XCTAssertEqual(snapshot.bufferEventsDropped, droppedAfterCancel, "second release must not double-count drops")
     }
 
     // MARK: - Adapter lifecycle
@@ -264,6 +264,61 @@ final class RealtimeLifecycleTests: XCTestCase {
         connection.scriptText(RealtimeFixtureLoader.tickerMessage(price: 200))
         await settle()
         XCTAssertEqual(tickerCount, 1, "no callback may fire after shutdown")
+    }
+
+    // MARK: - MainActor delivery contract
+
+    func testAdapterDeliversEventsInOrderOnMainActor() async {
+        let (engine, transport, _) = makeEngine()
+        let adapter = MarketStreamUIAdapter(engine: engine, observesAppLifecycle: false)
+        var deliveredPrices: [Double] = []
+        adapter.onTickerReceived = { payload in
+            MainActor.assertIsolated("adapter callbacks are @MainActor by contract")
+            deliveredPrices.append(payload.ticker.price)
+        }
+        adapter.updateSubscriptions([tickerBTC])
+        let opened = await waitUntil { transport.openCount == 1 }
+        XCTAssertTrue(opened)
+        let connection = try! XCTUnwrap(transport.lastConnection)
+        connection.scriptOpened()
+        await waitUntil { connection.sentMessages(action: "subscribe").count >= 1 }
+
+        connection.scriptText(RealtimeFixtureLoader.tickerMessage(price: 100, sequence: 0))
+        let firstDelivered = await waitUntil { deliveredPrices.count == 1 }
+        XCTAssertTrue(firstDelivered)
+        connection.scriptText(RealtimeFixtureLoader.tickerMessage(price: 200, sequence: 1))
+        let secondDelivered = await waitUntil { deliveredPrices.count == 2 }
+        XCTAssertTrue(secondDelivered)
+        connection.scriptText(RealtimeFixtureLoader.tickerMessage(price: 300, sequence: 2))
+        let thirdDelivered = await waitUntil { deliveredPrices.count == 3 }
+        XCTAssertTrue(thirdDelivered)
+        XCTAssertEqual(deliveredPrices, [100, 200, 300], "delivery preserves event order")
+        adapter.shutdown()
+    }
+
+    func testViewModelAppliesCallbackStateSynchronouslyOnMainActor() async {
+        // The @MainActor callback contract lets CryptoViewModel apply state
+        // without a per-event Task hop: after a synchronous emit, the state
+        // must already be applied — no await, no runloop turn.
+        let service = ManualPublicWebSocketService()
+        let vm = CryptoViewModel(
+            marketRepository: SpyMarketRepository(),
+            tradingRepository: SpyTradingRepository(),
+            portfolioRepository: SpyPortfolioRepository(),
+            kimchiPremiumRepository: StubKimchiPremiumRepository(),
+            exchangeConnectionsRepository: SpyExchangeConnectionsRepository(),
+            authService: StubAuthenticationService(),
+            publicWebSocketService: service,
+            privateWebSocketService: NoOpPrivateWebSocketService()
+        )
+
+        XCTAssertNotEqual(vm.publicWebSocketState, .connected)
+        service.emitState(.connected)
+        XCTAssertEqual(
+            vm.publicWebSocketState,
+            .connected,
+            "state must be applied synchronously within the MainActor callback"
+        )
     }
 
     func testShutdownRemovesLifecycleObservers() async {

@@ -186,7 +186,7 @@ final class RealtimeComponentTests: XCTestCase {
         )
         _ = enqueue(.orderbook(older), into: &buffer)
         let result = enqueue(.orderbook(newer), into: &buffer)
-        XCTAssertTrue(result.replacedSnapshot)
+        XCTAssertTrue(result.replacedOrderbook)
         XCTAssertFalse(result.coalescedTicker, "orderbook replacement is not counted as ticker coalescing")
         XCTAssertEqual(buffer.count, 1)
         guard case .orderbook(let payload)? = buffer.dequeue()?.event else {
@@ -227,7 +227,7 @@ final class RealtimeComponentTests: XCTestCase {
         var dropped = 0
         for index in 0..<10 {
             let result = enqueue(trades("t\(index)"), into: &buffer, maxTradeBatches: 3)
-            dropped += result.droppedEvents
+            dropped += result.totalDropped
         }
         XCTAssertEqual(buffer.count, 3)
         XCTAssertEqual(dropped, 7)
@@ -246,7 +246,7 @@ final class RealtimeComponentTests: XCTestCase {
         var dropped = 0
         for index in 0..<8 {
             let result = enqueue(trades("t\(index)"), into: &buffer, capacity: 4, maxTradeBatches: 64)
-            dropped += result.droppedEvents
+            dropped += result.totalDropped
         }
         XCTAssertEqual(buffer.count, 4)
         XCTAssertEqual(dropped, 5)

@@ -9379,122 +9379,114 @@ final class CryptoViewModel: ObservableObject {
     }
 
     private func bindPublicWebSocket() {
+        // The PublicWebSocketServicing contract delivers every callback on
+        // MainActor already, so state is applied synchronously — no extra
+        // per-event Task hop.
         publicWebSocketService.onConnectionStateChange = { [weak self] state in
-            Task { @MainActor in
-                guard let self else { return }
-                self.publicWebSocketState = state
-                switch state {
-                case .connecting:
-                    self.activeChartRealtimeStatus = .connecting
-                    AppLogger.debug(.websocket, "[PublicWS] connect start route=\(self.activeTab.rawValue) exchange=\(self.selectedExchange.rawValue)")
-                    if self.activeTab == .chart, let coin = self.selectedCoin {
-                        AppLogger.debug(.websocket, "[ChartWS] connect exchange=\(self.selectedExchange.rawValue) symbol=\(coin.symbol) quote=\(self.selectedQuoteCurrency.rawValue) timeframe=\(self.chartPeriod.uppercased())")
-                    }
-                case .connected:
-                    self.activeChartRealtimeStatus = .connected
-                    AppLogger.debug(.websocket, "[PublicWS] connect success route=\(self.activeTab.rawValue) exchange=\(self.selectedExchange.rawValue)")
-                case .failed(let message):
-                    self.activeChartRealtimeStatus = .reconnecting
-                    AppLogger.debug(.websocket, "[PublicWS] connect failure route=\(self.activeTab.rawValue) exchange=\(self.selectedExchange.rawValue) message=\(message)")
-                    if self.activeTab == .chart {
-                        AppLogger.debug(.websocket, "[ChartWS] reconnect exchange=\(self.selectedExchange.rawValue) quote=\(self.selectedQuoteCurrency.rawValue) timeframe=\(self.chartPeriod.uppercased())")
-                    }
-                case .disconnected:
-                    self.activeChartRealtimeStatus = .disconnected
-                    break
+            guard let self else { return }
+            self.publicWebSocketState = state
+            switch state {
+            case .connecting:
+                self.activeChartRealtimeStatus = .connecting
+                AppLogger.debug(.websocket, "[PublicWS] connect start route=\(self.activeTab.rawValue) exchange=\(self.selectedExchange.rawValue)")
+                if self.activeTab == .chart, let coin = self.selectedCoin {
+                    AppLogger.debug(.websocket, "[ChartWS] connect exchange=\(self.selectedExchange.rawValue) symbol=\(coin.symbol) quote=\(self.selectedQuoteCurrency.rawValue) timeframe=\(self.chartPeriod.uppercased())")
                 }
-                self.updatePublicPollingIfNeeded()
-                self.refreshMarketLoadState(reason: "public_ws_state_changed")
-                self.refreshKimchiLoadState(reason: "public_ws_state_changed")
-                self.refreshPublicStatusViewStates()
+            case .connected:
+                self.activeChartRealtimeStatus = .connected
+                AppLogger.debug(.websocket, "[PublicWS] connect success route=\(self.activeTab.rawValue) exchange=\(self.selectedExchange.rawValue)")
+            case .failed(let message):
+                self.activeChartRealtimeStatus = .reconnecting
+                AppLogger.debug(.websocket, "[PublicWS] connect failure route=\(self.activeTab.rawValue) exchange=\(self.selectedExchange.rawValue) message=\(message)")
+                if self.activeTab == .chart {
+                    AppLogger.debug(.websocket, "[ChartWS] reconnect exchange=\(self.selectedExchange.rawValue) quote=\(self.selectedQuoteCurrency.rawValue) timeframe=\(self.chartPeriod.uppercased())")
+                }
+            case .disconnected:
+                self.activeChartRealtimeStatus = .disconnected
             }
+            self.updatePublicPollingIfNeeded()
+            self.refreshMarketLoadState(reason: "public_ws_state_changed")
+            self.refreshKimchiLoadState(reason: "public_ws_state_changed")
+            self.refreshPublicStatusViewStates()
         }
 
         publicWebSocketService.onTickerReceived = { [weak self] payload in
-            Task { @MainActor in
-                guard let self else { return }
-                self.applyTickerUpdate(payload)
-                if self.activeTab == .chart,
-                   self.selectedCoin?.symbol == payload.symbol,
-                   self.exchange.rawValue == payload.exchange {
-                    self.refreshChartSummaryStates(reason: "ticker_stream_update")
-                    self.applyLiveChartPriceUpdate(
-                        price: payload.ticker.price,
-                        quantity: 0,
-                        timestamp: payload.ticker.timestamp ?? Date()
-                    )
-                }
+            guard let self else { return }
+            self.applyTickerUpdate(payload)
+            if self.activeTab == .chart,
+               self.selectedCoin?.symbol == payload.symbol,
+               self.exchange.rawValue == payload.exchange {
+                self.refreshChartSummaryStates(reason: "ticker_stream_update")
+                self.applyLiveChartPriceUpdate(
+                    price: payload.ticker.price,
+                    quantity: 0,
+                    timestamp: payload.ticker.timestamp ?? Date()
+                )
             }
         }
 
         publicWebSocketService.onOrderbookReceived = { [weak self] payload in
-            Task { @MainActor in
-                guard let self else { return }
-                guard self.selectedCoin?.symbol == payload.symbol, self.exchange.rawValue == payload.exchange else { return }
-                let key = self.chartResourceKey(exchange: self.exchange, symbol: payload.symbol)
-                let entry = OrderbookCacheEntry(
-                    key: key,
-                    orderbook: payload.orderbook,
-                    meta: ResponseMeta(
-                        fetchedAt: payload.orderbook.timestamp,
-                        isStale: payload.orderbook.isStale,
-                        warningMessage: nil,
-                        partialFailureMessage: nil
-                    ),
-                    fetchedAt: payload.orderbook.timestamp ?? Date()
-                )
-                self.orderbookCacheByKey[key] = entry
-                self.lastSuccessfulOrderBook[key] = entry
-                self.updateOrderbookState(
-                    payload.orderbook.asks.isEmpty && payload.orderbook.bids.isEmpty
-                        ? .empty
-                        : .loaded(payload.orderbook)
-                )
-                self.refreshPublicStatusViewStates()
-            }
+            guard let self else { return }
+            guard self.selectedCoin?.symbol == payload.symbol, self.exchange.rawValue == payload.exchange else { return }
+            let key = self.chartResourceKey(exchange: self.exchange, symbol: payload.symbol)
+            let entry = OrderbookCacheEntry(
+                key: key,
+                orderbook: payload.orderbook,
+                meta: ResponseMeta(
+                    fetchedAt: payload.orderbook.timestamp,
+                    isStale: payload.orderbook.isStale,
+                    warningMessage: nil,
+                    partialFailureMessage: nil
+                ),
+                fetchedAt: payload.orderbook.timestamp ?? Date()
+            )
+            self.orderbookCacheByKey[key] = entry
+            self.lastSuccessfulOrderBook[key] = entry
+            self.updateOrderbookState(
+                payload.orderbook.asks.isEmpty && payload.orderbook.bids.isEmpty
+                    ? .empty
+                    : .loaded(payload.orderbook)
+            )
+            self.refreshPublicStatusViewStates()
         }
 
         publicWebSocketService.onTradesReceived = { [weak self] payload in
-            Task { @MainActor in
-                guard let self else { return }
-                guard self.selectedCoin?.symbol == payload.symbol, self.exchange.rawValue == payload.exchange else { return }
-                let key = self.chartResourceKey(exchange: self.exchange, symbol: payload.symbol)
-                let entry = TradesCacheEntry(
-                    key: key,
-                    trades: payload.trades,
-                    meta: ResponseMeta(
-                        fetchedAt: payload.trades.first?.executedDate,
-                        isStale: false,
-                        warningMessage: nil,
-                        partialFailureMessage: nil
-                    ),
-                    fetchedAt: payload.trades.first?.executedDate ?? Date()
-                )
-                self.tradesCacheByKey[key] = entry
-                if payload.trades.isEmpty == false {
-                    self.lastSuccessfulTrades[key] = entry
-                }
-                self.updateTradesState(payload.trades.isEmpty ? .empty : .loaded(payload.trades))
-                if self.activeTab == .chart {
-                    self.applyLiveChartTrades(payload.trades)
-                }
-                self.refreshPublicStatusViewStates()
+            guard let self else { return }
+            guard self.selectedCoin?.symbol == payload.symbol, self.exchange.rawValue == payload.exchange else { return }
+            let key = self.chartResourceKey(exchange: self.exchange, symbol: payload.symbol)
+            let entry = TradesCacheEntry(
+                key: key,
+                trades: payload.trades,
+                meta: ResponseMeta(
+                    fetchedAt: payload.trades.first?.executedDate,
+                    isStale: false,
+                    warningMessage: nil,
+                    partialFailureMessage: nil
+                ),
+                fetchedAt: payload.trades.first?.executedDate ?? Date()
+            )
+            self.tradesCacheByKey[key] = entry
+            if payload.trades.isEmpty == false {
+                self.lastSuccessfulTrades[key] = entry
             }
+            self.updateTradesState(payload.trades.isEmpty ? .empty : .loaded(payload.trades))
+            if self.activeTab == .chart {
+                self.applyLiveChartTrades(payload.trades)
+            }
+            self.refreshPublicStatusViewStates()
         }
 
         publicWebSocketService.onCandlesReceived = { [weak self] payload in
-            Task { @MainActor in
-                guard let self else { return }
-                guard self.selectedCoin?.symbol == payload.symbol, self.exchange.rawValue == payload.exchange else { return }
-                let mappedInterval = self.resolvedChartInterval(
-                    requestedInterval: self.chartPeriod,
-                    symbol: payload.symbol,
-                    exchange: self.exchange
-                )
-                guard mappedInterval == payload.interval.lowercased() else { return }
-                self.mergeCandleUpdate(payload)
-                self.refreshPublicStatusViewStates()
-            }
+            guard let self else { return }
+            guard self.selectedCoin?.symbol == payload.symbol, self.exchange.rawValue == payload.exchange else { return }
+            let mappedInterval = self.resolvedChartInterval(
+                requestedInterval: self.chartPeriod,
+                symbol: payload.symbol,
+                exchange: self.exchange
+            )
+            guard mappedInterval == payload.interval.lowercased() else { return }
+            self.mergeCandleUpdate(payload)
+            self.refreshPublicStatusViewStates()
         }
     }
 

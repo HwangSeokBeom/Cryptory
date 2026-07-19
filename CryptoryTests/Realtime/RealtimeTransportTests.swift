@@ -61,7 +61,7 @@ final class RealtimeTransportTests: XCTestCase {
         // Reconciliation: every delivered frame is either the .opened control
         // event or a message counted by the engine — nothing is lost or
         // duplicated between the transport and the decoder.
-        XCTAssertEqual(connection.deliveredFrameCount, snapshot.messagesReceived + 1)
+        XCTAssertEqual(connection.deliveredFrameCount, snapshot.transportFramesReceived + 1)
     }
 
     func testProducerFasterThanDecoderNeverBuildsAppSideQueue() async {
@@ -83,7 +83,7 @@ final class RealtimeTransportTests: XCTestCase {
         XCTAssertTrue(drained, "decoded=\(snapshot.messagesDecoded)")
         XCTAssertEqual(connection.maxConcurrentReceiveWaiters, 1, "configured transport bound (1 frame) never exceeded")
         XCTAssertEqual(snapshot.decodeFailures, 0, "no raw frame is silently discarded")
-        XCTAssertEqual(connection.deliveredFrameCount, snapshot.messagesReceived + 1)
+        XCTAssertEqual(connection.deliveredFrameCount, snapshot.transportFramesReceived + 1)
         await engine.unregister(consumerID)
     }
 
@@ -124,10 +124,10 @@ final class RealtimeTransportTests: XCTestCase {
         XCTAssertTrue(connection.isClosed)
 
         // Frames scripted after disconnect are never pulled into the engine.
-        let receivedBefore = await engine.metricsSnapshot().messagesReceived
+        let receivedBefore = await engine.metricsSnapshot().transportFramesReceived
         connection.scriptText(RealtimeFixtureLoader.tickerMessage(price: 999))
         await settle()
-        let receivedAfter = await engine.metricsSnapshot().messagesReceived
+        let receivedAfter = await engine.metricsSnapshot().transportFramesReceived
         XCTAssertEqual(receivedAfter, receivedBefore, "dead connection frames must not reach the decoder")
         XCTAssertFalse(connection.hasPendingReceiveWaiter)
     }
@@ -159,7 +159,7 @@ final class RealtimeTransportTests: XCTestCase {
         XCTAssertTrue(drained, "decoded=\(snapshot.messagesDecoded)")
         XCTAssertEqual(connection.maxConcurrentReceiveWaiters, 1, "100k replay must not rely on an unbounded stream")
         XCTAssertEqual(connection.pendingScriptedEventCount, 0)
-        XCTAssertEqual(connection.deliveredFrameCount, snapshot.messagesReceived + 1)
+        XCTAssertEqual(connection.deliveredFrameCount, snapshot.transportFramesReceived + 1)
         await engine.unregister(consumerID)
         _ = await consumerTask.value
     }

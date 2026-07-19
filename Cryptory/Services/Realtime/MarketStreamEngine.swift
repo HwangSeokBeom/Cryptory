@@ -109,11 +109,11 @@ actor MarketStreamEngine {
     /// Removes a consumer: ends its stream and releases its subscriptions.
     func unregister(_ id: UUID) {
         guard var consumer = consumers.removeValue(forKey: id) else { return }
-        // Pending events discarded with the consumer are explicit drops —
-        // the conservation invariant (decoded == emitted + coalesced +
-        // dropped) must hold at every point; nothing is lost silently.
+        // Pending events discarded with the consumer are explicit, counted
+        // drops — the delivery-side conservation equation (documented on
+        // RealtimeMetrics) must hold; nothing is lost silently.
         if consumer.buffer.count > 0 {
-            metrics.recordEventsDropped(consumer.buffer.count)
+            metrics.recordBufferEventsDropped(consumer.buffer.count)
         }
         consumer.waiter?.resume(returning: nil)
         consumer.waiter = nil
@@ -200,12 +200,19 @@ actor MarketStreamEngine {
         snapshot.uptime = connectedAt.map { clock.now - $0 } ?? .zero
         snapshot.activeSubscriptionCount = registry.totalOwnershipCount
         snapshot.upstreamSubscriptionCount = registry.subscriptionCount
-        snapshot.messagesReceived = metrics.messagesReceived
+        snapshot.registeredConsumerCount = consumers.count
+        snapshot.transportFramesReceived = metrics.transportFramesReceived
         snapshot.messagesDecoded = metrics.messagesDecoded
+        snapshot.controlMessages = metrics.controlMessages
         snapshot.decodeFailures = metrics.decodeFailures
-        snapshot.messagesEmitted = metrics.messagesEmitted
-        snapshot.tickersCoalesced = metrics.tickersCoalesced
-        snapshot.eventsDropped = metrics.eventsDropped
+        snapshot.logicalEventsEmitted = metrics.logicalEventsEmitted
+        snapshot.consumerEnqueues = metrics.consumerEnqueues
+        snapshot.consumerDeliveries = metrics.consumerDeliveries
+        snapshot.tickerEventsCoalesced = metrics.tickerEventsCoalesced
+        snapshot.orderbookSnapshotsReplaced = metrics.orderbookSnapshotsReplaced
+        snapshot.candleUpdatesMergedOrReplaced = metrics.candleUpdatesMergedOrReplaced
+        snapshot.tradeEventsDropped = metrics.tradeEventsDropped
+        snapshot.bufferEventsDropped = metrics.bufferEventsDropped
         snapshot.staleEventsIgnored = metrics.staleEventsIgnored
         snapshot.reconnectCount = metrics.reconnectCount
         snapshot.consecutiveReconnectFailures = metrics.consecutiveReconnectFailures
@@ -398,7 +405,7 @@ actor MarketStreamEngine {
             metrics.recordStaleEventIgnored()
             return
         }
-        metrics.recordMessageReceived()
+        metrics.recordTransportFrameReceived()
 
         switch MarketStreamDecoder.decode(text) {
         case .event(let parsed):
@@ -406,7 +413,7 @@ actor MarketStreamEngine {
             markConnectionUseful(generation: gen)
             dispatch(Self.streamEvent(for: parsed))
         case .control:
-            break
+            metrics.recordControlMessage()
         case .failure:
             // Malformed messages increment metrics but never terminate the
             // stream or the connection.
@@ -617,12 +624,16 @@ actor MarketStreamEngine {
 
     private func dispatch(_ event: MarketStreamEvent) {
         guard !consumers.isEmpty else { return }
+        // One logical emission, fanned out once per registered consumer —
+        // the two counts are deliberately separate (see RealtimeMetrics).
+        metrics.recordLogicalEventEmitted()
         let now = clock.now
         for (id, var consumer) in consumers {
+            metrics.recordConsumerEnqueue()
             if let waiter = consumer.waiter {
                 consumer.waiter = nil
                 consumers[id] = consumer
-                metrics.recordEmission(latency: 0)
+                metrics.recordConsumerDelivery(latency: 0)
                 waiter.resume(returning: event)
                 continue
             }
@@ -636,8 +647,17 @@ actor MarketStreamEngine {
             if result.coalescedTicker {
                 metrics.recordTickerCoalesced()
             }
-            if result.droppedEvents > 0 {
-                metrics.recordEventsDropped(result.droppedEvents)
+            if result.replacedOrderbook {
+                metrics.recordOrderbookSnapshotReplaced()
+            }
+            if result.mergedCandle {
+                metrics.recordCandleUpdateMerged()
+            }
+            if result.droppedTradeBatches > 0 {
+                metrics.recordTradeEventsDropped(result.droppedTradeBatches)
+            }
+            if result.droppedByCapacity > 0 {
+                metrics.recordBufferEventsDropped(result.droppedByCapacity)
             }
             metrics.recordBufferUsage(consumer.buffer.count)
         }
@@ -652,7 +672,7 @@ actor MarketStreamEngine {
         if var consumer = consumers[id], let queued = consumer.buffer.dequeue() {
             consumers[id] = consumer
             let latency = (clock.now - queued.enqueuedAt).asSeconds
-            metrics.recordEmission(latency: latency)
+            metrics.recordConsumerDelivery(latency: latency)
             return queued.event
         }
         return await withTaskCancellationHandler {

@@ -29,14 +29,27 @@ struct RealtimePipelineLabView: View {
                 metricRow("Upstream subscriptions", "\(viewModel.snapshot.upstreamSubscriptionCount)")
             }
 
-            Section("Messages") {
-                metricRow("Received", "\(viewModel.snapshot.messagesReceived)")
+            // Ingress counters are global (one per raw frame); delivery
+            // counters are summed across consumers (one decoded event fans
+            // out once per consumer) — the labels keep the two apart.
+            Section("Ingress (global)") {
+                metricRow("Transport frames received", "\(viewModel.snapshot.transportFramesReceived)")
                 metricRow("Decoded", "\(viewModel.snapshot.messagesDecoded)")
+                metricRow("Control messages", "\(viewModel.snapshot.controlMessages)")
                 metricRow("Decode failures", "\(viewModel.snapshot.decodeFailures)")
-                metricRow("Emitted", "\(viewModel.snapshot.messagesEmitted)")
-                metricRow("Tickers coalesced", "\(viewModel.snapshot.tickersCoalesced)")
-                metricRow("Dropped (explicit)", "\(viewModel.snapshot.eventsDropped)")
                 metricRow("Stale ignored", "\(viewModel.snapshot.staleEventsIgnored)")
+            }
+
+            Section("Delivery (per-consumer totals)") {
+                metricRow("Consumers", "\(viewModel.snapshot.registeredConsumerCount)")
+                metricRow("Logical events emitted", "\(viewModel.snapshot.logicalEventsEmitted)")
+                metricRow("Consumer enqueues", "\(viewModel.snapshot.consumerEnqueues)")
+                metricRow("Consumer deliveries", "\(viewModel.snapshot.consumerDeliveries)")
+                metricRow("Tickers coalesced", "\(viewModel.snapshot.tickerEventsCoalesced)")
+                metricRow("Orderbook snapshots replaced", "\(viewModel.snapshot.orderbookSnapshotsReplaced)")
+                metricRow("Candle updates merged", "\(viewModel.snapshot.candleUpdatesMergedOrReplaced)")
+                metricRow("Trade batches dropped (bounded)", "\(viewModel.snapshot.tradeEventsDropped)")
+                metricRow("Buffer drops (counted)", "\(viewModel.snapshot.bufferEventsDropped)")
             }
 
             Section("Latency") {

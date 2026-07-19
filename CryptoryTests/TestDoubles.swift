@@ -1099,11 +1099,11 @@ final class SpyPublicContentRepository: PublicContentRepositoryProtocol {
 
 @MainActor
 final class NoOpPublicWebSocketService: @MainActor PublicWebSocketServicing {
-    var onConnectionStateChange: ((PublicWebSocketConnectionState) -> Void)?
-    var onTickerReceived: ((TickerStreamPayload) -> Void)?
-    var onOrderbookReceived: ((OrderbookStreamPayload) -> Void)?
-    var onTradesReceived: ((TradesStreamPayload) -> Void)?
-    var onCandlesReceived: ((CandleStreamPayload) -> Void)?
+    var onConnectionStateChange: (@MainActor (PublicWebSocketConnectionState) -> Void)?
+    var onTickerReceived: (@MainActor (TickerStreamPayload) -> Void)?
+    var onOrderbookReceived: (@MainActor (OrderbookStreamPayload) -> Void)?
+    var onTradesReceived: (@MainActor (TradesStreamPayload) -> Void)?
+    var onCandlesReceived: (@MainActor (CandleStreamPayload) -> Void)?
 
     func connect() {
         Task { @MainActor [onConnectionStateChange] in
@@ -1117,11 +1117,11 @@ final class NoOpPublicWebSocketService: @MainActor PublicWebSocketServicing {
 
 @MainActor
 final class RecordingPublicWebSocketService: @MainActor PublicWebSocketServicing {
-    var onConnectionStateChange: ((PublicWebSocketConnectionState) -> Void)?
-    var onTickerReceived: ((TickerStreamPayload) -> Void)?
-    var onOrderbookReceived: ((OrderbookStreamPayload) -> Void)?
-    var onTradesReceived: ((TradesStreamPayload) -> Void)?
-    var onCandlesReceived: ((CandleStreamPayload) -> Void)?
+    var onConnectionStateChange: (@MainActor (PublicWebSocketConnectionState) -> Void)?
+    var onTickerReceived: (@MainActor (TickerStreamPayload) -> Void)?
+    var onOrderbookReceived: (@MainActor (OrderbookStreamPayload) -> Void)?
+    var onTradesReceived: (@MainActor (TradesStreamPayload) -> Void)?
+    var onCandlesReceived: (@MainActor (CandleStreamPayload) -> Void)?
 
     private(set) var connectCallCount = 0
     private(set) var disconnectCallCount = 0
@@ -1148,12 +1148,13 @@ final class RecordingPublicWebSocketService: @MainActor PublicWebSocketServicing
     }
 }
 
-final class ManualPublicWebSocketService: PublicWebSocketServicing {
-    var onConnectionStateChange: ((PublicWebSocketConnectionState) -> Void)?
-    var onTickerReceived: ((TickerStreamPayload) -> Void)?
-    var onOrderbookReceived: ((OrderbookStreamPayload) -> Void)?
-    var onTradesReceived: ((TradesStreamPayload) -> Void)?
-    var onCandlesReceived: ((CandleStreamPayload) -> Void)?
+@MainActor
+final class ManualPublicWebSocketService: @MainActor PublicWebSocketServicing {
+    var onConnectionStateChange: (@MainActor (PublicWebSocketConnectionState) -> Void)?
+    var onTickerReceived: (@MainActor (TickerStreamPayload) -> Void)?
+    var onOrderbookReceived: (@MainActor (OrderbookStreamPayload) -> Void)?
+    var onTradesReceived: (@MainActor (TradesStreamPayload) -> Void)?
+    var onCandlesReceived: (@MainActor (CandleStreamPayload) -> Void)?
 
     func connect() {}
     func disconnect() {}

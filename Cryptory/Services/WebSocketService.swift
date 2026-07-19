@@ -284,12 +284,16 @@ enum PrivateWebSocketMessageParser {
     }
 }
 
+/// Delivery contract: every callback closure is `@MainActor` — implementers
+/// must invoke them on the main actor, and consumers may therefore apply
+/// state synchronously without re-dispatching (no extra per-event
+/// `Task { @MainActor }` hop).
 protocol PublicWebSocketServicing: AnyObject {
-    var onConnectionStateChange: ((PublicWebSocketConnectionState) -> Void)? { get set }
-    var onTickerReceived: ((TickerStreamPayload) -> Void)? { get set }
-    var onOrderbookReceived: ((OrderbookStreamPayload) -> Void)? { get set }
-    var onTradesReceived: ((TradesStreamPayload) -> Void)? { get set }
-    var onCandlesReceived: ((CandleStreamPayload) -> Void)? { get set }
+    var onConnectionStateChange: (@MainActor (PublicWebSocketConnectionState) -> Void)? { get set }
+    var onTickerReceived: (@MainActor (TickerStreamPayload) -> Void)? { get set }
+    var onOrderbookReceived: (@MainActor (OrderbookStreamPayload) -> Void)? { get set }
+    var onTradesReceived: (@MainActor (TradesStreamPayload) -> Void)? { get set }
+    var onCandlesReceived: (@MainActor (CandleStreamPayload) -> Void)? { get set }
 
     func connect()
     func disconnect()
@@ -313,11 +317,11 @@ protocol PrivateWebSocketServicing: AnyObject {
 )
 final class WebSocketService: PublicWebSocketServicing, @unchecked Sendable {
     private let instanceID = AppLogger.nextInstanceID(scope: "PublicWebSocketService")
-    var onConnectionStateChange: ((PublicWebSocketConnectionState) -> Void)?
-    var onTickerReceived: ((TickerStreamPayload) -> Void)?
-    var onOrderbookReceived: ((OrderbookStreamPayload) -> Void)?
-    var onTradesReceived: ((TradesStreamPayload) -> Void)?
-    var onCandlesReceived: ((CandleStreamPayload) -> Void)?
+    var onConnectionStateChange: (@MainActor (PublicWebSocketConnectionState) -> Void)?
+    var onTickerReceived: (@MainActor (TickerStreamPayload) -> Void)?
+    var onOrderbookReceived: (@MainActor (OrderbookStreamPayload) -> Void)?
+    var onTradesReceived: (@MainActor (TradesStreamPayload) -> Void)?
+    var onCandlesReceived: (@MainActor (CandleStreamPayload) -> Void)?
 
     private let session: URLSession
     private let urls: [URL]
@@ -329,7 +333,9 @@ final class WebSocketService: PublicWebSocketServicing, @unchecked Sendable {
             guard oldValue != connectionState else { return }
             AppLogger.debug(.websocket, "Public connection state -> \(describe(connectionState))")
             DispatchQueue.main.async { [connectionState, weak self] in
-                self?.onConnectionStateChange?(connectionState)
+                MainActor.assumeIsolated {
+                    self?.onConnectionStateChange?(connectionState)
+                }
             }
         }
     }
@@ -516,19 +522,21 @@ final class WebSocketService: PublicWebSocketServicing, @unchecked Sendable {
     }
 
     private func parseMessage(_ text: String) {
+        // The protocol's callbacks are @MainActor; this legacy class hops to
+        // the main queue and asserts the isolation it just established.
         switch MarketWebSocketMessageParser.parse(text) {
         case .some(.ticker(let payload)):
             let handler = onTickerReceived
-            DispatchQueue.main.async { [handler] in handler?(payload) }
+            DispatchQueue.main.async { MainActor.assumeIsolated { handler?(payload) } }
         case .some(.orderbook(let payload)):
             let handler = onOrderbookReceived
-            DispatchQueue.main.async { [handler] in handler?(payload) }
+            DispatchQueue.main.async { MainActor.assumeIsolated { handler?(payload) } }
         case .some(.trades(let payload)):
             let handler = onTradesReceived
-            DispatchQueue.main.async { [handler] in handler?(payload) }
+            DispatchQueue.main.async { MainActor.assumeIsolated { handler?(payload) } }
         case .some(.candles(let payload)):
             let handler = onCandlesReceived
-            DispatchQueue.main.async { [handler] in handler?(payload) }
+            DispatchQueue.main.async { MainActor.assumeIsolated { handler?(payload) } }
         case .none:
             break
         }

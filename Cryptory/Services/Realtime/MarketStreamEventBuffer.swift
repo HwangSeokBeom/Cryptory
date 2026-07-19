@@ -20,8 +20,14 @@ struct MarketStreamEventBuffer {
 
     struct EnqueueResult {
         var coalescedTicker = false
-        var replacedSnapshot = false
-        var droppedEvents = 0
+        var replacedOrderbook = false
+        var mergedCandle = false
+        /// Oldest batch dropped by the per-market trade bound.
+        var droppedTradeBatches = 0
+        /// Events dropped by the total-capacity backstop.
+        var droppedByCapacity = 0
+
+        var totalDropped: Int { droppedTradeBatches + droppedByCapacity }
     }
 
     /// `nil` entries are tombstones left by mid-queue drops.
@@ -48,10 +54,15 @@ struct MarketStreamEventBuffer {
             let previous = storage[index]?.event
             let merged = Self.merge(pending: previous, incoming: event)
             storage[index] = Queued(event: merged, enqueuedAt: now)
-            if case .ticker = event {
+            switch event {
+            case .ticker:
                 result.coalescedTicker = true
-            } else {
-                result.replacedSnapshot = true
+            case .orderbook:
+                result.replacedOrderbook = true
+            case .candles:
+                result.mergedCandle = true
+            case .trades, .connectionState:
+                break
             }
             return result
         }
@@ -62,7 +73,7 @@ struct MarketStreamEventBuffer {
                 storage[oldest] = nil
                 indices.removeFirst()
                 liveCount -= 1
-                result.droppedEvents += 1
+                result.droppedTradeBatches += 1
             }
             indices.append(storage.count)
             tradeIndices[tradeKey] = indices
@@ -75,7 +86,7 @@ struct MarketStreamEventBuffer {
         liveCount += 1
 
         if liveCount > capacity {
-            result.droppedEvents += dropOldestDroppable()
+            result.droppedByCapacity += dropOldestDroppable()
         }
 
         compactIfNeeded()

@@ -63,7 +63,7 @@ final class MarketStreamEngineTests: XCTestCase {
 
     private func engineStateDescription(_ engine: MarketStreamEngine) async -> String {
         let snapshot = await engine.metricsSnapshot()
-        return "state=\(snapshot.connectionState) gen=\(snapshot.generation) received=\(snapshot.messagesReceived) decoded=\(snapshot.messagesDecoded) dropped=\(snapshot.eventsDropped) reconnects=\(snapshot.reconnectCount) hbSuccess=\(snapshot.heartbeatSuccessCount) hbFailure=\(snapshot.heartbeatFailureCount) stale=\(snapshot.staleEventsIgnored)"
+        return "state=\(snapshot.connectionState) gen=\(snapshot.generation) frames=\(snapshot.transportFramesReceived) decoded=\(snapshot.messagesDecoded) dropped=\(snapshot.tradeEventsDropped + snapshot.bufferEventsDropped) reconnects=\(snapshot.reconnectCount) hbSuccess=\(snapshot.heartbeatSuccessCount) hbFailure=\(snapshot.heartbeatFailureCount) stale=\(snapshot.staleEventsIgnored)"
     }
 
     /// XCTAssertTrue variant whose failure message includes engine state
@@ -867,8 +867,8 @@ final class MarketStreamEngineTests: XCTestCase {
         }
         XCTAssertEqual(tickers, [104])
         let snapshot = await engine.metricsSnapshot()
-        XCTAssertEqual(snapshot.tickersCoalesced, 4)
-        XCTAssertEqual(snapshot.eventsDropped, 0, "coalescing is not dropping")
+        XCTAssertEqual(snapshot.tickerEventsCoalesced, 4)
+        XCTAssertEqual(snapshot.tradeEventsDropped + snapshot.bufferEventsDropped, 0, "coalescing is not dropping")
         await engine.unregister(consumerID)
     }
 
@@ -909,7 +909,7 @@ final class MarketStreamEngineTests: XCTestCase {
         for message in RealtimeFixtureLoader.malformedPayloadStream() {
             connection.scriptText(message)
         }
-        let processed = await waitUntil { await engine.metricsSnapshot().messagesReceived == 6 }
+        let processed = await waitUntil { await engine.metricsSnapshot().transportFramesReceived == 6 }
         await assertTrue(processed, engine: engine)
 
         // The stream survives: the valid trailing ticker arrives.
@@ -982,12 +982,17 @@ final class MarketStreamEngineTests: XCTestCase {
         let emitted = await consumerTask.value
 
         let snapshot = await engine.metricsSnapshot()
-        XCTAssertEqual(snapshot.messagesReceived, 100_000)
+        XCTAssertEqual(snapshot.transportFramesReceived, 100_000)
         XCTAssertEqual(snapshot.decodeFailures, 0)
+        // Single-consumer delivery conservation: every decoded ticker was
+        // delivered to the one consumer, coalesced in its buffer, or counted
+        // as an explicit drop — never silently lost. (Valid only because
+        // exactly one consumer is registered; with N consumers the
+        // delivery-side counters scale by N.)
         XCTAssertEqual(
-            emitted + snapshot.tickersCoalesced + snapshot.eventsDropped,
+            emitted + snapshot.tickerEventsCoalesced + snapshot.tradeEventsDropped + snapshot.bufferEventsDropped,
             100_000,
-            "every ticker is emitted, coalesced, or explicitly dropped — never silently lost"
+            "every ticker is delivered, coalesced, or explicitly dropped — never silently lost"
         )
         XCTAssertLessThanOrEqual(snapshot.maxBufferUsage, 1024)
     }

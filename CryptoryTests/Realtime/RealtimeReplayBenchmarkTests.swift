@@ -70,8 +70,8 @@ final class RealtimeReplayBenchmarkTests: XCTestCase {
         throughput_msgs_per_s=\(String(format: "%.0f", throughput)) \
         decoded=\(snapshot.messagesDecoded) \
         emitted=\(emitted) \
-        coalesced=\(snapshot.tickersCoalesced) \
-        dropped=\(snapshot.eventsDropped) \
+        coalesced=\(snapshot.tickerEventsCoalesced) \
+        dropped=\(snapshot.tradeEventsDropped + snapshot.bufferEventsDropped) \
         decode_failures=\(snapshot.decodeFailures) \
         reconnects=\(snapshot.reconnectCount) \
         max_buffer=\(snapshot.maxBufferUsage) \
@@ -79,13 +79,15 @@ final class RealtimeReplayBenchmarkTests: XCTestCase {
         latency_p95_ms=\(snapshot.latencyP95.map { String(format: "%.2f", $0 * 1000) } ?? "n/a")
         """)
 
-        XCTAssertEqual(snapshot.messagesReceived, messageCount)
+        XCTAssertEqual(snapshot.transportFramesReceived, messageCount)
         XCTAssertEqual(snapshot.messagesDecoded, messageCount)
         XCTAssertEqual(snapshot.decodeFailures, 0)
+        // Single-consumer delivery conservation (valid because exactly one
+        // consumer is registered in this benchmark).
         XCTAssertEqual(
-            emitted + snapshot.tickersCoalesced + snapshot.eventsDropped,
+            emitted + snapshot.tickerEventsCoalesced + snapshot.tradeEventsDropped + snapshot.bufferEventsDropped,
             messageCount,
-            "conservation: every message emitted, coalesced, or counted as dropped"
+            "conservation: every ticker delivered, coalesced, or counted as dropped"
         )
     }
 
