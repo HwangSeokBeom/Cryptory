@@ -103,6 +103,37 @@ private enum DriverTestError: Error {
     case scripted
 }
 
+/// Synchronous one-shot gate used only at the production wrapper's
+/// pre-install seam. It blocks the receive task without sleeps while the test
+/// cancels it, then remains open for subsequent receives.
+private final class ReceiveInstallGate: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var entered = false
+    private var open = false
+
+    var hasEntered: Bool {
+        condition.lock(); defer { condition.unlock() }
+        return entered
+    }
+
+    func wait() {
+        condition.lock()
+        entered = true
+        condition.broadcast()
+        while !open {
+            condition.wait()
+        }
+        condition.unlock()
+    }
+
+    func release() {
+        condition.lock()
+        open = true
+        condition.broadcast()
+        condition.unlock()
+    }
+}
+
 /// Direct, deterministic tests for the production transport wrapper's state
 /// machine (`URLSessionWebSocketTransportConnection`), exercised through the
 /// injected `WebSocketSocketDriver` seam and the internal `handleSocket*`
@@ -208,6 +239,47 @@ final class URLSessionTransportStateMachineTests: XCTestCase {
             return XCTFail("cancellation must release the waiter by throwing")
         }
         XCTAssertTrue(error is CancellationError, "got \(error)")
+    }
+
+    func testCancelBeforeWaiterInstallDoesNotStartDriverAndNextReceiveWorks() async throws {
+        let driver = ControlledSocketDriver()
+        let gate = ReceiveInstallGate()
+        let connection = URLSessionWebSocketTransportConnection(
+            driver: driver,
+            beforeReceiveWaiterInstall: { gate.wait() }
+        )
+        let cancelled = startReceive(on: connection)
+        let entered = await waitUntil { gate.hasEntered }
+        XCTAssertTrue(entered, "receive must enter the deterministic pre-install gate")
+
+        cancelled.cancel()
+        gate.release()
+        guard case .failure(let error) = await cancelled.value else {
+            return XCTFail("cancel-before-install must throw")
+        }
+        XCTAssertTrue(error is CancellationError, "got \(error)")
+        XCTAssertEqual(driver.receiveCallCount, 0, "an already-cancelled receive must not start the driver")
+        XCTAssertEqual(
+            connection.debugReceiveState,
+            .init(
+                pendingControlCount: 0,
+                hasPendingText: false,
+                hasPendingTerminal: false,
+                ended: false,
+                hasWaiter: false,
+                receiveInFlight: false
+            ),
+            "no waiter, canceled slot, or receive ownership may remain"
+        )
+
+        let next = startReceive(on: connection)
+        let started = await waitUntil { driver.receiveCallCount == 1 }
+        XCTAssertTrue(started, "a subsequent normal receive must acquire ownership")
+        driver.takeReceiveCompletion()?(.success(.string("fresh")))
+        guard case .success(.text(let text)) = await next.value else {
+            return XCTFail("the subsequent normal receive must work")
+        }
+        XCTAssertEqual(text, "fresh")
     }
 
     func testLateCompletionAfterCancelFillsTheSingleDocumentedSlot() async throws {
@@ -345,7 +417,7 @@ final class URLSessionTransportStateMachineTests: XCTestCase {
         connection.close()
         connection.close()
         connection.close()
-        XCTAssertEqual(driver.cancelCount, 3, "each close cancels the driver; state stays ended without traps")
+        XCTAssertEqual(driver.cancelCount, 1, "close must cancel the driver at most once")
 
         let receive = startReceive(on: connection)
         guard case .failure = await receive.value else {
@@ -382,6 +454,110 @@ final class URLSessionTransportStateMachineTests: XCTestCase {
             return XCTFail("receive after .closed must throw")
         }
         XCTAssertTrue(error is WebSocketTransportError, "got \(error)")
+    }
+
+    func testCloseWithoutWaiterQueuesOneTerminalEventThenStaysEnded() async {
+        let (connection, _) = makeConnection()
+        connection.handleSocketOpened()
+        connection.handleSocketClosed(code: 1000, reason: "first")
+
+        var state = connection.debugReceiveState
+        XCTAssertTrue(state.ended, "accepting close marks the connection terminal immediately")
+        XCTAssertEqual(state.pendingControlCount, 0, "terminal acceptance clears non-terminal control state")
+        XCTAssertTrue(state.hasPendingTerminal, "one terminal event remains consumable")
+        XCTAssertFalse(state.hasPendingText)
+        XCTAssertFalse(state.hasWaiter)
+
+        let first = startReceive(on: connection)
+        guard case .success(.closed(let code, let reason)) = await first.value else {
+            return XCTFail("the queued terminal close must be observable once")
+        }
+        XCTAssertEqual(code, 1000)
+        XCTAssertEqual(reason, "first")
+
+        state = connection.debugReceiveState
+        XCTAssertTrue(state.ended, "consuming the event does not clear permanent terminal state")
+        XCTAssertFalse(state.hasPendingTerminal)
+        let second = startReceive(on: connection)
+        guard case .failure(let error) = await second.value else {
+            return XCTFail("all later receives must fail as ended")
+        }
+        XCTAssertTrue(error is WebSocketTransportError)
+    }
+
+    func testLateTextAndErrorAfterQueuedCloseCannotResurrectMailbox() async throws {
+        let (connection, driver) = makeConnection()
+        let pending = startReceive(on: connection)
+        await waitUntil { driver.receiveCallCount == 1 }
+        pending.cancel()
+        _ = await pending.value
+
+        connection.handleSocketClosed(code: 1001, reason: "terminal")
+        let lateCompletion = try XCTUnwrap(driver.takeReceiveCompletion())
+        lateCompletion(.success(.string("late-text")))
+        connection.handleTaskCompleted(error: DriverTestError.scripted)
+
+        let state = connection.debugReceiveState
+        XCTAssertTrue(state.ended)
+        XCTAssertFalse(state.hasPendingText, "late success cannot populate the canceled-waiter slot after terminal close")
+        XCTAssertTrue(state.hasPendingTerminal, "late error cannot replace the accepted close")
+        XCTAssertFalse(state.hasWaiter)
+        XCTAssertFalse(state.receiveInFlight)
+        XCTAssertEqual(state.pendingControlCount, 0)
+
+        let terminal = startReceive(on: connection)
+        guard case .success(.closed(let code, let reason)) = await terminal.value else {
+            return XCTFail("the first accepted close must win")
+        }
+        XCTAssertEqual(code, 1001)
+        XCTAssertEqual(reason, "terminal")
+        let later = startReceive(on: connection)
+        guard case .failure(let error) = await later.value else {
+            return XCTFail("no text or second terminal result may follow close")
+        }
+        XCTAssertTrue(error is WebSocketTransportError)
+    }
+
+    func testDuplicateCloseAndCloseThenErrorExposeOnlyFirstClose() async {
+        let (connection, _) = makeConnection()
+        connection.handleSocketClosed(code: 1000, reason: "first")
+        connection.handleSocketClosed(code: 1001, reason: "duplicate")
+        connection.handleTaskCompleted(error: DriverTestError.scripted)
+
+        let first = startReceive(on: connection)
+        guard case .success(.closed(let code, let reason)) = await first.value else {
+            return XCTFail("first close must be the sole terminal event")
+        }
+        XCTAssertEqual(code, 1000)
+        XCTAssertEqual(reason, "first")
+        XCTAssertFalse(connection.debugReceiveState.hasPendingTerminal, "duplicates must not accumulate")
+
+        for _ in 0..<3 {
+            let repeated = startReceive(on: connection)
+            guard case .failure(let error) = await repeated.value else {
+                return XCTFail("repeated receives after terminal consumption must fail")
+            }
+            XCTAssertTrue(error is WebSocketTransportError)
+        }
+    }
+
+    func testTerminalErrorThenClosePreservesOriginalErrorExactlyOnce() async {
+        let (connection, _) = makeConnection()
+        connection.handleTaskCompleted(error: DriverTestError.scripted)
+        connection.handleSocketClosed(code: 1000, reason: "late-close")
+
+        let first = startReceive(on: connection)
+        guard case .failure(let error) = await first.value else {
+            return XCTFail("the first accepted terminal error must surface")
+        }
+        XCTAssertTrue(error is DriverTestError)
+        XCTAssertFalse(connection.debugReceiveState.hasPendingTerminal)
+
+        let second = startReceive(on: connection)
+        guard case .failure(let ended) = await second.value else {
+            return XCTFail("the late close must not add a terminal event")
+        }
+        XCTAssertTrue(ended is WebSocketTransportError)
     }
 
     func testTerminalTaskErrorSurfacesExactlyOnce() async throws {

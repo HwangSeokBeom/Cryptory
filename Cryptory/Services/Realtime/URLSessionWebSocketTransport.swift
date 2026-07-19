@@ -42,9 +42,11 @@ extension URLSessionWebSocketTask: WebSocketSocketDriver {}
 /// Pull-based connection: exactly one repository-level `receive` is
 /// outstanding at a time, and it is only started when the engine calls
 /// `receive()`. The mailbox below holds at most a fixed handful of control
-/// events (`opened`, `closed`, one terminal error) plus at most one text
-/// frame (the documented canceled-waiter slot), so no repository-owned queue
-/// of raw frames can form. Foundation/network-stack internal buffering is
+/// state: one `opened`, one consumable terminal close/error, plus at most one
+/// text frame (the documented canceled-waiter slot). The terminal result is
+/// distinct from the permanent `ended` state, so consuming it cannot reopen
+/// the connection. No repository-owned queue of raw frames can form.
+/// Foundation/network-stack internal buffering is
 /// opaque and outside this bound; producer pressure beyond it stays in the
 /// network/kernel buffers under TCP flow control.
 ///
@@ -53,24 +55,33 @@ extension URLSessionWebSocketTask: WebSocketSocketDriver {}
 /// cancellation handlers. All mutable state lives in `Shared` and is only
 /// accessed through `SharedBox`'s mutex; continuations extracted under the
 /// lock are resumed exactly once outside it. The remaining stored properties
-/// are immutable references (`shared`, `driver`, `session`, `delegate`)
-/// assigned in `init`. The declaration is `@unchecked` only because
+/// are immutable references/closures (`shared`, `driver`, `session`,
+/// `delegate`, `beforeReceiveWaiterInstall`) assigned in `init`. The
+/// declaration is `@unchecked` only because
 /// `URLSessionWebSocketTask` (the production driver) and `URLSession` are
 /// not `Sendable`; both are thread-safe by Foundation's contract and are
 /// only used through their documented concurrent-safe APIs.
 final class URLSessionWebSocketTransportConnection: WebSocketTransportConnection, @unchecked Sendable {
+    private enum TerminalResult {
+        case event(WebSocketTransportEvent)
+        case failure(Error)
+    }
+
     private struct Shared {
-        /// Control events awaiting delivery: at most one `.opened` and one
-        /// `.closed` per connection lifetime — bounded by construction.
+        /// Non-terminal control events awaiting delivery: at most one
+        /// `.opened` per connection lifetime — bounded by construction.
         var pendingControl: [WebSocketTransportEvent] = []
         /// At most one frame, kept only if a completed receive lost its
         /// waiter to cancellation (the single documented canceled-waiter
         /// slot).
         var pendingText: String?
-        var terminalError: Error?
+        /// The first delegate/driver terminal result is consumable once. The
+        /// separate permanent `ended` bit remains true after it is consumed.
+        var pendingTerminal: TerminalResult?
         var ended = false
         var waiter: (id: UUID, continuation: CheckedContinuation<WebSocketTransportEvent, Error>)?
         var receiveInFlight = false
+        var closeRequested = false
     }
 
     /// Reference box so the connection and its session delegate share the
@@ -85,19 +96,39 @@ final class URLSessionWebSocketTransportConnection: WebSocketTransportConnection
             mutex.withLock(body)
         }
 
-        /// Delivers a delegate-reported control event: resumes the pending
-        /// waiter if one exists, otherwise appends to the bounded control
-        /// mailbox. No-op after the connection ended.
+        /// Delivers a delegate-reported control event. The first close marks
+        /// the connection ended immediately and is either delivered to the
+        /// waiter or retained as the single consumable terminal result.
         func deliverControlEvent(_ event: WebSocketTransportEvent) {
             let continuation: CheckedContinuation<WebSocketTransportEvent, Error>? = withLock { state in
-                guard !state.ended else { return nil }
-                if let waiter = state.waiter {
-                    state.waiter = nil
-                    if case .closed = event { state.ended = true }
-                    return waiter.continuation
+                switch event {
+                case .closed:
+                    guard !state.ended else { return nil }
+                    state.ended = true
+                    state.pendingControl.removeAll(keepingCapacity: false)
+                    state.pendingText = nil
+                    if let waiter = state.waiter {
+                        state.waiter = nil
+                        return waiter.continuation
+                    }
+                    state.pendingTerminal = .event(event)
+                    return nil
+                case .opened, .text:
+                    guard !state.ended else { return nil }
+                    if let waiter = state.waiter {
+                        state.waiter = nil
+                        return waiter.continuation
+                    }
+                    if case .opened = event,
+                       state.pendingControl.contains(where: {
+                           if case .opened = $0 { return true }
+                           return false
+                       }) {
+                        return nil
+                    }
+                    state.pendingControl.append(event)
+                    return nil
                 }
-                state.pendingControl.append(event)
-                return nil
             }
             continuation?.resume(returning: event)
         }
@@ -108,16 +139,18 @@ final class URLSessionWebSocketTransportConnection: WebSocketTransportConnection
         /// can never resume a continuation twice.
         func completeTask(error: Error?) {
             let continuation: CheckedContinuation<WebSocketTransportEvent, Error>? = withLock { state in
+                guard !state.ended else { return nil }
+                state.ended = true
+                state.pendingControl.removeAll(keepingCapacity: false)
+                state.pendingText = nil
                 if let waiter = state.waiter {
                     state.waiter = nil
-                    state.ended = true
                     return waiter.continuation
                 }
-                guard !state.ended else { return nil }
                 if let error {
-                    state.terminalError = error
+                    state.pendingTerminal = .failure(error)
                 } else {
-                    state.ended = true
+                    state.pendingTerminal = .failure(WebSocketTransportError.ended)
                 }
                 return nil
             }
@@ -129,10 +162,12 @@ final class URLSessionWebSocketTransportConnection: WebSocketTransportConnection
     private let driver: any WebSocketSocketDriver
     private let session: URLSession?
     private let delegate: SocketDelegate?
+    private let beforeReceiveWaiterInstall: (@Sendable () -> Void)?
 
     init(url: URL, configuration: URLSessionConfiguration) {
         let shared = SharedBox()
         self.shared = shared
+        self.beforeReceiveWaiterInstall = nil
 
         let delegate = SocketDelegate(shared: shared)
         self.delegate = delegate
@@ -147,11 +182,15 @@ final class URLSessionWebSocketTransportConnection: WebSocketTransportConnection
 
     /// Test seam: drives the identical state machine through an injected
     /// driver; socket lifecycle events are injected via `handleSocket*`.
-    init(driver: any WebSocketSocketDriver) {
+    init(
+        driver: any WebSocketSocketDriver,
+        beforeReceiveWaiterInstall: (@Sendable () -> Void)? = nil
+    ) {
         self.shared = SharedBox()
         self.driver = driver
         self.session = nil
         self.delegate = nil
+        self.beforeReceiveWaiterInstall = beforeReceiveWaiterInstall
         driver.resume()
     }
 
@@ -181,20 +220,24 @@ final class URLSessionWebSocketTransportConnection: WebSocketTransportConnection
                     case startReceive
                     case wait
                 }
+                beforeReceiveWaiterInstall?()
                 let action: Action = shared.withLock { state in
                     if !state.pendingControl.isEmpty {
                         let event = state.pendingControl.removeFirst()
-                        if case .closed = event { state.ended = true }
                         return .resume(event)
                     }
                     if let text = state.pendingText {
                         state.pendingText = nil
                         return .resume(.text(text))
                     }
-                    if let error = state.terminalError {
-                        state.terminalError = nil
-                        state.ended = true
-                        return .fail(error)
+                    if let terminal = state.pendingTerminal {
+                        state.pendingTerminal = nil
+                        switch terminal {
+                        case .event(let event):
+                            return .resume(event)
+                        case .failure(let error):
+                            return .fail(error)
+                        }
                     }
                     if state.ended {
                         return .fail(WebSocketTransportError.ended)
@@ -204,6 +247,12 @@ final class URLSessionWebSocketTransportConnection: WebSocketTransportConnection
                     // silently dropping either continuation.
                     guard state.waiter == nil else {
                         return .fail(WebSocketTransportError.ended)
+                    }
+                    // Cancel-before-install closes the gap where onCancel ran
+                    // before a waiter existed and therefore found nothing to
+                    // remove. Check under the same mutex that owns the slot.
+                    guard !Task.isCancelled else {
+                        return .fail(CancellationError())
                     }
                     state.waiter = (waiterID, continuation)
                     if state.receiveInFlight {
@@ -261,13 +310,15 @@ final class URLSessionWebSocketTransportConnection: WebSocketTransportConnection
                     state.pendingText = text
                     return nil
                 case .failure(let error):
+                    guard !state.ended else { return nil }
+                    state.ended = true
+                    state.pendingControl.removeAll(keepingCapacity: false)
+                    state.pendingText = nil
                     if let waiter = state.waiter {
                         state.waiter = nil
-                        state.ended = true
                         return (waiter.continuation, .failure(error))
                     }
-                    guard !state.ended else { return nil }
-                    state.terminalError = error
+                    state.pendingTerminal = .failure(error)
                     return nil
                 }
             }
@@ -305,15 +356,43 @@ final class URLSessionWebSocketTransportConnection: WebSocketTransportConnection
     }
 
     func close() {
-        let continuation: CheckedContinuation<WebSocketTransportEvent, Error>? = shared.withLock { state in
+        let closeAction: (CheckedContinuation<WebSocketTransportEvent, Error>?, Bool) = shared.withLock { state in
+            guard !state.closeRequested else { return (nil, false) }
+            state.closeRequested = true
             state.ended = true
+            state.pendingControl.removeAll(keepingCapacity: false)
+            state.pendingText = nil
+            state.pendingTerminal = nil
             let waiter = state.waiter
             state.waiter = nil
-            return waiter?.continuation
+            return (waiter?.continuation, true)
         }
-        continuation?.resume(throwing: CancellationError())
+        closeAction.0?.resume(throwing: CancellationError())
+        guard closeAction.1 else { return }
         driver.cancel(with: .goingAway, reason: nil)
         session?.finishTasksAndInvalidate()
+    }
+
+    struct DebugReceiveState: Equatable {
+        let pendingControlCount: Int
+        let hasPendingText: Bool
+        let hasPendingTerminal: Bool
+        let ended: Bool
+        let hasWaiter: Bool
+        let receiveInFlight: Bool
+    }
+
+    var debugReceiveState: DebugReceiveState {
+        shared.withLock { state in
+            DebugReceiveState(
+                pendingControlCount: state.pendingControl.count,
+                hasPendingText: state.pendingText != nil,
+                hasPendingTerminal: state.pendingTerminal != nil,
+                ended: state.ended,
+                hasWaiter: state.waiter != nil,
+                receiveInFlight: state.receiveInFlight
+            )
+        }
     }
 
     private final class SocketDelegate: NSObject, URLSessionWebSocketDelegate {
