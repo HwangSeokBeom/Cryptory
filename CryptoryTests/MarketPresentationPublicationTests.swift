@@ -1,3 +1,4 @@
+import UIKit
 import XCTest
 @testable import Cryptory
 
@@ -121,6 +122,15 @@ private final class GatedMarketRepository: MarketRepositoryProtocol {
     }
 }
 
+/// MainActor-confined boolean flag for observing task completion without
+/// polling or capturing mutable locals in a sendable closure.
+@MainActor
+private final class CompletionFlag {
+    private(set) var value = false
+
+    func set() { value = true }
+}
+
 /// Collects presentation-build gate continuations keyed by ownership token.
 private final class BuildGateBox: @unchecked Sendable {
     private let lock = NSLock()
@@ -162,7 +172,7 @@ private final class BuildGateBox: @unchecked Sendable {
 /// superseded builder can never overwrite a newer generation's rows.
 @MainActor
 final class MarketPresentationPublicationTests: XCTestCase {
-    private static func fixtureCoins() -> [CoinInfo] {
+    private static func fixtureCoins(imageURL: String? = nil) -> [CoinInfo] {
         [
             CoinCatalog.coin(
                 symbol: "BTC",
@@ -174,27 +184,28 @@ final class MarketPresentationPublicationTests: XCTestCase {
                 displaySymbol: "BTC",
                 displayName: "Bitcoin",
                 englishName: "Bitcoin",
+                imageURL: imageURL,
                 isTradable: true
             )
         ]
     }
 
-    private func makeRepository(price: Double = 125_000_000) -> SpyMarketRepository {
+    private func makeRepository(price: Double = 125_000_000, imageURL: String? = nil) -> SpyMarketRepository {
         let repository = SpyMarketRepository()
         repository.marketCatalogSnapshots[.upbit] = MarketCatalogSnapshot(
             exchange: .upbit,
-            markets: Self.fixtureCoins(),
+            markets: Self.fixtureCoins(imageURL: imageURL),
             supportedIntervalsBySymbol: ["BTC": ["1h"]],
             meta: .empty
         )
-        repository.tickerSnapshots[.upbit] = Self.tickerSnapshot(price: price)
+        repository.tickerSnapshots[.upbit] = Self.tickerSnapshot(price: price, imageURL: imageURL)
         return repository
     }
 
-    private static func tickerSnapshot(price: Double) -> MarketTickerSnapshot {
+    private static func tickerSnapshot(price: Double, imageURL: String? = nil) -> MarketTickerSnapshot {
         MarketTickerSnapshot(
             exchange: .upbit,
-            coins: fixtureCoins(),
+            coins: fixtureCoins(imageURL: imageURL),
             tickers: [
                 "BTC": TickerData(
                     price: price,
@@ -208,6 +219,20 @@ final class MarketPresentationPublicationTests: XCTestCase {
             ],
             meta: .empty
         )
+    }
+
+    /// Local temp PNG so image assertions never depend on live DNS.
+    private func makeTemporaryPNGURL() throws -> URL {
+        let renderer = UIGraphicsImageRenderer(size: CGSize(width: 8, height: 8))
+        let image = renderer.image { context in
+            UIColor.systemBlue.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 8, height: 8))
+        }
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("publication-\(UUID().uuidString).png")
+        try XCTUnwrap(image.pngData()).write(to: url)
+        addTeardownBlock { try? FileManager.default.removeItem(at: url) }
+        return url
     }
 
     private func makeViewModel(
@@ -272,15 +297,80 @@ final class MarketPresentationPublicationTests: XCTestCase {
 
     // MARK: - Publication contract
 
-    func testRefreshMarketDataPublishesRowsBeforeReturning() async {
-        let repository = makeRepository()
+    /// Proves the awaited publication contract with a staged build gate, not
+    /// polling: while the presentation build is suspended, `refreshMarketData`
+    /// must not have returned and no rows may be visible; releasing the gate
+    /// completes the refresh with rows and image URLs already published, and
+    /// a superseded (stale-token) build released afterwards cannot publish.
+    func testRefreshMarketDataPublishesRowsBeforeReturning() async throws {
+        let imageFileURL = try makeTemporaryPNGURL()
+        let repository = makeRepository(imageURL: imageFileURL.absoluteString)
         let vm = makeViewModel(repository: repository, suiteName: #function)
 
-        await vm.refreshMarketData(forceRefresh: true, reason: "unit_publication_contract")
+        let box = BuildGateBox()
+        addTeardownBlock { box.releaseAll() }
+        vm.debugMarketPresentationBuildGate = { token in
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                box.hold(token, continuation)
+            }
+        }
 
-        // No polling: the awaited refresh must have published the rows.
-        XCTAssertFalse(vm.displayedMarketRows.isEmpty, "rows must be published before refreshMarketData returns")
+        // MainActor-confined completion flag: set as the refresh's final
+        // statement, so "refresh returned" is observable without polling.
+        let refreshReturned = CompletionFlag()
+        let refresh = Task { @MainActor in
+            await vm.refreshMarketData(forceRefresh: true, reason: "unit_publication_contract")
+            refreshReturned.set()
+        }
+
+        // The first-ever refresh stages at least one presentation build; it
+        // must park at the gate before anything publishes.
+        let gated = await waitUntil { box.tokens().count >= 1 }
+        guard gated else {
+            let parked = box.tokens()
+            box.releaseAll()
+            return XCTFail("refresh must park its build at the gate (tokens=\(parked))")
+        }
+
+        // While the presentation build is suspended the refresh cannot have
+        // completed (it awaits the parked build) and nothing may be visible.
+        await settle()
+        XCTAssertFalse(refreshReturned.value, "refreshMarketData must not return before its rows are published")
+        XCTAssertTrue(vm.displayedMarketRows.isEmpty, "no rows may publish while the build gate is closed")
+
+        // Release only the newest build: the publication contract resumes the
+        // caller once the winning build has published.
+        let newestToken = try XCTUnwrap(box.tokens().max())
+        box.release(newestToken)
+        let refreshFinished = await awaitCompletion(of: refresh)
+        guard refreshFinished else {
+            box.releaseAll()
+            return XCTFail("refresh must complete once the newest build is released (tokens=\(box.tokens()))")
+        }
+        XCTAssertTrue(refreshReturned.value)
+
+        // Immediately after the awaited return: rows and image URLs are
+        // published — no polling window.
+        XCTAssertEqual(vm.displayedMarketRows.first?.symbol, "BTC")
+        XCTAssertEqual(
+            vm.displayedMarketRows.first?.imageURL,
+            imageFileURL.absoluteString,
+            "image URLs must be published before refreshMarketData returns"
+        )
         XCTAssertEqual(repository.fetchedTickers.count, 1, "exactly one ticker fetch")
+
+        // The superseded build (stale ownership token) resumes late and must
+        // be dropped, never published over the newer rows.
+        let publishedRows = vm.displayedMarketRows
+        box.releaseAll()
+        await settle()
+        XCTAssertEqual(
+            vm.displayedMarketRows.first?.imageURL,
+            publishedRows.first?.imageURL,
+            "a stale-generation build must not overwrite published rows"
+        )
+        XCTAssertEqual(vm.displayedMarketRows.count, publishedRows.count)
+        vm.debugMarketPresentationBuildGate = nil
     }
 
     func testSupersededPresentationBuildCannotOverwriteNewerRows() async {

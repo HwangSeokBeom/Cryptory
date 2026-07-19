@@ -1291,6 +1291,10 @@ final class CryptoViewModel: ObservableObject {
     /// deterministically. Never set in production code.
     var debugMarketPresentationBuildGate: (@MainActor (UInt64) async -> Void)?
 #endif
+    /// The `onAppear` bootstrap pipeline (tickers + route refresh). Retained
+    /// for deterministic teardown, and so tests can await its completion
+    /// instead of polling for side effects.
+    private(set) var bootstrapTask: Task<Void, Never>?
     private var sparklineHydrationTask: Task<Void, Never>?
     private var priorityVisibleSparklineTask: Task<Void, Never>?
     private var topCardSparklinePrefetchTask: Task<Void, Never>?
@@ -1534,6 +1538,7 @@ final class CryptoViewModel: ObservableObject {
         marketImageHydrationTask?.cancel()
         marketRowPatchTask?.cancel()
         marketPresentationBuildTask?.cancel()
+        bootstrapTask?.cancel()
         sparklineHydrationTask?.cancel()
         priorityVisibleSparklineTask?.cancel()
         topCardSparklinePrefetchTask?.cancel()
@@ -4419,7 +4424,9 @@ final class CryptoViewModel: ObservableObject {
         connectPublicMarketFeed(reason: "content_on_appear")
         let refreshContext = beginRouteRefresh(reason: "content_on_appear")
 
-        Task {
+        // Retained so tests can await bootstrap completion deterministically
+        // instead of polling for its side effects.
+        bootstrapTask = Task {
             await bootstrapPublicData(reason: "content_on_appear")
             await runRouteRefreshIfCurrent(
                 refreshContext,

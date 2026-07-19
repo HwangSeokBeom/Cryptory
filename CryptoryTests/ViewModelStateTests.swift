@@ -1785,20 +1785,14 @@ final class ViewModelStateTests: XCTestCase {
         )
 
         vm.onAppear()
-        await waitUntil {
-            vm.displayedMarketRows.isEmpty == false
-        }
-
-        // Bootstrap intentionally races the ticker-resolved and the
-        // catalog-merged universe builds; whichever publish lands last wins
-        // until the next update cycle. Production converges through its
-        // continuous update stream — drive one deterministic refresh cycle
-        // (the catalog universe is now resolved in memory, so every
-        // subsequent merge preserves the image) before asserting.
+        // Deterministic sequencing instead of polling: await the bootstrap
+        // pipeline (tickers + route refresh), then drive one awaited refresh.
+        // The token-gated publication contract guarantees the final build's
+        // rows — including image URLs — are published before
+        // refreshMarketData returns, and a superseded bootstrap build can
+        // never overwrite them afterwards.
+        await vm.bootstrapTask?.value
         await vm.refreshMarketData(forceRefresh: true, reason: "test_post_bootstrap_convergence")
-        await waitUntil(timeoutNanoseconds: 10_000_000_000) {
-            vm.displayedMarketRows.first?.imageURL == imageFileURL.absoluteString
-        }
 
         XCTAssertEqual(vm.displayedMarketRows.first?.symbol, "BTC")
         XCTAssertEqual(vm.displayedMarketRows.first?.imageURL, imageFileURL.absoluteString)
@@ -1861,20 +1855,14 @@ final class ViewModelStateTests: XCTestCase {
         )
 
         vm.onAppear()
-        await waitUntil {
-            vm.displayedMarketRows.isEmpty == false
-        }
-
-        // Bootstrap intentionally races the ticker-resolved and the
-        // catalog-merged universe builds; whichever publish lands last wins
-        // until the next update cycle. Production converges through its
-        // continuous update stream — drive one deterministic refresh cycle
-        // (the catalog universe is now resolved in memory, so every
-        // subsequent merge preserves the image) before asserting.
+        // Deterministic sequencing instead of polling: await the bootstrap
+        // pipeline (tickers + route refresh, which resolves the catalog),
+        // then drive one awaited refresh. The token-gated publication
+        // contract guarantees the final build's rows — including the
+        // catalog-preserved image URL — are published before
+        // refreshMarketData returns.
+        await vm.bootstrapTask?.value
         await vm.refreshMarketData(forceRefresh: true, reason: "test_post_bootstrap_convergence")
-        await waitUntil(timeoutNanoseconds: 10_000_000_000) {
-            vm.displayedMarketRows.first?.imageURL == imageFileURL.absoluteString
-        }
 
         XCTAssertEqual(vm.displayedMarketRows.first?.imageURL, imageFileURL.absoluteString)
     }

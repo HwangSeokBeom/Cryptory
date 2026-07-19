@@ -1,0 +1,430 @@
+import XCTest
+@testable import Cryptory
+
+/// Deterministic driver test double for the production
+/// `URLSessionWebSocketTransportConnection`: records every driver call and
+/// hands the stored completion handlers to the test, so late, duplicate, and
+/// post-disconnect completions can be scripted exactly. Thread-safe via a
+/// lock (driver callbacks arrive from arbitrary queues in production).
+private final class ControlledSocketDriver: WebSocketSocketDriver, @unchecked Sendable {
+    typealias ReceiveCompletion = @Sendable (Result<URLSessionWebSocketTask.Message, any Error>) -> Void
+    typealias PingCompletion = @Sendable ((any Error)?) -> Void
+
+    private let lock = NSLock()
+    private var receiveCompletions: [ReceiveCompletion] = []
+    private var pingCompletions: [PingCompletion] = []
+    private var recordedSends: [String] = []
+    private var resumeCallCount = 0
+    private var cancelCallCount = 0
+    private var totalReceiveCallCount = 0
+
+    var resumeCount: Int {
+        lock.lock(); defer { lock.unlock() }
+        return resumeCallCount
+    }
+
+    var cancelCount: Int {
+        lock.lock(); defer { lock.unlock() }
+        return cancelCallCount
+    }
+
+    /// Total driver-level receive calls ever made by the connection.
+    var receiveCallCount: Int {
+        lock.lock(); defer { lock.unlock() }
+        return totalReceiveCallCount
+    }
+
+    /// Driver receive calls whose completion has not been invoked yet.
+    var pendingReceiveCount: Int {
+        lock.lock(); defer { lock.unlock() }
+        return receiveCompletions.count
+    }
+
+    var sentTexts: [String] {
+        lock.lock(); defer { lock.unlock() }
+        return recordedSends
+    }
+
+    var pendingPingCount: Int {
+        lock.lock(); defer { lock.unlock() }
+        return pingCompletions.count
+    }
+
+    func resume() {
+        lock.lock(); defer { lock.unlock() }
+        resumeCallCount += 1
+    }
+
+    func receive(completionHandler: @escaping ReceiveCompletion) {
+        lock.lock(); defer { lock.unlock() }
+        totalReceiveCallCount += 1
+        receiveCompletions.append(completionHandler)
+    }
+
+    func send(_ message: URLSessionWebSocketTask.Message) async throws {
+        if case .string(let text) = message {
+            recordSend(text)
+        }
+    }
+
+    private func recordSend(_ text: String) {
+        lock.lock()
+        recordedSends.append(text)
+        lock.unlock()
+    }
+
+    func sendPing(pongReceiveHandler: @escaping PingCompletion) {
+        lock.lock()
+        pingCompletions.append(pongReceiveHandler)
+        lock.unlock()
+    }
+
+    func cancel(with closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?) {
+        lock.lock(); defer { lock.unlock() }
+        cancelCallCount += 1
+    }
+
+    /// Removes and returns the oldest stored receive completion so the test
+    /// can invoke it at a scripted point (late, after close, or twice).
+    func takeReceiveCompletion() -> ReceiveCompletion? {
+        lock.lock(); defer { lock.unlock() }
+        guard !receiveCompletions.isEmpty else { return nil }
+        return receiveCompletions.removeFirst()
+    }
+
+    func takePingCompletion() -> PingCompletion? {
+        lock.lock(); defer { lock.unlock() }
+        guard !pingCompletions.isEmpty else { return nil }
+        return pingCompletions.removeFirst()
+    }
+}
+
+private enum DriverTestError: Error {
+    case scripted
+}
+
+/// Direct, deterministic tests for the production transport wrapper's state
+/// machine (`URLSessionWebSocketTransportConnection`), exercised through the
+/// injected `WebSocketSocketDriver` seam and the internal `handleSocket*`
+/// lifecycle entry points shared with the URLSession delegate. Continuation
+/// gates and scripted completions replace all timing assumptions; nothing
+/// here claims control over Foundation-internal buffering.
+final class URLSessionTransportStateMachineTests: XCTestCase {
+    @discardableResult
+    private func waitUntil(
+        timeout: Duration = .seconds(30),
+        _ condition: () async -> Bool
+    ) async -> Bool {
+        let deadline = ContinuousClock.now.advanced(by: timeout)
+        while !(await condition()) {
+            if ContinuousClock.now >= deadline { return false }
+            await Task.yield()
+        }
+        return true
+    }
+
+    private func settle(yields: Int = 500) async {
+        for _ in 0..<yields {
+            await Task.yield()
+        }
+    }
+
+    private func makeConnection() -> (URLSessionWebSocketTransportConnection, ControlledSocketDriver) {
+        let driver = ControlledSocketDriver()
+        let connection = URLSessionWebSocketTransportConnection(driver: driver)
+        return (connection, driver)
+    }
+
+    /// Starts `receive()` in a task that reports its outcome.
+    private func startReceive(
+        on connection: URLSessionWebSocketTransportConnection
+    ) -> Task<Result<WebSocketTransportEvent, Error>, Never> {
+        Task {
+            do {
+                return .success(try await connection.receive())
+            } catch {
+                return .failure(error)
+            }
+        }
+    }
+
+    // MARK: - One receive outstanding
+
+    func testExactlyOneDriverReceiveIsOutstandingAtATime() async throws {
+        let (connection, driver) = makeConnection()
+        XCTAssertEqual(driver.resumeCount, 1, "the connection resumes its driver once on creation")
+
+        let first = startReceive(on: connection)
+        let started = await waitUntil { driver.receiveCallCount == 1 }
+        XCTAssertTrue(started, "engine receive() starts exactly one driver receive")
+        await settle()
+        XCTAssertEqual(driver.receiveCallCount, 1, "no additional driver receive while one is outstanding")
+
+        driver.takeReceiveCompletion()?(.success(.string("frame-1")))
+        guard case .success(.text(let text)) = await first.value else {
+            return XCTFail("first receive must deliver the completed frame")
+        }
+        XCTAssertEqual(text, "frame-1")
+
+        // The next driver receive starts only on the next engine receive().
+        XCTAssertEqual(driver.receiveCallCount, 1)
+        let second = startReceive(on: connection)
+        let secondStarted = await waitUntil { driver.receiveCallCount == 2 }
+        XCTAssertTrue(secondStarted, "next frame is requested only on demand")
+        driver.takeReceiveCompletion()?(.success(.string("frame-2")))
+        guard case .success(.text(let secondText)) = await second.value else {
+            return XCTFail("second receive must deliver the second frame")
+        }
+        XCTAssertEqual(secondText, "frame-2")
+    }
+
+    func testSecondConcurrentWaiterFailsDeterministicallyWithoutDroppingTheFirst() async throws {
+        let (connection, driver) = makeConnection()
+        let first = startReceive(on: connection)
+        await waitUntil { driver.receiveCallCount == 1 }
+
+        let second = startReceive(on: connection)
+        guard case .failure(let error) = await second.value else {
+            return XCTFail("a second concurrent waiter violates the single-caller contract and must fail")
+        }
+        XCTAssertTrue(error is WebSocketTransportError, "deterministic failure, got \(error)")
+
+        driver.takeReceiveCompletion()?(.success(.string("frame")))
+        guard case .success(.text(let text)) = await first.value else {
+            return XCTFail("the original waiter must remain intact")
+        }
+        XCTAssertEqual(text, "frame")
+    }
+
+    // MARK: - Cancellation and the single canceled-waiter slot
+
+    func testCancellingPendingReceiveReleasesItsWaiter() async throws {
+        let (connection, driver) = makeConnection()
+        let receive = startReceive(on: connection)
+        await waitUntil { driver.receiveCallCount == 1 }
+
+        receive.cancel()
+        guard case .failure(let error) = await receive.value else {
+            return XCTFail("cancellation must release the waiter by throwing")
+        }
+        XCTAssertTrue(error is CancellationError, "got \(error)")
+    }
+
+    func testLateCompletionAfterCancelFillsTheSingleDocumentedSlot() async throws {
+        let (connection, driver) = makeConnection()
+        let receive = startReceive(on: connection)
+        await waitUntil { driver.receiveCallCount == 1 }
+        receive.cancel()
+        _ = await receive.value
+
+        // The driver receive completes after its waiter was cancelled: the
+        // frame lands in the single canceled-waiter slot instead of being
+        // dropped or resuming a dead continuation.
+        driver.takeReceiveCompletion()?(.success(.string("late-frame")))
+
+        // The next receive drains the slot without a new driver receive…
+        let next = startReceive(on: connection)
+        guard case .success(.text(let text)) = await next.value else {
+            return XCTFail("the slot frame must be delivered to the next receive")
+        }
+        XCTAssertEqual(text, "late-frame")
+        XCTAssertEqual(driver.receiveCallCount, 1, "slot delivery must not start a new driver receive")
+
+        // …and only then does a new engine receive start a new driver call.
+        let following = startReceive(on: connection)
+        let started = await waitUntil { driver.receiveCallCount == 2 }
+        XCTAssertTrue(started)
+        driver.takeReceiveCompletion()?(.success(.string("fresh")))
+        guard case .success(.text(let fresh)) = await following.value else {
+            return XCTFail("fresh frame must be delivered")
+        }
+        XCTAssertEqual(fresh, "fresh")
+    }
+
+    func testDuplicateDriverCompletionCannotDoubleResumeOrGrowTheMailbox() async throws {
+        let (connection, driver) = makeConnection()
+        let receive = startReceive(on: connection)
+        await waitUntil { driver.receiveCallCount == 1 }
+        let completion = try XCTUnwrap(driver.takeReceiveCompletion())
+
+        // First invocation resumes the waiter…
+        completion(.success(.string("first")))
+        guard case .success(.text(let text)) = await receive.value else {
+            return XCTFail("first completion must deliver")
+        }
+        XCTAssertEqual(text, "first")
+
+        // …a duplicate invocation (impossible for a well-behaved driver, the
+        // guarded case) must not resume anything twice and at most refills
+        // the single bounded slot — no repository-owned queue can grow.
+        completion(.success(.string("duplicate")))
+        completion(.success(.string("duplicate-2")))
+        let next = startReceive(on: connection)
+        guard case .success(.text(let slotText)) = await next.value else {
+            return XCTFail("the bounded slot delivers at most one frame")
+        }
+        XCTAssertEqual(slotText, "duplicate-2", "the slot holds at most the newest frame — bounded at one")
+        // Nothing else is queued: the following receive suspends on a fresh
+        // driver call rather than draining more stored frames.
+        let following = startReceive(on: connection)
+        let started = await waitUntil { driver.receiveCallCount == 2 }
+        XCTAssertTrue(started, "no additional frames may be queued repository-side")
+        following.cancel()
+        _ = await following.value
+    }
+
+    // MARK: - Disconnect ownership
+
+    func testCloseFailsPendingReceiveAndLateCompletionCannotResurrectIt() async throws {
+        let (connection, driver) = makeConnection()
+        let receive = startReceive(on: connection)
+        await waitUntil { driver.receiveCallCount == 1 }
+
+        connection.close()
+        XCTAssertEqual(driver.cancelCount, 1)
+        guard case .failure(let error) = await receive.value else {
+            return XCTFail("close must fail the pending receive")
+        }
+        XCTAssertTrue(error is CancellationError, "got \(error)")
+
+        // A late driver completion after disconnect is ownerless: it must
+        // not park a frame that a post-close receive could observe.
+        driver.takeReceiveCompletion()?(.success(.string("late-after-close")))
+        let next = startReceive(on: connection)
+        guard case .failure(let nextError) = await next.value else {
+            return XCTFail("receive after close must throw, not deliver a stale frame")
+        }
+        XCTAssertTrue(nextError is WebSocketTransportError, "got \(nextError)")
+    }
+
+    func testLateCompletionFromOldConnectionCannotEnterNewConnection() async throws {
+        let (oldConnection, oldDriver) = makeConnection()
+        let oldReceive = startReceive(on: oldConnection)
+        await waitUntil { oldDriver.receiveCallCount == 1 }
+        oldConnection.close()
+        _ = await oldReceive.value
+
+        let (newConnection, newDriver) = makeConnection()
+        let newReceive = startReceive(on: newConnection)
+        await waitUntil { newDriver.receiveCallCount == 1 }
+
+        // The old generation's driver completes late: the new connection's
+        // pending receive must be untouched.
+        oldDriver.takeReceiveCompletion()?(.success(.string("old-generation")))
+        await settle()
+        newDriver.takeReceiveCompletion()?(.success(.string("new-generation")))
+        guard case .success(.text(let text)) = await newReceive.value else {
+            return XCTFail("new connection must deliver its own frame")
+        }
+        XCTAssertEqual(text, "new-generation")
+    }
+
+    func testTaskCompletionAfterCloseIsANoOpAndCannotDoubleResume() async throws {
+        let (connection, driver) = makeConnection()
+        let receive = startReceive(on: connection)
+        await waitUntil { driver.receiveCallCount == 1 }
+
+        connection.close()
+        _ = await receive.value
+
+        // Delegate-reported task completion arriving after close (URLSession
+        // does this) must not resume anything: the waiter was already
+        // resumed by close, and the connection has ended.
+        connection.handleTaskCompleted(error: DriverTestError.scripted)
+        connection.handleTaskCompleted(error: nil)
+
+        let next = startReceive(on: connection)
+        guard case .failure(let error) = await next.value else {
+            return XCTFail("the connection stays ended")
+        }
+        XCTAssertTrue(error is WebSocketTransportError, "got \(error)")
+    }
+
+    func testRepeatedCloseIsIdempotent() async {
+        let (connection, driver) = makeConnection()
+        connection.close()
+        connection.close()
+        connection.close()
+        XCTAssertEqual(driver.cancelCount, 3, "each close cancels the driver; state stays ended without traps")
+
+        let receive = startReceive(on: connection)
+        guard case .failure = await receive.value else {
+            return XCTFail("receive after close must throw")
+        }
+    }
+
+    // MARK: - Delegate-reported lifecycle events
+
+    func testSocketOpenAndCloseEventsFlowThroughTheBoundedControlMailbox() async throws {
+        let (connection, driver) = makeConnection()
+
+        // Events arriving before any receive() are parked in the bounded
+        // control mailbox (at most one .opened and one .closed per lifetime).
+        connection.handleSocketOpened()
+        let first = startReceive(on: connection)
+        guard case .success(.opened) = await first.value else {
+            return XCTFail("parked .opened must be delivered first")
+        }
+
+        // A waiter present when the close arrives is resumed directly.
+        let second = startReceive(on: connection)
+        await waitUntil { driver.receiveCallCount == 1 }
+        connection.handleSocketClosed(code: 1000, reason: "bye")
+        guard case .success(.closed(let code, let reason)) = await second.value else {
+            return XCTFail(".closed must resume the pending waiter")
+        }
+        XCTAssertEqual(code, 1000)
+        XCTAssertEqual(reason, "bye")
+
+        // After .closed the connection has ended.
+        let third = startReceive(on: connection)
+        guard case .failure(let error) = await third.value else {
+            return XCTFail("receive after .closed must throw")
+        }
+        XCTAssertTrue(error is WebSocketTransportError, "got \(error)")
+    }
+
+    func testTerminalTaskErrorSurfacesExactlyOnce() async throws {
+        let (connection, _) = makeConnection()
+        connection.handleTaskCompleted(error: DriverTestError.scripted)
+
+        let first = startReceive(on: connection)
+        guard case .failure(let error) = await first.value else {
+            return XCTFail("the recorded terminal error must surface")
+        }
+        XCTAssertTrue(error is DriverTestError, "got \(error)")
+
+        let second = startReceive(on: connection)
+        guard case .failure(let secondError) = await second.value else {
+            return XCTFail("subsequent receives throw ended")
+        }
+        XCTAssertTrue(secondError is WebSocketTransportError, "got \(secondError)")
+    }
+
+    // MARK: - Sends and pings through the driver
+
+    func testSendAndPingDelegateToTheDriver() async throws {
+        let (connection, driver) = makeConnection()
+        try await connection.send(text: "hello")
+        XCTAssertEqual(driver.sentTexts, ["hello"])
+
+        // Success path: the driver's pong resolves the awaited ping.
+        let ping = Task { try await connection.sendPing() }
+        let pingArmed = await waitUntil { driver.pendingPingCount == 1 }
+        XCTAssertTrue(pingArmed, "ping handler must be registered with the driver")
+        driver.takePingCompletion()?(nil)
+        try await ping.value
+
+        // Failure path: a scripted pong error is thrown to the caller.
+        let failingPing = Task { try await connection.sendPing() }
+        let armed = await waitUntil { driver.pendingPingCount == 1 }
+        XCTAssertTrue(armed)
+        driver.takePingCompletion()?(DriverTestError.scripted)
+        do {
+            _ = try await failingPing.value
+            XCTFail("ping must rethrow the driver error")
+        } catch {
+            XCTAssertTrue(error is DriverTestError, "got \(error)")
+        }
+    }
+}
