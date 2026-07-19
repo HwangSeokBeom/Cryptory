@@ -111,6 +111,112 @@ final class RealtimeComponentTests: XCTestCase {
         XCTAssertEqual(registry.activeSubscriptions, [tickerBTC])
     }
 
+    func testConflictingReplacementIsCanonicalAndIdempotent() {
+        let krw = PublicMarketSubscription(
+            channel: .ticker,
+            marketIdentity: MarketIdentity(exchange: .upbit, symbol: "BTC", quoteCurrency: .krw)
+        )
+        let usdt = PublicMarketSubscription(
+            channel: .ticker,
+            marketIdentity: MarketIdentity(exchange: .upbit, symbol: "BTC", quoteCurrency: .usdt)
+        )
+        let owner = UUID()
+        var registry = MarketSubscriptionRegistry()
+
+        let first = registry.replace(owner: owner, with: [krw, usdt])
+        let winner = try! XCTUnwrap(registry.activeSubscriptions.first)
+        XCTAssertEqual(registry.activeSubscriptions.count, 1)
+        XCTAssertEqual(first.subscribe, [winner])
+        XCTAssertTrue(first.unsubscribe.isEmpty)
+
+        for _ in 0..<5 {
+            let repeated = registry.replace(owner: owner, with: [krw, usdt])
+            XCTAssertTrue(repeated.isEmpty, "an identical malformed replacement must emit no wire mutation")
+            XCTAssertEqual(registry.activeSubscriptions, [winner])
+        }
+    }
+
+    func testConflictingReplacementWinnerIsIndependentOfRegistryAndInputConstructionOrder() {
+        let krw = PublicMarketSubscription(
+            channel: .ticker,
+            marketIdentity: MarketIdentity(exchange: .upbit, symbol: "BTC", quoteCurrency: .krw)
+        )
+        let usdt = PublicMarketSubscription(
+            channel: .ticker,
+            marketIdentity: MarketIdentity(exchange: .upbit, symbol: "BTC", quoteCurrency: .usdt)
+        )
+        var forward = Set<PublicMarketSubscription>()
+        forward.insert(krw)
+        forward.insert(usdt)
+        var reverse = Set<PublicMarketSubscription>()
+        reverse.insert(usdt)
+        reverse.insert(krw)
+
+        var winners: Set<PublicMarketSubscription> = []
+        for requested in [forward, reverse, forward, reverse] {
+            var registry = MarketSubscriptionRegistry()
+            _ = registry.replace(owner: UUID(), with: requested)
+            winners.formUnion(registry.activeSubscriptions)
+        }
+        XCTAssertEqual(winners.count, 1, "fresh registries and reversed construction order must choose one winner")
+    }
+
+    func testRemovingCanonicalWinnerConvergesAndSingleQuoteReplacementIsUnchanged() {
+        let krw = PublicMarketSubscription(
+            channel: .ticker,
+            marketIdentity: MarketIdentity(exchange: .upbit, symbol: "BTC", quoteCurrency: .krw)
+        )
+        let usdt = PublicMarketSubscription(
+            channel: .ticker,
+            marketIdentity: MarketIdentity(exchange: .upbit, symbol: "BTC", quoteCurrency: .usdt)
+        )
+        let owner = UUID()
+        var registry = MarketSubscriptionRegistry()
+        _ = registry.replace(owner: owner, with: [krw, usdt])
+        let winner = try! XCTUnwrap(registry.activeSubscriptions.first)
+        let loser = winner == krw ? usdt : krw
+
+        let converged = registry.replace(owner: owner, with: [loser])
+        XCTAssertEqual(converged.unsubscribe, [winner])
+        XCTAssertEqual(converged.subscribe, [loser])
+        XCTAssertEqual(registry.activeSubscriptions, [loser])
+
+        let unchanged = registry.replace(owner: owner, with: [loser])
+        XCTAssertTrue(unchanged.isEmpty, "ordinary single-quote replacement remains idempotent")
+        XCTAssertEqual(registry.totalOwnershipCount, 1)
+    }
+
+    func testCanonicalConflictPreservesReferenceCountsForOtherOwners() {
+        let krw = PublicMarketSubscription(
+            channel: .ticker,
+            marketIdentity: MarketIdentity(exchange: .upbit, symbol: "BTC", quoteCurrency: .krw)
+        )
+        let usdt = PublicMarketSubscription(
+            channel: .ticker,
+            marketIdentity: MarketIdentity(exchange: .upbit, symbol: "BTC", quoteCurrency: .usdt)
+        )
+        let eth = PublicMarketSubscription(
+            channel: .ticker,
+            marketIdentity: MarketIdentity(exchange: .upbit, symbol: "ETH", quoteCurrency: .krw)
+        )
+        let ownerA = UUID()
+        let ownerB = UUID()
+        var registry = MarketSubscriptionRegistry()
+        _ = registry.replace(owner: ownerA, with: [eth])
+        _ = registry.replace(owner: ownerB, with: [eth, krw, usdt])
+
+        XCTAssertEqual(registry.subscriptionCount, 2, "one BTC winner plus non-conflicting ETH")
+        XCTAssertEqual(registry.totalOwnershipCount, 3, "ETH retains both owners while BTC retains its owner")
+        let repeated = registry.replace(owner: ownerB, with: [eth, krw, usdt])
+        XCTAssertTrue(repeated.isEmpty)
+        XCTAssertEqual(registry.totalOwnershipCount, 3)
+
+        let released = registry.removeOwner(ownerB)
+        XCTAssertEqual(released.count, 1, "only the sole-owned BTC winner unsubscribes")
+        XCTAssertEqual(registry.activeSubscriptions, [eth])
+        XCTAssertEqual(registry.totalOwnershipCount, 1)
+    }
+
     // MARK: - MarketStreamEventBuffer
 
     private func ticker(_ price: Double, symbol: String = "BTC") -> MarketStreamEvent {

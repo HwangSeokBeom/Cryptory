@@ -222,7 +222,8 @@ final class MarketIdentityTests: XCTestCase {
 
     func testConflictWithinOneReplacementSetResolvesDeterministically() {
         // The same conflicting pair must resolve to the same winner on every
-        // run regardless of Set iteration order (additions are sorted).
+        // run regardless of Set iteration order (the full request is
+        // canonicalized before it is compared with current ownership).
         var winners = Set<String>()
         for _ in 0..<20 {
             var registry = MarketSubscriptionRegistry()

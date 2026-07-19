@@ -14,8 +14,9 @@ import Foundation
 /// ambiguous. Acquiring a subscription with an explicit quote atomically
 /// evicts any active subscription for the same channel key with a different
 /// explicit quote (all owners released, one upstream unsubscribe). Quote-less
-/// subscriptions never conflict. Eviction order is deterministic: additions
-/// are processed in sorted order.
+/// subscriptions never conflict. A malformed requested set is canonicalized
+/// per channel key by `stableOrderingKey` before reconciliation, so identical
+/// replacements always choose the same complete identity.
 struct MarketSubscriptionRegistry {
     /// Net upstream effect of a registry mutation.
     struct Diff: Equatable {
@@ -49,15 +50,14 @@ struct MarketSubscriptionRegistry {
     ) -> Diff {
         var diff = Diff()
         let previous = ownedSubscriptions(of: owner)
+        let requested = Self.canonicalized(newSubscriptions)
 
-        for subscription in previous.subtracting(newSubscriptions) {
+        for subscription in previous.subtracting(requested) {
             if release(owner: owner, subscription: subscription) {
                 diff.unsubscribe.insert(subscription)
             }
         }
-        // Sorted additions make conflict eviction deterministic even when one
-        // replacement set contains conflicting identities itself.
-        let additions = newSubscriptions.subtracting(previous).sorted { $0.stableOrderingKey < $1.stableOrderingKey }
+        let additions = requested.subtracting(previous).sorted { $0.stableOrderingKey < $1.stableOrderingKey }
         for subscription in additions {
             for evicted in evictConflictingIdentities(with: subscription) {
                 if diff.subscribe.contains(evicted) {
@@ -72,6 +72,37 @@ struct MarketSubscriptionRegistry {
             }
         }
         return diff
+    }
+
+    /// Canonicalizes explicit quote identities before comparing the request
+    /// with current ownership. For each channel key, the lexicographically
+    /// greatest stable ordering key wins. This rule depends only on the full
+    /// requested set — never current registry state or `Set` iteration order —
+    /// so applying an identical malformed replacement remains idempotent.
+    /// Quote-less subscriptions retain their legacy non-conflicting behavior.
+    private static func canonicalized(
+        _ subscriptions: Set<PublicMarketSubscription>
+    ) -> Set<PublicMarketSubscription> {
+        var passthrough: Set<PublicMarketSubscription> = []
+        var winnerByChannelKey: [String: PublicMarketSubscription] = [:]
+
+        for subscription in subscriptions {
+            guard let channelKey = subscription.channelIdentityKey,
+                  subscription.quoteCurrency != nil else {
+                passthrough.insert(subscription)
+                continue
+            }
+            if let current = winnerByChannelKey[channelKey] {
+                if current.stableOrderingKey < subscription.stableOrderingKey {
+                    winnerByChannelKey[channelKey] = subscription
+                }
+            } else {
+                winnerByChannelKey[channelKey] = subscription
+            }
+        }
+
+        passthrough.formUnion(winnerByChannelKey.values)
+        return passthrough
     }
 
     /// Removes every active subscription that shares `subscription`'s channel
