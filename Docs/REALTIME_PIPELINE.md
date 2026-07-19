@@ -24,7 +24,8 @@ Last updated: 2026-07-19 (branch `refactor/portfolio-realtime-foundation`)
 - The transport never mutates UI state and never calls back into the engine except by delivering transport events into the engine's receive loop.
 - Events leave the engine exclusively through `AsyncStream<MarketStreamEvent>`.
 - The adapter is the only component that touches `MainActor`; SwiftUI types never appear in the engine or transport.
-- The new path contains exactly one `@unchecked Sendable`: `URLSessionWebSocketTransportConnection`, the compatibility boundary around URLSession types (`URLSessionWebSocketTask` is not `Sendable`; the wrapper's shared state is mutex-guarded). It is documented at the declaration; nothing else in the new path uses `@unchecked Sendable`.
+- The new path contains exactly one `@unchecked Sendable`: `URLSessionWebSocketTransportConnection`, the compatibility boundary around URLSession types (`URLSessionWebSocketTask` and `URLSession` are not `Sendable`; both are thread-safe by Foundation's contract). All of the wrapper's mutable state lives in a mutex-guarded `Shared` struct inside a checked-`Sendable` `SharedBox`; the remaining stored properties are immutable references assigned in `init`. The boundary is documented at the declaration; nothing else in the new path uses `@unchecked Sendable`.
+- The production wrapper's receive/cancel/close state machine is testable directly through a narrow internal driver seam (`WebSocketSocketDriver`): production delegates to `URLSessionWebSocketTask`, tests inject a controllable driver, and delegate-reported lifecycle events enter through internal `handleSocket*` methods shared with the URLSession delegate (`URLSessionTransportStateMachineTests`).
 
 ## Connection state machine
 
@@ -51,12 +52,12 @@ Every connection attempt increments a monotonically increasing `generation: UInt
 
 ## Transport ingress (pull-based, bounded)
 
-The transport is **pull-based**: the engine calls `receive()` for one event at a time and does not request the next frame until the current one has been accepted (decoded and dispatched or rejected as stale). `URLSessionWebSocketTransportConnection` keeps exactly one `URLSessionWebSocketTask.receive` outstanding, started only on demand, and its mailbox holds at most one text frame plus a fixed handful of control events (`opened`, `closed`, one terminal error). Consequences:
+The transport is **pull-based**: the engine calls `receive()` for one event at a time and does not request the next frame until the current one has been accepted (decoded and dispatched or rejected as stale). `URLSessionWebSocketTransportConnection` keeps exactly one **repository-level** receive outstanding (one driver-level `receive` call at a time, started only on demand), and its mailbox holds at most one text frame (the documented canceled-waiter slot) plus a fixed handful of control events (`opened`, `closed`, one terminal error). Consequences:
 
-- there is **no app-side queue of raw, undecoded frames** anywhere between the socket and the decoder — pre-decode memory is bounded to a single frame by construction;
-- no raw orderbook, trade, candle, or control frame is ever silently dropped at the transport layer (there is no transport-side overflow to drop from);
-- producer pressure stays in the network/kernel buffers, where TCP flow control applies;
-- closing the connection fails the pending `receive()`; no receive loop survives disconnect.
+- **repository-owned engine and transport buffering is bounded**: there is no repository-owned queue of raw, undecoded frames anywhere between the socket API and the decoder — repository-side pre-decode memory is bounded to a single frame by construction;
+- no raw orderbook, trade, candle, or control frame is ever silently dropped at the repository's transport layer (there is no repository-side overflow to drop from);
+- **Foundation/network-stack internal buffering is opaque and is not part of the proven memory bound** — the bound above covers only repository-owned state; producer pressure beyond it stays in Foundation internals and the network/kernel buffers, where TCP flow control applies;
+- closing the connection fails the pending `receive()`; no receive loop survives disconnect, a late driver completion after disconnect cannot resume a new waiter, and a late completion from an old connection cannot enter a new one (verified directly in `URLSessionTransportStateMachineTests`).
 
 `ScriptedWebSocketTransport` models the identical contract in tests: its scripted queue represents the remote/network side, and assertions verify that at most one receive is ever outstanding, including under a 100k-message replay.
 
@@ -109,6 +110,17 @@ The backend protocol has no documented application-level ping, so the engine use
 - Heartbeat timers are generation-tagged: a stale ping/pong/timeout callback from a previous generation is ignored.
 - Manual disconnect and background suspension cancel the heartbeat.
 
+## Market identity (exchange + quote + symbol)
+
+A market is identified by exchange, **quote currency**, and symbol (plus interval for candles); exchange/symbol alone is ambiguous (BTC/KRW vs BTC/USDT). The wire envelope always carries exchange and symbol, and the quote is sent on every subscribe, but the gateway is not guaranteed to echo it on events. The pipeline therefore resolves identity as follows:
+
+- **Wire echo is authoritative** — when an event envelope carries `quoteCurrency`, the decoder propagates it into the payload. An echoed quote that conflicts with the live identity for its channel key belongs to a replaced subscription and is discarded before fanout (counted in `staleEventsIgnored`).
+- **Single live identity per channel key** — the registry enforces at most one explicit quote identity per (channel, exchange, symbol, interval): acquiring a subscription with a different explicit quote atomically evicts the conflicting one (all owners released, one upstream unsubscribe, deterministic order). Conflicting identities never coexist in the registry.
+- **Stamping at decode time** — an event without a wire quote is stamped with the live registry identity for its channel key, i.e. subscription state at decode time, never mutable UI state after the event arrived. The UI adapter and view model attribute events by the stamped payload identity.
+- **Token validation for pending events** — every quote replacement bumps a per-channel-key token. Buffered events carry the token current at enqueue; a mismatch at dequeue means the identity was replaced while the event was pending, and the event is discarded as a counted drop (`staleIdentityEventsDropped`) instead of being delivered under the newly selected quote.
+
+**Documented limitation** — when the gateway does not echo the quote, frames from a replaced subscription that are already in flight during the unsubscribe round trip are indistinguishable from the new subscription's frames and are stamped with the new identity. This window is bounded by the wire round trip; everything the engine can distinguish (echoed quotes, pending buffered events, registry state) is validated as above.
+
 ## Event buffering, coalescing, and drop policy
 
 All buffering state lives in the engine. Policies are **per event kind** — orderbook/trade/candle events are deliberately *not* treated like tickers:
@@ -116,10 +128,10 @@ All buffering state lives in the engine. Policies are **per event kind** — ord
 | Event kind | Policy | Rationale |
 | --- | --- | --- |
 | Connection state | Never coalesced, never silently dropped | Consumers rely on ordering (`connecting` → `connected`) for UI status |
-| Ticker | Coalesced to the **latest value per market identity** (exchange + symbol + quote) between consumer drains; preserves latest price, latest timestamp, generation, market identity | Only the newest price matters for UI; bursts must not queue N main-actor hops |
-| Orderbook | Latest snapshot **replaces** any pending snapshot for the same market | The backend sends full snapshots; an outdated snapshot has no value |
-| Trades | Appended in order; pending trade events per market bounded to the most recent 64 batches, oldest dropped **with the drop counted** | Recent-trades UI shows a short tail; unbounded queuing is worse than losing the oldest batch |
-| Candles | Merged by (interval, candle timestamp): a newer update for the same candle replaces the pending one | Matches existing `mergeCandleUpdate` semantics in the view model |
+| Ticker | Coalesced to the **latest value per complete market identity** (exchange + quote + symbol, enforced in the buffer key) between consumer drains; preserves latest price, latest timestamp, generation, market identity | Only the newest price matters for UI; bursts must not queue N main-actor hops; two markets differing only in quote never replace each other |
+| Orderbook | Latest snapshot **replaces** any pending snapshot for the same complete market identity | The backend sends full snapshots; an outdated snapshot has no value |
+| Trades | Appended in order; pending trade events per complete market identity bounded to the most recent 64 batches, oldest dropped **with the drop counted** | Recent-trades UI shows a short tail; unbounded queuing is worse than losing the oldest batch |
+| Candles | Merged by (complete market identity, interval, candle timestamp): a newer update for the same candle replaces the pending one | Matches existing `mergeCandleUpdate` semantics in the view model |
 
 Backstop: each consumer's pending buffer is engine-owned and bounded at capacity **1024**; on overflow the oldest non-connection-state event is dropped first (state events are dropped only as a last resort). In steady state coalescing keeps the pending set far below this; the backstop only trips if a consumer stalls entirely. All drops are counted in metrics — including events still pending when a consumer unregisters or its task is cancelled — so the delivery-side conservation equation below holds and nothing is dropped silently. Connection-state events can only be lost to a fully stalled or departing consumer, which is recorded and surfaced in the Pipeline Lab.
 
@@ -153,7 +165,7 @@ Deprecation path: the legacy public `WebSocketService` is marked deprecated and 
 
 - **Ingress (global):** `transportFramesReceived`, `messagesDecoded`, `controlMessages`, `decodeFailures`. Valid conservation: `transportFramesReceived == messagesDecoded + controlMessages + decodeFailures`. (There are no transport-level rejected/backpressured counters because the pull-based transport has no overflow to count — see the ingress section.)
 - **Engine emission (global):** `logicalEventsEmitted` — one per logical `MarketStreamEvent` dispatched (market events and connection-state events), independent of consumer count.
-- **Delivery (aggregated across consumers):** `consumerEnqueues`, `consumerDeliveries`, `tickerEventsCoalesced`, `orderbookSnapshotsReplaced`, `candleUpdatesMergedOrReplaced`, `tradeEventsDropped` (per-market trade bound), `bufferEventsDropped` (capacity backstop plus unregister/cancellation discards). Valid conservation at any quiescent point: `consumerEnqueues == consumerDeliveries + tickerEventsCoalesced + orderbookSnapshotsReplaced + candleUpdatesMergedOrReplaced + tradeEventsDropped + bufferEventsDropped + (events still pending in live consumer buffers)`.
+- **Delivery (aggregated across consumers):** `consumerEnqueues`, `consumerDeliveries`, `tickerEventsCoalesced`, `orderbookSnapshotsReplaced`, `candleUpdatesMergedOrReplaced`, `tradeEventsDropped` (per-market trade bound), `bufferEventsDropped` (capacity backstop plus unregister/cancellation discards), `staleIdentityEventsDropped` (buffered events whose quote identity was replaced while pending — see "Market identity"). Valid conservation at any quiescent point: `consumerEnqueues == consumerDeliveries + tickerEventsCoalesced + orderbookSnapshotsReplaced + candleUpdatesMergedOrReplaced + tradeEventsDropped + bufferEventsDropped + staleIdentityEventsDropped + (events still pending in live consumer buffers)`.
 - Connection health: reconnect count, consecutive reconnect failures, last reconnect reason, heartbeat success/failure counts.
 - Latency: latest event latency (buffer enqueue → consumer dequeue), rolling p50/p95 (fixed 256-sample ring buffer), maximum observed buffer usage.
 

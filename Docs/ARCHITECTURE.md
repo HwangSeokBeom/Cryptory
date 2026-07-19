@@ -48,8 +48,8 @@ A small number of singletons exist alongside (`PushNotificationService.shared`, 
 
 The public market stream was rebuilt as an actor-isolated pipeline (`Cryptory/Services/Realtime/`). Key ownership rules:
 
-- **`MarketStreamEngine` (actor)** is the only owner of connection state, socket generation, subscriptions, reconnect/heartbeat state, buffers, and metrics.
-- **`WebSocketTransport` (protocol)** isolates `URLSessionWebSocketTask`; the engine never sees URLSession types, tests use a scripted transport.
+- **`MarketStreamEngine` (actor)** is the only owner of connection state, socket generation, subscriptions, reconnect/heartbeat state, buffers, metrics, and the live market-identity registry (complete exchange/quote/symbol identity: one live quote identity per channel key, decode-time stamping, token validation for pending events — see REALTIME_PIPELINE.md, "Market identity").
+- **`WebSocketTransport` (protocol)** isolates `URLSessionWebSocketTask`; the engine never sees URLSession types, tests use a scripted transport. The production wrapper's state machine is itself tested through an internal driver seam (`WebSocketSocketDriver`).
 - **`MarketStreamUIAdapter`** consumes the engine's `AsyncStream` and delivers on `MainActor`, implementing the legacy `PublicWebSocketServicing` protocol (its callbacks are declared `@MainActor`, applied synchronously by `CryptoViewModel`) so every screen remains behaviorally unchanged. Explicit `shutdown()` releases all engine-side ownership.
 - The **private** trading socket (`PrivateWebSocketService`) intentionally still uses the legacy implementation; migrating it is a documented follow-up, not silently included here.
 
@@ -60,7 +60,7 @@ Rationale, alternatives, and consequences: [ADR 0001](ADR/0001-actor-isolated-re
 - UI state: `@MainActor` (`CryptoViewModel` and SwiftUI views).
 - Realtime: actor isolation (`MarketStreamEngine`); events cross to the main actor exactly once, in the adapter.
 - App target builds with `SWIFT_VERSION = 6.0` and `SWIFT_APPROACHABLE_CONCURRENCY = YES`.
-- Remaining `@unchecked Sendable` in the app target is documented in [SECURITY_AND_PRIVACY.md](SECURITY_AND_PRIVACY.md) and ADR 0001; the new realtime path carries exactly one, documented at its declaration: `URLSessionWebSocketTransportConnection`, the compatibility boundary around non-`Sendable` URLSession types (its shared state is mutex-guarded).
+- Remaining `@unchecked Sendable` in the app target is documented in [SECURITY_AND_PRIVACY.md](SECURITY_AND_PRIVACY.md) and ADR 0001; the new realtime path carries exactly one, documented at its declaration: `URLSessionWebSocketTransportConnection`, the compatibility boundary around non-`Sendable` URLSession types (its mutable state is mutex-guarded inside a checked-`Sendable` `SharedBox`; the declaration is `@unchecked` only because the URLSession task/session references themselves are not `Sendable`).
 
 ## Deployment-target audit (iOS 26.0)
 

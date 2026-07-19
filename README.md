@@ -82,10 +82,15 @@ Schemes:
 ## Test
 
 ```bash
-scripts/ci_test.sh                                        # unit tests (UI tests skipped)
-scripts/ci_test.sh CryptoryTests/MarketStreamEngineTests  # focused realtime tests
-scripts/verify_no_secrets.sh                              # secret pattern scan
+# Unit tests run through the unit-only Cryptory-UnitTests scheme:
+# build-for-testing, explicit simulator boot, smoke class, full suite —
+# each phase watchdog-bounded (see Docs/TEST_STRATEGY.md §6).
+scripts/ci_test.sh                                             # full unit flow
+scripts/ci_test.sh test CryptoryTests/MarketStreamEngineTests  # focused realtime tests
+scripts/verify_no_secrets.sh                                   # secret pattern scan
 ```
+
+UI tests are separate — run them through the UI-capable `Cryptory-Dev` scheme (`xcodebuild test … -only-testing:CryptoryUITests`).
 
 Strategy and coverage: [Docs/TEST_STRATEGY.md](Docs/TEST_STRATEGY.md).
 

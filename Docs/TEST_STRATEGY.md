@@ -2,7 +2,7 @@
 
 This document records what the test suite actually covers today, the injection-based design that makes it possible, the gaps in current coverage, and the deterministic realtime test layer added on this branch. Counts and file references below were verified against the repository; planned work is explicitly labeled as planned.
 
-Last updated: 2026-07-18 (branch refactor/portfolio-realtime-foundation)
+Last updated: 2026-07-19 (branch refactor/portfolio-realtime-foundation)
 
 ## 1. Current state: CryptoryTests (unit)
 
@@ -36,14 +36,15 @@ Test doubles in `TestDoubles.swift` follow the Stub/Spy/Recording/Manual taxonom
 
 ## 4. Current gaps (honest)
 
-- No tests for reconnect, backoff, heartbeat, race conditions, or the transport layer itself. `WebSocketService` owns a real `URLSessionWebSocketTask` with no injectable transport or clock, so its timing behavior (fixed 2s public reconnect, private exponential backoff) is untested and untestable as written.
+- The **legacy** `WebSocketService` (deprecated) still owns a real `URLSessionWebSocketTask` with no injectable transport or clock, so its timing behavior (fixed 2s public reconnect, private exponential backoff) remains untested as written. The **new** realtime path is fully covered: engine behavior via `ScriptedWebSocketTransport` + `ManualTestClock`, and the production `URLSessionWebSocketTransportConnection` state machine directly via the internal `WebSocketSocketDriver` seam (`URLSessionTransportStateMachineTests`).
 - Private WS delivery has no double beyond `NoOpPrivateWebSocketService` — private message flows into the ViewModel are not exercised.
 - `ManualPublicWebSocketService` lacks `emitOrderbook`, so orderbook delivery into the ViewModel is untested.
+- Live production WSS endpoints are never exercised by any automated test; Foundation/network-stack internal buffering is opaque and outside the proven repository-owned memory bound.
 - (Resolved on this branch) Test targets previously built with `SWIFT_VERSION` 5.0 while the app target was 6.0; both test targets now build with Swift 6.0.
 
 ## 5. Deterministic realtime test layer (added on this branch)
 
-This branch introduces an actor-isolated market stream engine (`Cryptory/Services/Realtime/`) behind the existing `PublicWebSocketServicing` protocol, designed for determinism-first testing. The accompanying test layer lives under `CryptoryTests/Realtime/` (`MarketStreamEngineTests`, `RealtimeComponentTests`, `RealtimeTransportTests`, `RealtimeLifecycleTests`, `RealtimeMetricsSemanticsTests`, `RealtimeReplayBenchmarkTests`, plus `ScriptedWebSocketTransport`, `ManualTestClock`, `RealtimeFixtureLoader`; the presentation-publication contract is covered by `CryptoryTests/MarketPresentationPublicationTests`). The suite is the source of truth for its own count — run `scripts/ci_test.sh CryptoryTests/MarketStreamEngineTests` (or the full unit suite) rather than trusting a number written here; every test passes in the environment recorded in `Docs/PERFORMANCE_BASELINE.md`.
+This branch introduces an actor-isolated market stream engine (`Cryptory/Services/Realtime/`) behind the existing `PublicWebSocketServicing` protocol, designed for determinism-first testing. The accompanying test layer lives under `CryptoryTests/Realtime/` (`MarketStreamEngineTests`, `RealtimeComponentTests`, `RealtimeTransportTests`, `RealtimeLifecycleTests`, `RealtimeMetricsSemanticsTests`, `RealtimeReplayBenchmarkTests`, `MarketIdentityTests` — complete exchange/quote/symbol identity, single-live-identity enforcement, stale-identity token validation — and `URLSessionTransportStateMachineTests` — the production transport wrapper's state machine driven through the internal `WebSocketSocketDriver` seam; plus `ScriptedWebSocketTransport`, `ManualTestClock`, `RealtimeFixtureLoader`; the presentation-publication contract is covered by `CryptoryTests/MarketPresentationPublicationTests`). The suite is the source of truth for its own count — run `scripts/ci_test.sh test CryptoryTests/MarketStreamEngineTests` (or the full unit suite) rather than trusting a number written here; every test passes in the environment recorded in `Docs/PERFORMANCE_BASELINE.md`.
 
 Planned components:
 
@@ -79,18 +80,39 @@ Planned coverage: 30 deterministic scenarios across these categories:
 
 ## 6. Running tests locally
 
-Use the shared `Cryptory-Dev` scheme with a dynamically chosen simulator (no signing needed):
+Unit tests run through the **`Cryptory-UnitTests` scheme** via `scripts/ci_test.sh` — never through the shared `Cryptory-Dev` scheme, whose test action includes `CryptoryUITests` (and `-skip-testing` does **not** stop the UI-test runner from being *built*). The script is the supported entry point locally and in CI:
 
 ```sh
-xcodebuild test \
-  -project Cryptory.xcodeproj \
-  -scheme Cryptory-Dev \
-  -destination 'platform=iOS Simulator,name=iPhone 17 Pro' \
-  CODE_SIGNING_ALLOWED=NO
+# Full local flow: build-for-testing, explicit simulator boot, smoke,
+# then the complete CryptoryTests suite (all test-without-building).
+scripts/ci_test.sh
+
+# Individual phases / focused suites:
+scripts/ci_test.sh build
+scripts/ci_test.sh boot
+scripts/ci_test.sh smoke
+scripts/ci_test.sh test                                   # full CryptoryTests
+scripts/ci_test.sh test CryptoryTests/MarketStreamEngineTests
 ```
 
-Pick any installed simulator (`xcrun simctl list devices available`) — the suite has no device dependency. Verified environment: Xcode 26.6, iOS 26.3–26.5 simulator runtimes.
+Every phase is bounded by an in-script watchdog that collects simulator/process diagnostics before failing, so a hang is diagnosed instead of eating the job timeout. Simulator selection is dynamic (`scripts/ci_destination.sh`) and cached per DerivedData path so all phases use the same device; no signing is needed anywhere (`CODE_SIGNING_ALLOWED=NO`).
 
-## 7. CI hook (added on this branch)
+UI tests are separate: run them locally through the UI-capable `Cryptory-Dev` scheme (`xcodebuild test … -only-testing:CryptoryUITests`); they are not part of the unit pipeline.
 
-`scripts/ci_test.sh` and `.github/workflows/ios.yml` are added on this branch (they do not exist on `main` as of this writing). The script wraps the `xcodebuild test` invocation above with dynamic simulator selection and `CODE_SIGNING_ALLOWED=NO`; the workflow runs it on pushes/PRs. Until this branch lands on `main`, CI does not run automatically; tests are run locally via the command in section 6.
+Verified environment: Xcode 26.6, iOS 26.3–26.5 simulator runtimes.
+
+## 7. Hosted CI (`.github/workflows/ios.yml`)
+
+The workflow runs on pushes/PRs to `main`/`dev` and executes, in order:
+
+1. shell regression tests for the CI helpers (`scripts/test_ci_destination.sh`, `test_ci_test_lib.sh`, `test_ci_whitespace_check.sh`, `test_verify_no_secrets.sh`);
+2. whitespace check (`scripts/ci_whitespace_check.sh`) and secret scan (`scripts/verify_no_secrets.sh`);
+3. unsigned app build (`scripts/ci_build.sh Cryptory-Dev`);
+4. `scripts/ci_test.sh build` — `Cryptory-UnitTests` build-for-testing on a separate DerivedData path, then proves the UI-test runner was **not** built;
+5. `scripts/ci_test.sh boot` — explicit simulator boot via `simctl bootstatus` (never xcodebuild's implicit boot);
+6. `scripts/ci_test.sh smoke` — deterministic smoke class (`CryptoryTests/WebSocketParserTests`) via test-without-building, isolating infrastructure failures from suite failures;
+7. `scripts/ci_test.sh test` — the complete `CryptoryTests` suite (test-without-building);
+8. `scripts/ci_test.sh test CryptoryTests/MarketStreamEngineTests` — focused realtime signal;
+9. on failure or cancellation (including watchdog timeouts), xcresult bundles, logs, and collected diagnostics upload as artifacts.
+
+UI tests are not run in hosted CI (shared-runner UI-test infrastructure is flaky); see section 6 for the local UI-test path.
