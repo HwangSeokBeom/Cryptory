@@ -1,12 +1,25 @@
 import XCTest
 @testable import Cryptory
 
-/// Deterministic regression tests for complete realtime market identity:
-/// coalescing keys carry exchange + quote + symbol, at most one quote
-/// identity is live per (channel, exchange, symbol, interval), quote
-/// replacement is atomic, and late events from a replaced identity are
-/// discarded by token validation instead of being attributed to the newly
-/// selected quote. These tests fail if the identity correction is reverted.
+/// Deterministic regression tests for complete realtime market identity.
+/// Each group protects a specific invariant — reverting one fix does not
+/// necessarily fail every group:
+///
+/// - "Wire contract": the parser preserves (or leaves nil) the gateway's
+///   quote echo.
+/// - "Coalescing keys carry the complete identity": buffer key separation
+///   per quote, and — via the candle delivery test — quote-preserving candle
+///   payload reconstruction through engine coalescing. The reconstruction
+///   fix is protected by `testQuoteBearingCandleMergePreservesIdentity-
+///   ThroughEngineDelivery` and the ViewModel attribution test below; the
+///   key-separation tests protect the adjacent buffer-key invariant and can
+///   still pass when only reconstruction is reverted.
+/// - "Single live identity per channel key": atomic registry eviction and
+///   deterministic canonicalization of conflicting replacement sets.
+/// - "Identity stamping and stale-identity discard": decode-time stamping
+///   from the live registry and token-validated late-event discard. These
+///   protect attribution, not payload reconstruction, and can still pass
+///   when only reconstruction is reverted.
 final class MarketIdentityTests: XCTestCase {
     private let identityBTCKRW = MarketIdentity(exchange: .upbit, symbol: "BTC", quoteCurrency: .krw)
     private let identityBTCUSDT = MarketIdentity(exchange: .upbit, symbol: "BTC", quoteCurrency: .usdt)

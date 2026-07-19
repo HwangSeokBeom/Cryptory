@@ -1,27 +1,32 @@
 # Test Strategy
 
-This document records what the test suite actually covers today, the injection-based design that makes it possible, the gaps in current coverage, and the deterministic realtime test layer added on this branch. Counts and file references below were verified against the repository; planned work is explicitly labeled as planned.
+This document records what the test suite actually covers today, the injection-based design that makes it possible, the gaps in current coverage, and the deterministic realtime test layer added on this branch. Planned work is explicitly labeled as planned.
+
+Volatile inventory numbers (per-file line counts, per-class test tallies, source line references) are deliberately **not** recorded here — they drift with every commit and stale copies are worse than none. To regenerate current numbers: run the suite (`scripts/ci_test.sh test`, or `test CryptoryTests/<Class>` for one class) and read the `Executed N tests` summary, or `grep -c "func test" CryptoryTests/<File>.swift` for a static tally. The authoritative full-suite count is the `Executed N tests` line of the latest hosted CI run referenced in PR #1.
 
 Last updated: 2026-07-19 (branch refactor/portfolio-realtime-foundation)
 
 ## 1. Current state: CryptoryTests (unit)
 
-| File | Size / count | Coverage |
-| --- | --- | --- |
-| `CryptoryTests/NetworkAndAuthTests.swift` | 1,274 lines, 30 tests | API configuration resolution (`AppRuntimeConfiguration`), auth service contracts, response parsing |
-| `CryptoryTests/ViewModelStateTests.swift` | 7,181 lines, ~180 async tests | `CryptoViewModel` state transitions across tabs, auth, market, portfolio flows |
-| `CryptoryTests/FormAndViewStateTests.swift` | — | Form and view-state logic |
-| `CryptoryTests/PublicContentRepositoryTests.swift` | — | Public content (news/analysis) repository behavior |
-| `CryptoryTests/WebSocketParserTests.swift` | 176 lines | Parser contracts for `MarketWebSocketMessageParser` (envelope → ticker/orderbook/trades/candles, control-frame dropping) |
-| `CryptoryTests/ChartSettingsTests.swift` | — | Chart settings behavior |
-| `CryptoryTests/TestDoubles.swift` | 1,251 lines | Shared test doubles (below) |
+| Suite | Coverage |
+| --- | --- |
+| `NetworkAndAuthTests` | API configuration resolution (`AppRuntimeConfiguration`), auth service contracts, response parsing |
+| `ViewModelStateTests` | `CryptoViewModel` state transitions across tabs, auth, market, portfolio, chart, and kimchi flows |
+| `FormAndViewStateTests` | Form and view-state logic |
+| `PublicContentRepositoryTests` | Public content (news/analysis) repository behavior |
+| `WebSocketParserTests` | Parser contracts for `MarketWebSocketMessageParser` (envelope → ticker/orderbook/trades/candles, control-frame dropping); also the CI smoke class |
+| `ChartSettingsTests` | Chart settings behavior |
+| `MarketPresentationPublicationTests` | The presentation-publication contract (staged build gate) |
+| `TestIsolationRegressionTests` | Cross-test state-isolation boundaries |
+| `KimchiSnapshotGateTests` | Cancellation safety of the test-only kimchi snapshot gate (waiter removal, single resume, open/cancel interleaving) |
 
 Test doubles in `TestDoubles.swift` follow the Stub/Spy/Recording/Manual taxonomy, including WebSocket doubles and a URL-level spy:
 
-- `NoOpPublicWebSocketService` (line 1099), `RecordingPublicWebSocketService` (1116)
-- `ManualPublicWebSocketService` (1148): `emitState` / `emitTicker` / `emitTrades` / `emitCandles` (no `emitOrderbook` today)
-- `NoOpPrivateWebSocketService` (1176)
-- `URLProtocolSpy` (1191): intercepts URLSession traffic so no test touches the network
+- `NoOpPublicWebSocketService`, `RecordingPublicWebSocketService`
+- `ManualPublicWebSocketService`: `emitState` / `emitTicker` / `emitTrades` / `emitCandles` (no `emitOrderbook` today)
+- `NoOpPrivateWebSocketService`
+- `URLProtocolSpy`: intercepts URLSession traffic so no test touches the network
+- `KimchiSnapshotGate` + `DelayedKimchiPremiumRepository`: cancellation-safe latching gate so snapshot arrival is a test-controlled event, never a wall-clock race
 
 ## 2. Current state: CryptoryUITests
 
