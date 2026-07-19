@@ -218,7 +218,7 @@ final class RealtimeLifecycleTests: XCTestCase {
     func testDroppingLastAdapterReferenceDeallocatesAndReleasesEngineOwnership() async {
         let (engine, transport, _) = makeEngine()
         var adapter: MarketStreamUIAdapter? = MarketStreamUIAdapter(engine: engine, observesAppLifecycle: false)
-        weak var weakAdapter = adapter
+        weak let weakAdapter = adapter
         adapter?.updateSubscriptions([tickerBTC])
         let opened = await waitUntil { transport.openCount == 1 }
         XCTAssertTrue(opened)
