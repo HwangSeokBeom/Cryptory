@@ -3698,12 +3698,12 @@ final class ViewModelStateTests: XCTestCase {
             privateWebSocketService: NoOpPrivateWebSocketService()
         )
 
-        vm.onAppear()
+        // Await the publication contract instead of polling a wall-clock
+        // window: refreshMarketData() returns only after the staged rows are
+        // published, so the assertions below hold deterministically even on
+        // slow shared runners.
+        await vm.refreshMarketData(forceRefresh: true, reason: "unit_large_universe")
         let firstPaintLimit = 50
-        await waitUntil(timeoutNanoseconds: 3_000_000_000) {
-            vm.displayedMarketRows.count == firstPaintLimit
-                && vm.pricesByMarketIdentity.keys.filter { $0.exchange == .upbit }.count == firstPaintLimit
-        }
 
         XCTAssertEqual(vm.displayedMarketRows.count, firstPaintLimit)
         XCTAssertEqual(Set(vm.displayedMarketRows.map(\.id)).count, firstPaintLimit)
