@@ -85,12 +85,24 @@ actor MarketStreamEngine {
 
     /// Registers a consumer and returns its event stream. The stream ends
     /// when the consumer task is cancelled or `unregister(_:)` is called.
+    /// Cancelling the iterating task releases ownership fully: consumer,
+    /// buffered events (counted as drops), and registry subscriptions.
     func register() -> (id: UUID, events: AsyncStream<MarketStreamEvent>) {
         let id = UUID()
         consumers[id] = Consumer()
-        let stream = AsyncStream<MarketStreamEvent>(unfolding: { [weak self] in
-            await self?.next(for: id)
-        })
+        let stream = AsyncStream<MarketStreamEvent>(
+            unfolding: { [weak self] in await self?.next(for: id) },
+            onCancel: { [weak self] in
+                // Fires when the iterating task is cancelled — including the
+                // window where cancellation lands before the first unfolding
+                // call: AsyncStream then finishes without ever invoking the
+                // closure, so `next(for:)` alone would never observe it and
+                // the consumer would leak. Idempotent with every other
+                // release path.
+                guard let self else { return }
+                Task { await self.unregister(id) }
+            }
+        )
         return (id, stream)
     }
 
@@ -648,15 +660,15 @@ actor MarketStreamEngine {
                 consumers[id] = consumer
             }
         } onCancel: {
-            Task { await self.cancelWaiter(for: id) }
+            // Consumer-task cancellation is full ownership release, not just
+            // waking the waiter: unregister removes the waiter and buffer,
+            // releases registry ownership, reconciles upstream subscriptions,
+            // and closes the socket when the final owner leaves. If the
+            // cancellation fires before the waiter above is installed, this
+            // actor job runs after the installing job, so it is never lost;
+            // unregister stays idempotent for explicit calls afterwards.
+            Task { await self.unregister(id) }
         }
-    }
-
-    private func cancelWaiter(for id: UUID) {
-        guard var consumer = consumers[id], let waiter = consumer.waiter else { return }
-        consumer.waiter = nil
-        consumers[id] = consumer
-        waiter.resume(returning: nil)
     }
 
     // MARK: - Helpers

@@ -13,6 +13,14 @@ import UIKit
 ///   suspend/resume policy (close socket in background, restore
 ///   subscriptions in foreground) — see Docs/REALTIME_PIPELINE.md.
 ///
+/// Lifecycle: neither internal task retains `self` across suspensions (the
+/// consume loop reacquires a weak reference per event only), so dropping the
+/// last strong reference deallocates the adapter and `deinit` runs its
+/// safety cleanup. `shutdown()` is the explicit, idempotent teardown —
+/// correctness does not depend on `deinit` alone. Cancelling the consume
+/// task releases engine-side ownership (consumer, buffer, subscriptions;
+/// the engine closes the socket when the final owner leaves).
+///
 /// Migration path: once `CryptoViewModel` consumes `MarketStreamEvent`
 /// directly, this adapter and the legacy protocol can be deleted.
 @MainActor
@@ -39,6 +47,7 @@ final class MarketStreamUIAdapter: @MainActor PublicWebSocketServicing {
     private var consumeTask: Task<Void, Never>?
     private var lastLegacyState: PublicWebSocketConnectionState?
     private var lifecycleObservers: [NSObjectProtocol] = []
+    private var isShutdown = false
 
     init(engine: MarketStreamEngine, observesAppLifecycle: Bool = true) {
         self.engine = engine
@@ -46,9 +55,13 @@ final class MarketStreamUIAdapter: @MainActor PublicWebSocketServicing {
         let (stream, continuation) = AsyncStream<Command>.makeStream()
         self.commands = continuation
 
-        pumpTask = Task { [engine] in
+        // The pump owns the engine consumer registration. It captures the
+        // engine and the command stream, never `self` (a weak reference is
+        // used once to hand the event stream to the consume loop), so it
+        // cannot keep the adapter alive.
+        pumpTask = Task { [engine, weak self] in
             let (ownerID, events) = await engine.register()
-            self.startConsuming(events)
+            self?.startConsuming(events)
             for await command in stream {
                 switch command {
                 case .connect:
@@ -63,6 +76,8 @@ final class MarketStreamUIAdapter: @MainActor PublicWebSocketServicing {
                     await engine.resume()
                 }
             }
+            // Idempotent with the engine-side release performed when the
+            // consume task is cancelled.
             await engine.unregister(ownerID)
         }
 
@@ -81,34 +96,62 @@ final class MarketStreamUIAdapter: @MainActor PublicWebSocketServicing {
     }
 
     isolated deinit {
+        // Nonblocking safety net only — explicit shutdown() is the contract.
+        shutdown()
+    }
+
+    /// Explicit, idempotent teardown: stops accepting commands, cancels the
+    /// command and consumer tasks (cancellation releases the engine-side
+    /// consumer, its buffer, and its subscriptions; the engine disconnects
+    /// when no other owner remains), removes lifecycle observers, and stops
+    /// callback delivery. Safe to call repeatedly.
+    func shutdown() {
+        guard !isShutdown else { return }
+        isShutdown = true
+        onConnectionStateChange = nil
+        onTickerReceived = nil
+        onOrderbookReceived = nil
+        onTradesReceived = nil
+        onCandlesReceived = nil
         commands.finish()
         pumpTask?.cancel()
+        pumpTask = nil
         consumeTask?.cancel()
+        consumeTask = nil
         for observer in lifecycleObservers {
             NotificationCenter.default.removeObserver(observer)
         }
+        lifecycleObservers = []
     }
 
     // MARK: - PublicWebSocketServicing
 
     func connect() {
+        guard !isShutdown else { return }
         commands.yield(.connect)
     }
 
     func disconnect() {
+        guard !isShutdown else { return }
         commands.yield(.disconnect)
     }
 
     func updateSubscriptions(_ subscriptions: Set<PublicMarketSubscription>) {
+        guard !isShutdown else { return }
         commands.yield(.replaceSubscriptions(subscriptions))
     }
 
     // MARK: - Event delivery (MainActor)
 
     private func startConsuming(_ events: AsyncStream<MarketStreamEvent>) {
-        guard consumeTask == nil else { return }
-        consumeTask = Task {
+        guard consumeTask == nil, !isShutdown else { return }
+        // The loop must not retain `self` while suspended waiting for the
+        // next event: it reacquires a weak reference per delivered event and
+        // releases it before suspending again, so the adapter can deallocate
+        // while the stream is idle.
+        consumeTask = Task { [weak self] in
             for await event in events {
+                guard let self, !self.isShutdown else { return }
                 self.deliver(event)
             }
         }
@@ -133,6 +176,12 @@ final class MarketStreamUIAdapter: @MainActor PublicWebSocketServicing {
             onCandlesReceived?(payload)
         }
     }
+
+#if DEBUG
+    // Test introspection only.
+    var debugLifecycleObserverCount: Int { lifecycleObservers.count }
+    var debugIsShutdown: Bool { isShutdown }
+#endif
 
     // MARK: - App lifecycle
 
