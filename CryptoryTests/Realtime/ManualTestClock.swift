@@ -30,15 +30,32 @@ final class ManualTestClock: RealtimeClock {
         let id = UUID()
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-                let resumeImmediately: Bool = state.withLock { state in
-                    guard duration > .zero else { return true }
+                enum Disposition {
+                    case park
+                    case resumeNow
+                    case throwCancelled
+                }
+                let disposition: Disposition = state.withLock { state in
+                    // Cancel-before-park: when the owning task was cancelled
+                    // before this continuation body ran, the onCancel handler
+                    // has already fired and found nothing to remove. Parking
+                    // here would create a sleeper nothing can ever resume —
+                    // and its presence would satisfy sleeper-count waits for
+                    // a timer that is not actually armed.
+                    if Task.isCancelled { return .throwCancelled }
+                    guard duration > .zero else { return .resumeNow }
                     state.sleepers.append(
                         Sleeper(id: id, deadline: state.now + duration, continuation: continuation)
                     )
-                    return false
+                    return .park
                 }
-                if resumeImmediately {
+                switch disposition {
+                case .park:
+                    break
+                case .resumeNow:
                     continuation.resume()
+                case .throwCancelled:
+                    continuation.resume(throwing: CancellationError())
                 }
             }
         } onCancel: {
