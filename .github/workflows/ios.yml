@@ -22,6 +22,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # Full history so the whitespace check can resolve a merge base
+          # against the PR base branch.
+          fetch-depth: 0
 
       - name: Select Xcode
         # Pick the newest installed Xcode on the runner instead of
@@ -34,7 +38,13 @@ jobs:
           xcodebuild -version
 
       - name: Whitespace check
-        run: git diff --check origin/${{ github.base_ref || 'main' }}...HEAD || true
+        # Fails the build on whitespace errors. PR events diff from the merge
+        # base with the base branch; push events diff from the previous head
+        # (with validated fallbacks) — see scripts/ci_whitespace_check.sh.
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE_SHA: ${{ github.event.before }}
+        run: bash scripts/ci_whitespace_check.sh
 
       - name: Secret scan
         run: bash scripts/verify_no_secrets.sh
