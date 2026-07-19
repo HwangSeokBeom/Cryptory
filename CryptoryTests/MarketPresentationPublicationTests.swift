@@ -251,6 +251,25 @@ final class MarketPresentationPublicationTests: XCTestCase {
         }
     }
 
+    /// Bounded deadlock guard around awaiting a task that is only unblocked
+    /// by test-controlled gates: returns false instead of hanging the suite
+    /// (and the CI job) if a precondition failed and the gate never opens.
+    private func awaitCompletion(
+        of task: Task<Void, Never>,
+        timeout: Duration = .seconds(30)
+    ) async -> Bool {
+        await withTaskGroup(of: Bool.self) { group in
+            group.addTask { await task.value; return true }
+            group.addTask {
+                try? await Task.sleep(for: timeout)
+                return false
+            }
+            let first = await group.next() ?? false
+            group.cancelAll()
+            return first
+        }
+    }
+
     // MARK: - Publication contract
 
     func testRefreshMarketDataPublishesRowsBeforeReturning() async {
@@ -280,6 +299,9 @@ final class MarketPresentationPublicationTests: XCTestCase {
         // the ticker load and again from refreshMarketState), so refresh A
         // parks two builds and refresh B two more.
         let box = BuildGateBox()
+        // A failed precondition must never leave a build parked forever: the
+        // teardown opens every gate so no await outlives the test.
+        addTeardownBlock { box.releaseAll() }
         vm.debugMarketPresentationBuildGate = { token in
             await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
                 box.hold(token, continuation)
@@ -289,19 +311,29 @@ final class MarketPresentationPublicationTests: XCTestCase {
         repository.tickerSnapshots[.upbit] = Self.tickerSnapshot(price: 2_000)
         let refreshA = Task { await vm.refreshMarketData(forceRefresh: true, reason: "unit_stale_build") }
         let gatedA = await waitUntil { box.tokens().count == 2 }
-        XCTAssertTrue(gatedA, "refresh A must park its builds at the gate (tokens=\(box.tokens()))")
+        guard gatedA else {
+            box.releaseAll()
+            return XCTFail("refresh A must park its builds at the gate (tokens=\(box.tokens()))")
+        }
         let tokensA = Set(box.tokens())
 
         repository.tickerSnapshots[.upbit] = Self.tickerSnapshot(price: 3_000)
         let refreshB = Task { await vm.refreshMarketData(forceRefresh: true, reason: "unit_newer_build") }
         let gatedB = await waitUntil { box.tokens().count == 4 }
-        XCTAssertTrue(gatedB, "refresh B must park its builds at the gate (tokens=\(box.tokens()))")
+        guard gatedB else {
+            box.releaseAll()
+            return XCTFail("refresh B must park its builds at the gate (tokens=\(box.tokens()))")
+        }
         let newestToken = box.tokens().max()!
         XCTAssertFalse(tokensA.contains(newestToken), "the newest token belongs to refresh B")
 
         // Newest build publishes first…
         box.release(newestToken)
-        await refreshB.value
+        let refreshBFinished = await awaitCompletion(of: refreshB)
+        guard refreshBFinished else {
+            box.releaseAll()
+            return XCTFail("refresh B must complete once its build is released (tokens=\(box.tokens()))")
+        }
         XCTAssertTrue(
             vm.displayedMarketRows.first?.priceText.contains("3,000") == true,
             "newest build publishes, got \(vm.displayedMarketRows.first?.priceText ?? "nil")"
@@ -312,7 +344,11 @@ final class MarketPresentationPublicationTests: XCTestCase {
         for token in box.tokens().sorted() {
             box.release(token)
         }
-        await refreshA.value
+        let refreshAFinished = await awaitCompletion(of: refreshA)
+        guard refreshAFinished else {
+            box.releaseAll()
+            return XCTFail("refresh A must complete once all builds are released (tokens=\(box.tokens()))")
+        }
         await settle()
         XCTAssertTrue(
             vm.displayedMarketRows.first?.priceText.contains("3,000") == true,
@@ -336,8 +372,11 @@ final class MarketPresentationPublicationTests: XCTestCase {
         XCTAssertEqual(repository.suspendedTickerFetchCount, 1, "overlapping refresh dedupes onto the in-flight fetch")
 
         repository.releaseTickerFetches()
-        await first.value
-        await second.value
+        let firstFinished = await awaitCompletion(of: first)
+        let secondFinished = await awaitCompletion(of: second)
+        guard firstFinished, secondFinished else {
+            return XCTFail("refreshes must complete once the fetch gate opens (first=\(firstFinished) second=\(secondFinished))")
+        }
 
         XCTAssertFalse(vm.displayedMarketRows.isEmpty, "rows published after overlapping refreshes complete")
         XCTAssertEqual(spy.fetchedTickers.count, 1, "ticker fetch count stays exactly one across overlapping refreshes")
