@@ -191,7 +191,10 @@ struct MarketStreamEventBuffer {
         guard
             case .candles(let newPayload) = incoming,
             case .candles(let oldPayload)? = pending,
-            oldPayload.interval == newPayload.interval
+            oldPayload.exchange == newPayload.exchange,
+            oldPayload.symbol == newPayload.symbol,
+            oldPayload.interval == newPayload.interval,
+            oldPayload.quoteCurrency == newPayload.quoteCurrency
         else {
             return incoming
         }
@@ -208,7 +211,8 @@ struct MarketStreamEventBuffer {
                 symbol: newPayload.symbol,
                 exchange: newPayload.exchange,
                 interval: newPayload.interval,
-                candles: mergedCandles
+                candles: mergedCandles,
+                quoteCurrency: newPayload.quoteCurrency
             )
         )
     }

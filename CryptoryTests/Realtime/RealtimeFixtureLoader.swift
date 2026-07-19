@@ -56,10 +56,11 @@ enum RealtimeFixtureLoader {
         interval: String = "1h",
         close: Double,
         candleTimeMillis: Int,
-        sequence: Int = 0
+        sequence: Int = 0,
+        quote: String? = nil
     ) -> String {
         """
-        {"type":"candles","exchange":"\(exchange)","symbol":"\(symbol)","timeframe":"\(interval)","data":{"candles":[{"open":\(close - 1),"high":\(close + 1),"low":\(close - 2),"close":\(close),"volume":10,"timestamp":\(candleTimeMillis)}]}}
+        {"type":"candles","exchange":"\(exchange)","symbol":"\(symbol)","timeframe":"\(interval)",\(quoteField(quote))"data":{"candles":[{"open":\(close - 1),"high":\(close + 1),"low":\(close - 2),"close":\(close),"volume":10,"timestamp":\(candleTimeMillis)}]}}
         """
     }
 

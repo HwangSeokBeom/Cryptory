@@ -24,6 +24,14 @@ final class MarketIdentityTests: XCTestCase {
         PublicMarketSubscription(channel: .ticker, marketIdentity: identityETHKRW)
     }
 
+    private var candlesBTCKRW: PublicMarketSubscription {
+        PublicMarketSubscription(channel: .candles, marketIdentity: identityBTCKRW, interval: "1h")
+    }
+
+    private var candlesBTCUSDT: PublicMarketSubscription {
+        PublicMarketSubscription(channel: .candles, marketIdentity: identityBTCUSDT, interval: "1h")
+    }
+
     private func makeEngine() -> (MarketStreamEngine, ScriptedWebSocketTransport, ManualTestClock) {
         let transport = ScriptedWebSocketTransport()
         let clock = ManualTestClock()
@@ -146,6 +154,48 @@ final class MarketIdentityTests: XCTestCase {
         await engine.unregister(consumerID)
     }
 
+    func testQuoteBearingCandleMergePreservesIdentityThroughEngineDelivery() async {
+        let (engine, transport, _) = makeEngine()
+        let (consumerID, events) = await engine.register()
+        var iterator = events.makeAsyncIterator()
+        await engine.replaceSubscriptions(owner: consumerID, with: [candlesBTCKRW])
+        let connection = try! XCTUnwrap(transport.lastConnection)
+        connection.scriptOpened()
+
+        connection.scriptText(
+            RealtimeFixtureLoader.candleMessage(
+                close: 100,
+                candleTimeMillis: 1_700_000_000_000,
+                sequence: 0,
+                quote: "KRW"
+            )
+        )
+        connection.scriptText(
+            RealtimeFixtureLoader.candleMessage(
+                close: 101,
+                candleTimeMillis: 1_700_003_600_000,
+                sequence: 1,
+                quote: "KRW"
+            )
+        )
+        await waitUntil { await engine.metricsSnapshot().messagesDecoded == 2 }
+
+        var payload: CandleStreamPayload?
+        for _ in 0..<50 {
+            guard let event = await iterator.next() else { break }
+            if case .candles(let candles) = event {
+                payload = candles
+                break
+            }
+        }
+        XCTAssertEqual(payload?.quoteCurrency, .krw, "engine coalescing must preserve the stamped quote")
+        XCTAssertEqual(payload?.candles.map(\.close), [100, 101])
+        let snapshot = await engine.metricsSnapshot()
+        XCTAssertEqual(snapshot.candleUpdatesMergedOrReplaced, 1)
+        XCTAssertEqual(snapshot.staleIdentityEventsDropped, 0)
+        await engine.unregister(consumerID)
+    }
+
     // MARK: - Single live identity per channel key
 
     func testConflictingQuoteIdentityIsEvictedAtomicallyFromRegistry() {
@@ -261,6 +311,97 @@ final class MarketIdentityTests: XCTestCase {
                 + final.staleIdentityEventsDropped,
             "metrics conservation must hold after identity replacement: \(final)"
         )
+    }
+
+    func testLateMergedCandleFromReplacedQuoteIsDroppedWithCorrectMetric() async {
+        let (engine, transport, _) = makeEngine()
+        let (consumerID, events) = await engine.register()
+        var iterator = events.makeAsyncIterator()
+        await engine.replaceSubscriptions(owner: consumerID, with: [candlesBTCKRW])
+        let connection = try! XCTUnwrap(transport.lastConnection)
+        connection.scriptOpened()
+
+        connection.scriptText(
+            RealtimeFixtureLoader.candleMessage(close: 100, candleTimeMillis: 1_700_000_000_000, sequence: 0)
+        )
+        connection.scriptText(
+            RealtimeFixtureLoader.candleMessage(close: 101, candleTimeMillis: 1_700_003_600_000, sequence: 1)
+        )
+        await waitUntil { await engine.metricsSnapshot().messagesDecoded == 2 }
+        await engine.replaceSubscriptions(owner: consumerID, with: [candlesBTCUSDT])
+        connection.scriptText(
+            RealtimeFixtureLoader.candleMessage(close: 70_000, candleTimeMillis: 1_700_007_200_000, sequence: 2)
+        )
+        await waitUntil { await engine.metricsSnapshot().messagesDecoded == 3 }
+
+        var delivered: CandleStreamPayload?
+        for _ in 0..<50 {
+            guard let event = await iterator.next() else { break }
+            if case .candles(let candles) = event {
+                delivered = candles
+                break
+            }
+        }
+        XCTAssertEqual(delivered?.quoteCurrency, .usdt)
+        XCTAssertEqual(delivered?.candles.map(\.close), [70_000])
+        let snapshot = await engine.metricsSnapshot()
+        XCTAssertEqual(snapshot.candleUpdatesMergedOrReplaced, 1, "the two KRW updates coalesced before replacement")
+        XCTAssertEqual(snapshot.staleIdentityEventsDropped, 1, "the stale merged KRW entry is counted once")
+        await engine.unregister(consumerID)
+    }
+
+    @MainActor
+    func testMergedKRWCandleCannotUpdateUSDTChartAndQuoteLessCompatibilityRemains() {
+        var buffer = MarketStreamEventBuffer()
+        let older = CandleStreamPayload(
+            symbol: "BTC",
+            exchange: "binance",
+            interval: "1h",
+            candles: [CandleData(time: 1000, open: 1, high: 2, low: 0, close: 100, volume: 5)],
+            quoteCurrency: .krw
+        )
+        let newer = CandleStreamPayload(
+            symbol: "BTC",
+            exchange: "binance",
+            interval: "1h",
+            candles: [CandleData(time: 2000, open: 2, high: 3, low: 1, close: 101, volume: 6)],
+            quoteCurrency: .krw
+        )
+        _ = buffer.enqueue(.candles(older), at: .zero, capacity: 16, maxTradeBatchesPerMarket: 4)
+        _ = buffer.enqueue(.candles(newer), at: .zero, capacity: 16, maxTradeBatchesPerMarket: 4)
+        guard case .candles(let mergedKRW)? = buffer.dequeue()?.event else {
+            return XCTFail("expected merged KRW candles")
+        }
+        XCTAssertEqual(mergedKRW.quoteCurrency, .krw)
+
+        let service = ManualPublicWebSocketService()
+        let vm = CryptoViewModel(
+            marketRepository: SpyMarketRepository(),
+            tradingRepository: SpyTradingRepository(),
+            portfolioRepository: SpyPortfolioRepository(),
+            kimchiPremiumRepository: StubKimchiPremiumRepository(),
+            exchangeConnectionsRepository: SpyExchangeConnectionsRepository(),
+            authService: StubAuthenticationService(),
+            publicWebSocketService: service,
+            privateWebSocketService: NoOpPrivateWebSocketService()
+        )
+        vm.updateExchange(.binance, source: "identity_test")
+        vm.selectedCoin = CoinCatalog.coin(symbol: "BTC", exchange: .binance)
+        vm.chartPeriod = "1h"
+        XCTAssertEqual(vm.selectedQuoteCurrency, .usdt)
+
+        service.emitCandles(mergedKRW)
+        XCTAssertTrue(vm.candles.isEmpty, "a known KRW identity must not act as a wildcard on a USDT chart")
+
+        service.emitCandles(
+            CandleStreamPayload(
+                symbol: "BTC",
+                exchange: "binance",
+                interval: "1h",
+                candles: [CandleData(time: 3000, open: 3, high: 4, low: 2, close: 102, volume: 7)]
+            )
+        )
+        XCTAssertEqual(vm.candles.map(\.close), [102], "quote-less gateway payloads retain legacy wildcard behavior")
     }
 
     func testWireEchoedQuoteConflictingWithLiveIdentityIsIgnoredAsStale() async {

@@ -222,6 +222,61 @@ final class RealtimeComponentTests: XCTestCase {
         XCTAssertEqual(payload.candles.last?.close, 3, "newer candle data wins for the same timestamp")
     }
 
+    func testCandleMergePreservesQuoteIdentity() {
+        var buffer = MarketStreamEventBuffer()
+        let first = CandleStreamPayload(
+            symbol: "BTC",
+            exchange: "upbit",
+            interval: "1h",
+            candles: [CandleData(time: 1000, open: 1, high: 2, low: 0, close: 1, volume: 5)],
+            quoteCurrency: .krw
+        )
+        let update = CandleStreamPayload(
+            symbol: "BTC",
+            exchange: "upbit",
+            interval: "1h",
+            candles: [CandleData(time: 2000, open: 2, high: 3, low: 1, close: 2, volume: 6)],
+            quoteCurrency: .krw
+        )
+
+        _ = enqueue(.candles(first), into: &buffer)
+        let result = enqueue(.candles(update), into: &buffer)
+        XCTAssertTrue(result.mergedCandle)
+        guard case .candles(let payload)? = buffer.dequeue()?.event else {
+            return XCTFail("expected a merged candle payload")
+        }
+        XCTAssertEqual(payload.quoteCurrency, .krw, "coalescing must never erase a known quote")
+        XCTAssertEqual(payload.candles.map(\.time), [1000, 2000])
+    }
+
+    func testCandleDifferentQuotesStaySeparateAndQuoteLessMergeRemainsCompatible() {
+        var buffer = MarketStreamEventBuffer()
+        func payload(_ quote: MarketQuoteCurrency?, time: Int) -> CandleStreamPayload {
+            CandleStreamPayload(
+                symbol: "BTC",
+                exchange: "upbit",
+                interval: "1h",
+                candles: [CandleData(time: time, open: 1, high: 2, low: 0, close: 1, volume: 5)],
+                quoteCurrency: quote
+            )
+        }
+
+        _ = enqueue(.candles(payload(.krw, time: 1000)), into: &buffer)
+        let conflicting = enqueue(.candles(payload(.usdt, time: 2000)), into: &buffer)
+        XCTAssertFalse(conflicting.mergedCandle)
+        XCTAssertEqual(buffer.count, 2, "complete identities with different quotes must never merge")
+
+        var quoteLess = MarketStreamEventBuffer()
+        _ = enqueue(.candles(payload(nil, time: 1000)), into: &quoteLess)
+        let legacy = enqueue(.candles(payload(nil, time: 2000)), into: &quoteLess)
+        XCTAssertTrue(legacy.mergedCandle, "quote-less gateway payloads retain their documented compatibility")
+        guard case .candles(let merged)? = quoteLess.dequeue()?.event else {
+            return XCTFail("expected quote-less merged candles")
+        }
+        XCTAssertNil(merged.quoteCurrency)
+        XCTAssertEqual(merged.candles.map(\.time), [1000, 2000])
+    }
+
     func testTradeBufferingRemainsBounded() {
         var buffer = MarketStreamEventBuffer()
         var dropped = 0
