@@ -1,6 +1,24 @@
 import XCTest
 @testable import Cryptory
 
+private actor ManualClockEntryGate {
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    var isWaiting: Bool { continuation != nil }
+
+    func wait() async {
+        await withCheckedContinuation { continuation in
+            self.continuation = continuation
+        }
+    }
+
+    func release() {
+        let continuation = continuation
+        self.continuation = nil
+        continuation?.resume()
+    }
+}
+
 /// Deterministic integration tests for `MarketStreamEngine` using
 /// `ScriptedWebSocketTransport` and `ManualTestClock`. No live network, no
 /// wall-clock sleeps for correctness; every wait is a bounded cooperative
@@ -107,6 +125,36 @@ final class MarketStreamEngineTests: XCTestCase {
             if let expectedAttempt, attempt != expectedAttempt { return false }
             return clock.sleeperCount >= 1
         }
+    }
+
+    // MARK: - Manual clock cancellation
+
+    func testAlreadyCancelledManualClockSleepNeverParksZombieSleeper() async {
+        let clock = ManualTestClock()
+        let gate = ManualClockEntryGate()
+        let sleep = Task<Result<Void, Error>, Never> {
+            await gate.wait()
+            do {
+                try await clock.sleep(for: .seconds(10))
+                return .success(())
+            } catch {
+                return .failure(error)
+            }
+        }
+        let gated = await waitUntil { await gate.isWaiting }
+        XCTAssertTrue(gated)
+
+        sleep.cancel()
+        await gate.release()
+        guard case .failure(let error) = await sleep.value else {
+            return XCTFail("an already-cancelled task must not sleep")
+        }
+        XCTAssertTrue(error is CancellationError)
+        XCTAssertEqual(clock.sleeperCount, 0, "cancel-before-park must leave no sleeper")
+
+        clock.advance(by: .seconds(60))
+        await settle()
+        XCTAssertEqual(clock.sleeperCount, 0, "advance cannot resume or recreate a zombie sleeper")
     }
 
     // MARK: - Connection ownership
