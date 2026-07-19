@@ -560,6 +560,128 @@ final class URLSessionTransportStateMachineTests: XCTestCase {
         XCTAssertTrue(ended is WebSocketTransportError)
     }
 
+    // MARK: - Explicit close versus an already accepted terminal result
+
+    func testQueuedDelegateCloseSurvivesExplicitClose() async {
+        let (connection, driver) = makeConnection()
+        connection.handleSocketClosed(code: 1000, reason: "queued")
+        connection.close()
+
+        XCTAssertEqual(driver.cancelCount, 1, "explicit close still cancels the driver exactly once")
+        var state = connection.debugReceiveState
+        XCTAssertTrue(state.ended)
+        XCTAssertTrue(state.hasPendingTerminal, "explicit close must not erase the accepted delegate close")
+
+        let first = startReceive(on: connection)
+        guard case .success(.closed(let code, let reason)) = await first.value else {
+            return XCTFail("the accepted first close must stay consumable across explicit close")
+        }
+        XCTAssertEqual(code, 1000)
+        XCTAssertEqual(reason, "queued")
+
+        let second = startReceive(on: connection)
+        guard case .failure(let error) = await second.value else {
+            return XCTFail("the terminal result is consumable exactly once")
+        }
+        XCTAssertTrue(error is WebSocketTransportError, "got \(error)")
+
+        state = connection.debugReceiveState
+        XCTAssertTrue(state.ended)
+        XCTAssertFalse(state.hasPendingTerminal)
+        XCTAssertFalse(state.hasPendingText)
+        XCTAssertFalse(state.hasWaiter)
+        XCTAssertEqual(driver.cancelCount, 1)
+    }
+
+    func testQueuedDriverErrorSurvivesExplicitClose() async {
+        let (connection, driver) = makeConnection()
+        connection.handleTaskCompleted(error: DriverTestError.scripted)
+        connection.close()
+
+        let first = startReceive(on: connection)
+        guard case .failure(let error) = await first.value else {
+            return XCTFail("the accepted terminal error must stay consumable across explicit close")
+        }
+        XCTAssertTrue(error is DriverTestError, "explicit close must not replace the original error, got \(error)")
+
+        let second = startReceive(on: connection)
+        guard case .failure(let ended) = await second.value else {
+            return XCTFail("later receives fail as ended")
+        }
+        XCTAssertTrue(ended is WebSocketTransportError, "got \(ended)")
+        XCTAssertEqual(driver.cancelCount, 1)
+    }
+
+    func testExplicitCloseAsFirstTerminalTransitionIsPermanentAndIdempotent() async {
+        let (connection, driver) = makeConnection()
+        connection.close()
+
+        var state = connection.debugReceiveState
+        XCTAssertTrue(state.ended, "explicit close as the first transition establishes ended state")
+        XCTAssertFalse(state.hasPendingTerminal, "explicit close leaves no consumable terminal result")
+
+        connection.handleSocketClosed(code: 1000, reason: "late")
+        connection.handleTaskCompleted(error: DriverTestError.scripted)
+        state = connection.debugReceiveState
+        XCTAssertFalse(state.hasPendingTerminal, "late delegate terminals cannot replace explicit close")
+
+        let receive = startReceive(on: connection)
+        guard case .failure(let error) = await receive.value else {
+            return XCTFail("receives after explicit close fail as ended")
+        }
+        XCTAssertTrue(error is WebSocketTransportError, "got \(error)")
+
+        connection.close()
+        connection.close()
+        XCTAssertEqual(driver.cancelCount, 1, "repeated close stays idempotent")
+    }
+
+    func testCancelledReceiveDoesNotConsumeQueuedTerminal() async {
+        let driver = ControlledSocketDriver()
+        let gate = ReceiveInstallGate()
+        let connection = URLSessionWebSocketTransportConnection(
+            driver: driver,
+            beforeReceiveWaiterInstall: { gate.wait() }
+        )
+        connection.handleSocketClosed(code: 1001, reason: "queued")
+
+        let cancelled = startReceive(on: connection)
+        let entered = await waitUntil { gate.hasEntered }
+        XCTAssertTrue(entered, "receive must reach the deterministic pre-install gate")
+
+        cancelled.cancel()
+        gate.release()
+        guard case .failure(let error) = await cancelled.value else {
+            return XCTFail("a cancelled receive must throw, not deliver")
+        }
+        XCTAssertTrue(error is CancellationError, "got \(error)")
+        XCTAssertTrue(
+            connection.debugReceiveState.hasPendingTerminal,
+            "a cancelled receive must not swallow the single consumable terminal result"
+        )
+
+        connection.close()
+        XCTAssertTrue(
+            connection.debugReceiveState.hasPendingTerminal,
+            "explicit close after the cancelled receive must also preserve it"
+        )
+
+        let next = startReceive(on: connection)
+        guard case .success(.closed(let code, let reason)) = await next.value else {
+            return XCTFail("terminal ownership was lost")
+        }
+        XCTAssertEqual(code, 1001)
+        XCTAssertEqual(reason, "queued")
+
+        let later = startReceive(on: connection)
+        guard case .failure(let ended) = await later.value else {
+            return XCTFail("the consumed terminal cannot be consumed twice")
+        }
+        XCTAssertTrue(ended is WebSocketTransportError, "got \(ended)")
+        XCTAssertEqual(driver.receiveCallCount, 0, "no driver receive may start on an ended connection")
+        XCTAssertEqual(driver.cancelCount, 1)
+    }
+
     func testTerminalTaskErrorSurfacesExactlyOnce() async throws {
         let (connection, _) = makeConnection()
         connection.handleTaskCompleted(error: DriverTestError.scripted)

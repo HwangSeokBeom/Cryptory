@@ -678,20 +678,71 @@ final class SpyKimchiPremiumRepository: KimchiPremiumRepositoryProtocol {
 /// straight through. Replaces wall-clock delays so "the switch target's
 /// snapshot has not arrived yet" is a state the test controls, not a race
 /// against the host's scheduler.
+///
+/// Cancellation-safe: every waiter is registered under a stable ID, a task
+/// cancelled while parked is removed atomically (actor-isolated) and resumed
+/// exactly once with `CancellationError`, and `open()` resumes only the
+/// waiters still registered — cancellation and open can never double-resume
+/// or leak a parked continuation.
 actor KimchiSnapshotGate {
     private var isOpen = false
-    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private var waiters: [UUID: CheckedContinuation<Void, Error>] = [:]
+    private var countWatchers: [(target: Int, continuation: CheckedContinuation<Void, Never>)] = []
 
-    func wait() async {
-        if isOpen { return }
-        await withCheckedContinuation { waiters.append($0) }
+    var waiterCount: Int { waiters.count }
+
+    func wait() async throws {
+        let id = UUID()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                if isOpen {
+                    continuation.resume()
+                    return
+                }
+                // A cancellation that landed before this actor-isolated block
+                // ran its `onCancel` hop before any waiter existed; park
+                // nothing and fail deterministically.
+                if Task.isCancelled {
+                    continuation.resume(throwing: CancellationError())
+                    return
+                }
+                waiters[id] = continuation
+                notifyCountWatchers()
+            }
+        } onCancel: {
+            Task { await self.cancelWaiter(id) }
+        }
     }
 
     func open() {
         isOpen = true
         let parked = waiters
-        waiters = []
-        parked.forEach { $0.resume() }
+        waiters = [:]
+        parked.values.forEach { $0.resume() }
+        notifyCountWatchers()
+    }
+
+    /// Test synchronization point: parks until the registered-waiter count
+    /// equals `target`. Event-driven (resumed by registration, cancellation,
+    /// and open), not polled.
+    func waitUntilWaiterCount(_ target: Int) async {
+        if waiters.count == target { return }
+        await withCheckedContinuation { continuation in
+            countWatchers.append((target, continuation))
+        }
+    }
+
+    private func cancelWaiter(_ id: UUID) {
+        guard let continuation = waiters.removeValue(forKey: id) else { return }
+        continuation.resume(throwing: CancellationError())
+        notifyCountWatchers()
+    }
+
+    private func notifyCountWatchers() {
+        let current = waiters.count
+        let matching = countWatchers.filter { $0.target == current }
+        countWatchers.removeAll { $0.target == current }
+        matching.forEach { $0.continuation.resume() }
     }
 }
 
@@ -717,7 +768,7 @@ final class DelayedKimchiPremiumRepository: KimchiPremiumRepositoryProtocol {
             try? await Task.sleep(nanoseconds: delay)
         }
         if let gate = gatesByExchange[exchange] {
-            await gate.wait()
+            try await gate.wait()
         }
         return snapshotsByExchange[exchange] ?? StubKimchiPremiumRepository().snapshot
     }
