@@ -295,12 +295,13 @@ private struct UITestAuthenticationService: AuthenticationServiceProtocol {
     func deleteAccount(session: AuthSession) async throws {}
 }
 
-private final class UITestPublicWebSocketService: PublicWebSocketServicing {
-    var onConnectionStateChange: ((PublicWebSocketConnectionState) -> Void)?
-    var onTickerReceived: ((TickerStreamPayload) -> Void)?
-    var onOrderbookReceived: ((OrderbookStreamPayload) -> Void)?
-    var onTradesReceived: ((TradesStreamPayload) -> Void)?
-    var onCandlesReceived: ((CandleStreamPayload) -> Void)?
+@MainActor
+private final class UITestPublicWebSocketService: @MainActor PublicWebSocketServicing {
+    var onConnectionStateChange: (@MainActor (PublicWebSocketConnectionState) -> Void)?
+    var onTickerReceived: (@MainActor (TickerStreamPayload) -> Void)?
+    var onOrderbookReceived: (@MainActor (OrderbookStreamPayload) -> Void)?
+    var onTradesReceived: (@MainActor (TradesStreamPayload) -> Void)?
+    var onCandlesReceived: (@MainActor (CandleStreamPayload) -> Void)?
 
     func connect() {
         onConnectionStateChange?(.connected)

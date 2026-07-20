@@ -703,10 +703,9 @@ final class NetworkAndAuthTests: XCTestCase {
         )
 
         await vm.refreshMarketData(forceRefresh: true, reason: "unit_first_load")
-        for _ in 0..<50 where vm.displayedMarketRows.isEmpty {
-            try? await Task.sleep(nanoseconds: 20_000_000)
-        }
-
+        // Publication contract: refreshMarketData() returns only after the
+        // staged rows are published — no polling wait is needed (or allowed:
+        // a poll here would hide a broken contract).
         XCTAssertGreaterThan(vm.displayedMarketRows.count, 0)
         XCTAssertEqual(repository.fetchedTickers.count, 1)
         XCTAssertEqual(repository.fetchedCandles.count, 0)

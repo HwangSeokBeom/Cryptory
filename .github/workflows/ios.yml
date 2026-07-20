@@ -1,0 +1,132 @@
+name: iOS CI
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+  workflow_dispatch:
+
+concurrency:
+  group: ios-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: Build and test (simulator, unsigned)
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      DERIVED_DATA_PATH: ${{ github.workspace }}/ci-derived-data
+      RESULT_BUNDLE_PATH: ${{ github.workspace }}/ci-results/tests.xcresult
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Full history so the whitespace check can resolve a merge base
+          # against the PR base branch.
+          fetch-depth: 0
+
+      - name: Select Xcode
+        # Pick the newest installed Xcode on the runner instead of
+        # hard-coding a version that may not exist.
+        run: |
+          set -euo pipefail
+          LATEST="$(ls -d /Applications/Xcode*.app | sort -V | tail -1)"
+          echo "Selecting ${LATEST}"
+          sudo xcode-select -s "${LATEST}/Contents/Developer"
+          xcodebuild -version
+
+      - name: Shell regression tests
+        # Hermetic tests for the CI shell helpers (destination selection,
+        # watchdog, hang-boundary log analysis, whitespace, secret scan).
+        run: |
+          set -euo pipefail
+          bash scripts/test_ci_destination.sh
+          bash scripts/test_ci_test_lib.sh
+          bash scripts/test_ci_whitespace_check.sh
+          bash scripts/test_verify_no_secrets.sh
+
+      - name: Whitespace check
+        # Fails the build on whitespace errors. PR events diff from the merge
+        # base with the base branch; push events diff from the previous head
+        # (with validated fallbacks) — see scripts/ci_whitespace_check.sh.
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE_SHA: ${{ github.event.before }}
+        run: bash scripts/ci_whitespace_check.sh
+
+      - name: Secret scan
+        run: bash scripts/verify_no_secrets.sh
+
+      - name: List schemes and resolve packages
+        run: |
+          set -euo pipefail
+          xcodebuild -list -project Cryptory.xcodeproj
+          xcodebuild -resolvePackageDependencies -project Cryptory.xcodeproj -scheme Cryptory-Dev
+
+      - name: Build (unsigned)
+        run: bash scripts/ci_build.sh Cryptory-Dev
+
+      # The unit-test phases below use the Cryptory-UnitTests scheme (no
+      # CryptoryUITests in its build or test action) and a DerivedData path
+      # separate from the app build, so the test bundle is constructed fresh
+      # and the UI-test runner is provably never built. Each phase reports
+      # its own boundary; a hang is bounded by an in-script watchdog that
+      # collects diagnostics before failing (see scripts/ci_test.sh).
+      - name: Unit test bundle (build-for-testing)
+        env:
+          DERIVED_DATA_PATH: ${{ github.workspace }}/ci-derived-data-tests
+        run: bash scripts/ci_test.sh build
+
+      - name: Boot simulator
+        env:
+          DERIVED_DATA_PATH: ${{ github.workspace }}/ci-derived-data-tests
+        run: bash scripts/ci_test.sh boot
+
+      - name: Unit smoke test (WebSocketParserTests)
+        env:
+          DERIVED_DATA_PATH: ${{ github.workspace }}/ci-derived-data-tests
+        run: bash scripts/ci_test.sh smoke
+
+      - name: Unit tests (full CryptoryTests)
+        env:
+          DERIVED_DATA_PATH: ${{ github.workspace }}/ci-derived-data-tests
+        run: bash scripts/ci_test.sh test
+
+      - name: Focused realtime tests
+        # Fast signal for the realtime pipeline in isolation; reuses the
+        # test-bundle DerivedData via test-without-building.
+        env:
+          DERIVED_DATA_PATH: ${{ github.workspace }}/ci-derived-data-tests
+        run: bash scripts/ci_test.sh test CryptoryTests/MarketStreamEngineTests
+
+      - name: Upload test results and diagnostics
+        # failure() covers watchdog exits; cancelled() preserves artifacts
+        # even if the job is cancelled (a manual cancel previously destroyed
+        # all evidence of the pre-test hang).
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: |
+            ${{ github.workspace }}/ci-results
+            ${{ github.workspace }}/ci-derived-data/build.log
+          if-no-files-found: ignore
+          retention-days: 14
+
+# Known limitations (documented, not hidden):
+# - GitHub-hosted macOS runners provide a limited set of Xcode versions and
+#   iOS simulator runtimes. The deployment target is iOS 26.0 (the project's
+#   audited API baseline), so any Xcode 26.x runner image exposes a usable
+#   simulator runtime. If the deployment target is ever raised above the
+#   runner's newest simulator runtime, `xcodebuild -showdestinations` returns
+#   no concrete simulators and the destination helper fails with full
+#   diagnostics (SDKs, runtimes, deployment target). See Docs/TEST_STRATEGY.md.
+# - UI tests are not run in CI by default (simulator UI-test infrastructure
+#   is flaky on shared runners); run them locally via the Cryptory-Dev
+#   scheme: xcodebuild test -only-testing:CryptoryUITests.
+#   Note: `-skip-testing:CryptoryUITests` does NOT stop the UI-test runner
+#   from being BUILT when the scheme's test action includes the UI target —
+#   that is why CI tests through the unit-only Cryptory-UnitTests scheme.
+# - No signing or App Store credentials are used anywhere in this workflow.

@@ -1589,6 +1589,21 @@ private enum PublicContentParser {
         }
     }
 
+    // Ordered like the flattened `??` chain it replaces: all keys of the first
+    // dictionary before any key of the next. Kept as a loop so the expression
+    // stays type-checkable on older Swift compilers (Xcode 26.3 timed out).
+    private static func firstValue(in dictionaries: [JSONObject?], keys: [String]) -> Any? {
+        for dictionary in dictionaries {
+            guard let dictionary else { continue }
+            for key in keys {
+                if let value = dictionary[key] {
+                    return value
+                }
+            }
+        }
+        return nil
+    }
+
     private static func marketTrendSeries(dictionary: JSONObject, seriesDictionary: JSONObject) -> [MarketTrendPoint] {
         let unifiedPoints = unwrapArray(seriesDictionary["points"] ?? dictionary["points"] ?? dictionary["trendPoints"] ?? dictionary["trend_points"])
         if let unifiedPoints {
@@ -1628,7 +1643,7 @@ private enum PublicContentParser {
                 fearGreedItems?.count ?? 0
             ].max() ?? 0
             guard count > 0 else { return [] }
-            return (0..<count).compactMap { index in
+            return (0..<count).compactMap { index -> MarketTrendPoint? in
                 let marketCapItem = marketCapItems?.indices.contains(index) == true ? marketCapItems?[index] : nil
                 let volumeItem = volumeItems?.indices.contains(index) == true ? volumeItems?[index] : nil
                 let btcItem = btcDominanceItems?.indices.contains(index) == true ? btcDominanceItems?[index] : nil
@@ -1653,13 +1668,10 @@ private enum PublicContentParser {
                 guard marketCap != nil || volume != nil || btcDominance != nil || ethDominance != nil || fearGreed != nil else { return nil }
                 return MarketTrendPoint(
                     id: marketCapDictionary?.string(["id"]) ?? volumeDictionary?.string(["id"]) ?? btcDictionary?.string(["id"]) ?? "trend-\(index)",
-                    date: parseDate(
-                        marketCapDictionary?["date"] ?? marketCapDictionary?["time"] ?? marketCapDictionary?["timestamp"]
-                            ?? volumeDictionary?["date"] ?? volumeDictionary?["time"] ?? volumeDictionary?["timestamp"]
-                            ?? btcDictionary?["date"] ?? btcDictionary?["time"] ?? btcDictionary?["timestamp"]
-                            ?? ethDictionary?["date"] ?? ethDictionary?["time"] ?? ethDictionary?["timestamp"]
-                            ?? fearGreedDictionary?["date"] ?? fearGreedDictionary?["time"] ?? fearGreedDictionary?["timestamp"]
-                    ),
+                    date: parseDate(firstValue(
+                        in: [marketCapDictionary, volumeDictionary, btcDictionary, ethDictionary, fearGreedDictionary],
+                        keys: ["date", "time", "timestamp"]
+                    )),
                     marketCap: marketCap,
                     volume: volume,
                     btcDominance: btcDominance,

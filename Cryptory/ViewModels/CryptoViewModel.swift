@@ -1279,6 +1279,22 @@ final class CryptoViewModel: ObservableObject {
     private var marketHydrationTask: Task<Void, Never>?
     private var marketImageHydrationTask: Task<Void, Never>?
     private var marketRowPatchTask: Task<Void, Never>?
+    /// Owned presentation-build task: staging cancel-replaces the previous
+    /// build, and the ownership token below gates publication so a stale
+    /// builder can never overwrite a newer generation. `refreshMarketData()`
+    /// awaits this task before returning (publication contract).
+    private var marketPresentationBuildTask: Task<Void, Never>?
+    private var marketPresentationBuildToken: UInt64 = 0
+#if DEBUG
+    /// Test seam: suspends a presentation build (keyed by its ownership
+    /// token) so publication-order interleavings can be scripted
+    /// deterministically. Never set in production code.
+    var debugMarketPresentationBuildGate: (@MainActor (UInt64) async -> Void)?
+#endif
+    /// The `onAppear` bootstrap pipeline (tickers + route refresh). Retained
+    /// for deterministic teardown, and so tests can await its completion
+    /// instead of polling for side effects.
+    private(set) var bootstrapTask: Task<Void, Never>?
     private var sparklineHydrationTask: Task<Void, Never>?
     private var priorityVisibleSparklineTask: Task<Void, Never>?
     private var topCardSparklinePrefetchTask: Task<Void, Never>?
@@ -1458,7 +1474,7 @@ final class CryptoViewModel: ObservableObject {
         self.deleteAccountUseCase = DeleteAccountUseCase(authenticationService: resolvedAuthService)
         self.authSessionStore = authSessionStore ?? Self.defaultAuthSessionStore()
         self.googleSignInProvider = googleSignInProvider ?? LiveGoogleSignInProvider.shared
-        self.publicWebSocketService = publicWebSocketService ?? WebSocketService()
+        self.publicWebSocketService = publicWebSocketService ?? MarketStreamUIAdapter()
         self.privateWebSocketService = privateWebSocketService ?? PrivateWebSocketService()
         self.marketSnapshotCacheStore = marketSnapshotCacheStore ?? Self.defaultMarketSnapshotCacheStore()
         self.assetImageClient = assetImageClient
@@ -1521,6 +1537,8 @@ final class CryptoViewModel: ObservableObject {
         marketHydrationTask?.cancel()
         marketImageHydrationTask?.cancel()
         marketRowPatchTask?.cancel()
+        marketPresentationBuildTask?.cancel()
+        bootstrapTask?.cancel()
         sparklineHydrationTask?.cancel()
         priorityVisibleSparklineTask?.cancel()
         topCardSparklinePrefetchTask?.cancel()
@@ -2157,17 +2175,23 @@ final class CryptoViewModel: ObservableObject {
         exchange: Exchange,
         symbol: String,
         marketId: String? = nil,
-        preferSelectedCoinIdentity: Bool = true
+        preferSelectedCoinIdentity: Bool = true,
+        quoteCurrency: MarketQuoteCurrency? = nil
     ) -> MarketIdentity {
+        // Stream payloads carry the quote identity resolved by the realtime
+        // engine at decode time; only quote-less (legacy/REST) callers fall
+        // back to the currently selected quote.
+        let resolvedQuoteCurrency = quoteCurrency ?? selectedQuoteCurrency
         if let marketId, marketId.isEmpty == false {
-            return MarketIdentity(exchange: exchange, marketId: marketId, symbol: symbol, quoteCurrency: selectedQuoteCurrency)
+            return MarketIdentity(exchange: exchange, marketId: marketId, symbol: symbol, quoteCurrency: resolvedQuoteCurrency)
         }
 
         if preferSelectedCoinIdentity,
            let selectedCoin,
            selectedExchange == exchange,
-           selectedCoin.symbol == symbol {
-            return selectedCoin.marketIdentity(exchange: exchange, quoteCurrency: selectedQuoteCurrency)
+           selectedCoin.symbol == symbol,
+           resolvedQuoteCurrency == selectedQuoteCurrency {
+            return selectedCoin.marketIdentity(exchange: exchange, quoteCurrency: resolvedQuoteCurrency)
         }
 
         let candidates = (marketsByExchange[exchange] ?? [])
@@ -2197,11 +2221,11 @@ final class CryptoViewModel: ObservableObject {
             let leftScore = marketIdentityLookupScore(for: $0)
             let rightScore = marketIdentityLookupScore(for: $1)
             if leftScore == rightScore {
-                return $0.marketIdentity(exchange: exchange, quoteCurrency: selectedQuoteCurrency).cacheKey < $1.marketIdentity(exchange: exchange, quoteCurrency: selectedQuoteCurrency).cacheKey
+                return $0.marketIdentity(exchange: exchange, quoteCurrency: resolvedQuoteCurrency).cacheKey < $1.marketIdentity(exchange: exchange, quoteCurrency: resolvedQuoteCurrency).cacheKey
             }
             return leftScore < rightScore
         }) {
-            let resolved = bestCandidate.marketIdentity(exchange: exchange, quoteCurrency: selectedQuoteCurrency)
+            let resolved = bestCandidate.marketIdentity(exchange: exchange, quoteCurrency: resolvedQuoteCurrency)
             if resolved.symbol != symbol || (marketId != nil && resolved.marketId != marketId) {
                 AppLogger.debug(
                     .network,
@@ -2211,7 +2235,7 @@ final class CryptoViewModel: ObservableObject {
             return resolved
         }
 
-        return MarketIdentity(exchange: exchange, symbol: symbol, quoteCurrency: selectedQuoteCurrency)
+        return MarketIdentity(exchange: exchange, symbol: symbol, quoteCurrency: resolvedQuoteCurrency)
     }
 
     private func normalizedGraphSymbolCandidates(symbol: String, marketId: String?) -> Set<String> {
@@ -4400,7 +4424,9 @@ final class CryptoViewModel: ObservableObject {
         connectPublicMarketFeed(reason: "content_on_appear")
         let refreshContext = beginRouteRefresh(reason: "content_on_appear")
 
-        Task {
+        // Retained so tests can await bootstrap completion deterministically
+        // instead of polling for its side effects.
+        bootstrapTask = Task {
             await bootstrapPublicData(reason: "content_on_appear")
             await runRouteRefreshIfCurrent(
                 refreshContext,
@@ -6166,6 +6192,10 @@ final class CryptoViewModel: ObservableObject {
             ?? CoinCatalog.coin(symbol: symbol, exchange: exchange).name
     }
 
+    /// Publication contract: this method returns only after any presentation
+    /// build staged during the refresh has finished publishing (or was
+    /// superseded by a newer build that finished instead), so callers can
+    /// observe the refreshed rows immediately after awaiting it.
     func refreshMarketData(forceRefresh: Bool = true, reason: String = "manual") async {
         if activeMarketPresentationSnapshot?.exchange == selectedExchange {
             beginSameExchangeMarketReuse(reason: reason)
@@ -6179,10 +6209,26 @@ final class CryptoViewModel: ObservableObject {
                 .network,
                 "[MarketPipeline] exchange=\(selectedExchange.rawValue) quote=\(selectedQuoteCurrency.rawValue) phase=markets_hydration_skipped reason=ticker_first_policy trigger=\(reason)"
             )
+            await awaitMarketPresentationPublication()
             return
         }
         await loadMarkets(for: selectedExchange, forceRefresh: forceRefresh, reason: "\(reason)_markets")
         refreshMarketStateForSelectedExchange(reason: reason)
+        await awaitMarketPresentationPublication()
+    }
+
+    /// Awaits the newest staged presentation build. If the awaited build was
+    /// superseded while suspended, loops onto its replacement so the caller
+    /// resumes only after the final build has run to completion.
+    private func awaitMarketPresentationPublication() async {
+        while true {
+            let tokenBefore = marketPresentationBuildToken
+            guard let task = marketPresentationBuildTask else { return }
+            await task.value
+            if marketPresentationBuildToken == tokenBefore {
+                return
+            }
+        }
     }
 
     func refreshKimchiPremium(forceRefresh: Bool = true, reason: String = "manual") async {
@@ -9346,122 +9392,121 @@ final class CryptoViewModel: ObservableObject {
     }
 
     private func bindPublicWebSocket() {
+        // The PublicWebSocketServicing contract delivers every callback on
+        // MainActor already, so state is applied synchronously — no extra
+        // per-event Task hop.
         publicWebSocketService.onConnectionStateChange = { [weak self] state in
-            Task { @MainActor in
-                guard let self else { return }
-                self.publicWebSocketState = state
-                switch state {
-                case .connecting:
-                    self.activeChartRealtimeStatus = .connecting
-                    AppLogger.debug(.websocket, "[PublicWS] connect start route=\(self.activeTab.rawValue) exchange=\(self.selectedExchange.rawValue)")
-                    if self.activeTab == .chart, let coin = self.selectedCoin {
-                        AppLogger.debug(.websocket, "[ChartWS] connect exchange=\(self.selectedExchange.rawValue) symbol=\(coin.symbol) quote=\(self.selectedQuoteCurrency.rawValue) timeframe=\(self.chartPeriod.uppercased())")
-                    }
-                case .connected:
-                    self.activeChartRealtimeStatus = .connected
-                    AppLogger.debug(.websocket, "[PublicWS] connect success route=\(self.activeTab.rawValue) exchange=\(self.selectedExchange.rawValue)")
-                case .failed(let message):
-                    self.activeChartRealtimeStatus = .reconnecting
-                    AppLogger.debug(.websocket, "[PublicWS] connect failure route=\(self.activeTab.rawValue) exchange=\(self.selectedExchange.rawValue) message=\(message)")
-                    if self.activeTab == .chart {
-                        AppLogger.debug(.websocket, "[ChartWS] reconnect exchange=\(self.selectedExchange.rawValue) quote=\(self.selectedQuoteCurrency.rawValue) timeframe=\(self.chartPeriod.uppercased())")
-                    }
-                case .disconnected:
-                    self.activeChartRealtimeStatus = .disconnected
-                    break
+            guard let self else { return }
+            self.publicWebSocketState = state
+            switch state {
+            case .connecting:
+                self.activeChartRealtimeStatus = .connecting
+                AppLogger.debug(.websocket, "[PublicWS] connect start route=\(self.activeTab.rawValue) exchange=\(self.selectedExchange.rawValue)")
+                if self.activeTab == .chart, let coin = self.selectedCoin {
+                    AppLogger.debug(.websocket, "[ChartWS] connect exchange=\(self.selectedExchange.rawValue) symbol=\(coin.symbol) quote=\(self.selectedQuoteCurrency.rawValue) timeframe=\(self.chartPeriod.uppercased())")
                 }
-                self.updatePublicPollingIfNeeded()
-                self.refreshMarketLoadState(reason: "public_ws_state_changed")
-                self.refreshKimchiLoadState(reason: "public_ws_state_changed")
-                self.refreshPublicStatusViewStates()
+            case .connected:
+                self.activeChartRealtimeStatus = .connected
+                AppLogger.debug(.websocket, "[PublicWS] connect success route=\(self.activeTab.rawValue) exchange=\(self.selectedExchange.rawValue)")
+            case .failed(let message):
+                self.activeChartRealtimeStatus = .reconnecting
+                AppLogger.debug(.websocket, "[PublicWS] connect failure route=\(self.activeTab.rawValue) exchange=\(self.selectedExchange.rawValue) message=\(message)")
+                if self.activeTab == .chart {
+                    AppLogger.debug(.websocket, "[ChartWS] reconnect exchange=\(self.selectedExchange.rawValue) quote=\(self.selectedQuoteCurrency.rawValue) timeframe=\(self.chartPeriod.uppercased())")
+                }
+            case .disconnected:
+                self.activeChartRealtimeStatus = .disconnected
             }
+            self.updatePublicPollingIfNeeded()
+            self.refreshMarketLoadState(reason: "public_ws_state_changed")
+            self.refreshKimchiLoadState(reason: "public_ws_state_changed")
+            self.refreshPublicStatusViewStates()
         }
 
         publicWebSocketService.onTickerReceived = { [weak self] payload in
-            Task { @MainActor in
-                guard let self else { return }
-                self.applyTickerUpdate(payload)
-                if self.activeTab == .chart,
-                   self.selectedCoin?.symbol == payload.symbol,
-                   self.exchange.rawValue == payload.exchange {
-                    self.refreshChartSummaryStates(reason: "ticker_stream_update")
-                    self.applyLiveChartPriceUpdate(
-                        price: payload.ticker.price,
-                        quantity: 0,
-                        timestamp: payload.ticker.timestamp ?? Date()
-                    )
-                }
+            guard let self else { return }
+            self.applyTickerUpdate(payload)
+            if self.activeTab == .chart,
+               self.selectedCoin?.symbol == payload.symbol,
+               self.exchange.rawValue == payload.exchange,
+               payload.quoteCurrency == nil || payload.quoteCurrency == self.selectedQuoteCurrency {
+                self.refreshChartSummaryStates(reason: "ticker_stream_update")
+                self.applyLiveChartPriceUpdate(
+                    price: payload.ticker.price,
+                    quantity: 0,
+                    timestamp: payload.ticker.timestamp ?? Date()
+                )
             }
         }
 
         publicWebSocketService.onOrderbookReceived = { [weak self] payload in
-            Task { @MainActor in
-                guard let self else { return }
-                guard self.selectedCoin?.symbol == payload.symbol, self.exchange.rawValue == payload.exchange else { return }
-                let key = self.chartResourceKey(exchange: self.exchange, symbol: payload.symbol)
-                let entry = OrderbookCacheEntry(
-                    key: key,
-                    orderbook: payload.orderbook,
-                    meta: ResponseMeta(
-                        fetchedAt: payload.orderbook.timestamp,
-                        isStale: payload.orderbook.isStale,
-                        warningMessage: nil,
-                        partialFailureMessage: nil
-                    ),
-                    fetchedAt: payload.orderbook.timestamp ?? Date()
-                )
-                self.orderbookCacheByKey[key] = entry
-                self.lastSuccessfulOrderBook[key] = entry
-                self.updateOrderbookState(
-                    payload.orderbook.asks.isEmpty && payload.orderbook.bids.isEmpty
-                        ? .empty
-                        : .loaded(payload.orderbook)
-                )
-                self.refreshPublicStatusViewStates()
-            }
+            guard let self else { return }
+            guard self.selectedCoin?.symbol == payload.symbol, self.exchange.rawValue == payload.exchange else { return }
+            // Identity guard: a payload stamped with a different quote
+            // belongs to a replaced market and must not update the visible
+            // orderbook.
+            guard payload.quoteCurrency == nil || payload.quoteCurrency == self.selectedQuoteCurrency else { return }
+            let key = self.chartResourceKey(exchange: self.exchange, symbol: payload.symbol)
+            let entry = OrderbookCacheEntry(
+                key: key,
+                orderbook: payload.orderbook,
+                meta: ResponseMeta(
+                    fetchedAt: payload.orderbook.timestamp,
+                    isStale: payload.orderbook.isStale,
+                    warningMessage: nil,
+                    partialFailureMessage: nil
+                ),
+                fetchedAt: payload.orderbook.timestamp ?? Date()
+            )
+            self.orderbookCacheByKey[key] = entry
+            self.lastSuccessfulOrderBook[key] = entry
+            self.updateOrderbookState(
+                payload.orderbook.asks.isEmpty && payload.orderbook.bids.isEmpty
+                    ? .empty
+                    : .loaded(payload.orderbook)
+            )
+            self.refreshPublicStatusViewStates()
         }
 
         publicWebSocketService.onTradesReceived = { [weak self] payload in
-            Task { @MainActor in
-                guard let self else { return }
-                guard self.selectedCoin?.symbol == payload.symbol, self.exchange.rawValue == payload.exchange else { return }
-                let key = self.chartResourceKey(exchange: self.exchange, symbol: payload.symbol)
-                let entry = TradesCacheEntry(
-                    key: key,
-                    trades: payload.trades,
-                    meta: ResponseMeta(
-                        fetchedAt: payload.trades.first?.executedDate,
-                        isStale: false,
-                        warningMessage: nil,
-                        partialFailureMessage: nil
-                    ),
-                    fetchedAt: payload.trades.first?.executedDate ?? Date()
-                )
-                self.tradesCacheByKey[key] = entry
-                if payload.trades.isEmpty == false {
-                    self.lastSuccessfulTrades[key] = entry
-                }
-                self.updateTradesState(payload.trades.isEmpty ? .empty : .loaded(payload.trades))
-                if self.activeTab == .chart {
-                    self.applyLiveChartTrades(payload.trades)
-                }
-                self.refreshPublicStatusViewStates()
+            guard let self else { return }
+            guard self.selectedCoin?.symbol == payload.symbol, self.exchange.rawValue == payload.exchange else { return }
+            guard payload.quoteCurrency == nil || payload.quoteCurrency == self.selectedQuoteCurrency else { return }
+            let key = self.chartResourceKey(exchange: self.exchange, symbol: payload.symbol)
+            let entry = TradesCacheEntry(
+                key: key,
+                trades: payload.trades,
+                meta: ResponseMeta(
+                    fetchedAt: payload.trades.first?.executedDate,
+                    isStale: false,
+                    warningMessage: nil,
+                    partialFailureMessage: nil
+                ),
+                fetchedAt: payload.trades.first?.executedDate ?? Date()
+            )
+            self.tradesCacheByKey[key] = entry
+            if payload.trades.isEmpty == false {
+                self.lastSuccessfulTrades[key] = entry
             }
+            self.updateTradesState(payload.trades.isEmpty ? .empty : .loaded(payload.trades))
+            if self.activeTab == .chart {
+                self.applyLiveChartTrades(payload.trades)
+            }
+            self.refreshPublicStatusViewStates()
         }
 
         publicWebSocketService.onCandlesReceived = { [weak self] payload in
-            Task { @MainActor in
-                guard let self else { return }
-                guard self.selectedCoin?.symbol == payload.symbol, self.exchange.rawValue == payload.exchange else { return }
-                let mappedInterval = self.resolvedChartInterval(
-                    requestedInterval: self.chartPeriod,
-                    symbol: payload.symbol,
-                    exchange: self.exchange
-                )
-                guard mappedInterval == payload.interval.lowercased() else { return }
-                self.mergeCandleUpdate(payload)
-                self.refreshPublicStatusViewStates()
-            }
+            guard let self else { return }
+            guard self.selectedCoin?.symbol == payload.symbol, self.exchange.rawValue == payload.exchange else { return }
+            guard payload.quoteCurrency == nil || payload.quoteCurrency == self.selectedQuoteCurrency else { return }
+            let mappedInterval = self.resolvedChartInterval(
+                requestedInterval: self.chartPeriod,
+                symbol: payload.symbol,
+                exchange: self.exchange
+            )
+            guard mappedInterval == payload.interval.lowercased() else { return }
+            self.mergeCandleUpdate(payload)
+            self.refreshPublicStatusViewStates()
         }
     }
 
@@ -10119,6 +10164,10 @@ final class CryptoViewModel: ObservableObject {
     }
 
     private func applyTickerUpdate(_ payload: TickerStreamPayload) {
+        // The payload's quote identity was resolved by the realtime engine at
+        // decode time; attribution must use it, not the currently selected
+        // quote (which may have changed while the event was in flight).
+        let payloadQuote = payload.quoteCurrency
         guard shouldApplyVisibleTickerUpdate(for: payload.exchange) else {
             if selectedExchange.rawValue != payload.exchange {
                 AppLogger.debug(
@@ -10126,18 +10175,18 @@ final class CryptoViewModel: ObservableObject {
                     "[MarketScreen] visible ticker patch skipped exchange=\(payload.exchange) route=\(activeTab.rawValue) generation=\(marketPresentationGeneration) reason=route_or_exchange_mismatch source=websocket"
                 )
             }
-            mergeTicker(symbol: payload.symbol, exchange: payload.exchange, incoming: payload.ticker)
+            mergeTicker(symbol: payload.symbol, exchange: payload.exchange, incoming: payload.ticker, quoteCurrency: payloadQuote)
             return
         }
         if let exchange = Exchange(rawValue: payload.exchange), firstTickerStreamEventsByExchange.insert(exchange).inserted {
-            let marketIdentity = resolvedMarketIdentity(exchange: exchange, symbol: payload.symbol)
+            let marketIdentity = resolvedMarketIdentity(exchange: exchange, symbol: payload.symbol, quoteCurrency: payloadQuote)
             AppLogger.debug(.websocket, "[PublicWS] first stream event received \(marketIdentity.logFields)")
         }
-        mergeTicker(symbol: payload.symbol, exchange: payload.exchange, incoming: payload.ticker)
+        mergeTicker(symbol: payload.symbol, exchange: payload.exchange, incoming: payload.ticker, quoteCurrency: payloadQuote)
         let affectedRowCount: Int
         let marketLogFields: String
         if let exchange = Exchange(rawValue: payload.exchange) {
-            let marketIdentity = resolvedMarketIdentity(exchange: exchange, symbol: payload.symbol)
+            let marketIdentity = resolvedMarketIdentity(exchange: exchange, symbol: payload.symbol, quoteCurrency: payloadQuote)
             marketLogFields = marketIdentity.logFields
             affectedRowCount = applyTargetedMarketRowUpdate(
                 marketIdentity: marketIdentity,
@@ -10198,11 +10247,11 @@ final class CryptoViewModel: ObservableObject {
         return didEnqueue ? 1 : 0
     }
 
-    private func mergeTicker(symbol: String, exchange: String, incoming: TickerData, seedHistoryIfNeeded: Bool = false) {
+    private func mergeTicker(symbol: String, exchange: String, incoming: TickerData, seedHistoryIfNeeded: Bool = false, quoteCurrency: MarketQuoteCurrency? = nil) {
         guard let parsedExchange = Exchange(rawValue: exchange) else {
             return
         }
-        let marketIdentity = resolvedMarketIdentity(exchange: parsedExchange, symbol: symbol)
+        let marketIdentity = resolvedMarketIdentity(exchange: parsedExchange, symbol: symbol, quoteCurrency: quoteCurrency)
         let previous = pricesByMarketIdentity[marketIdentity]
         var ticker = incoming
         if ticker.sourceExchange == nil {
@@ -16261,9 +16310,28 @@ final class CryptoViewModel: ObservableObject {
         updateMarketRowsApplyTiming(exchange: exchange, generation: requestContext.generation) { context in
             context.viewStateBuildStartedAt = buildStartedAt
         }
-        Task { [weak self] in
+        // Ownership: exactly one presentation build may publish. A newer
+        // staging replaces (and cancels) the previous build; the token check
+        // after the async build gates publication, so a stale builder that
+        // resumes late can never overwrite a newer generation's rows.
+        marketPresentationBuildToken &+= 1
+        let buildToken = marketPresentationBuildToken
+        marketPresentationBuildTask?.cancel()
+        marketPresentationBuildTask = Task { [weak self] in
             guard let self else { return }
+#if DEBUG
+            if let gate = self.debugMarketPresentationBuildGate {
+                await gate(buildToken)
+            }
+#endif
             let snapshot = await self.prepareMarketPresentationSnapshot(from: buildInput)
+            guard self.marketPresentationBuildToken == buildToken else {
+                AppLogger.debug(
+                    .lifecycle,
+                    "[MarketScreen] superseded presentation build dropped exchange=\(exchange.rawValue) token=\(buildToken)"
+                )
+                return
+            }
             guard self.shouldAcceptCursorPaginationResponse(snapshot, requestContext: requestContext) else {
                 return
             }
@@ -20233,3 +20301,14 @@ private extension Array {
         return chunks
     }
 }
+
+#if DEBUG
+extension CryptoViewModel {
+    /// Engine behind the default public stream service, when the live adapter
+    /// is in use. Powers the DEBUG-only Realtime Pipeline Lab; nil under test
+    /// doubles.
+    var realtimeLabEngine: MarketStreamEngine? {
+        (publicWebSocketService as? MarketStreamUIAdapter)?.engine
+    }
+}
+#endif

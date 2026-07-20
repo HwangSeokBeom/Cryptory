@@ -1,3 +1,4 @@
+import Synchronization
 import XCTest
 @testable import Cryptory
 
@@ -672,23 +673,102 @@ final class SpyKimchiPremiumRepository: KimchiPremiumRepositoryProtocol {
     }
 }
 
+/// Latching release gate for snapshot delivery: a fetch parked on `wait()`
+/// stays parked until the test calls `open()`, and every later fetch passes
+/// straight through. Replaces wall-clock delays so "the switch target's
+/// snapshot has not arrived yet" is a state the test controls, not a race
+/// against the host's scheduler.
+///
+/// Cancellation-safe: every waiter is registered under a stable ID, a task
+/// cancelled while parked is removed atomically (actor-isolated) and resumed
+/// exactly once with `CancellationError`, and `open()` resumes only the
+/// waiters still registered — cancellation and open can never double-resume
+/// or leak a parked continuation.
+actor KimchiSnapshotGate {
+    private var isOpen = false
+    private var waiters: [UUID: CheckedContinuation<Void, Error>] = [:]
+    private var countWatchers: [(target: Int, continuation: CheckedContinuation<Void, Never>)] = []
+
+    var waiterCount: Int { waiters.count }
+
+    func wait() async throws {
+        let id = UUID()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                if isOpen {
+                    continuation.resume()
+                    return
+                }
+                // A cancellation that landed before this actor-isolated block
+                // ran its `onCancel` hop before any waiter existed; park
+                // nothing and fail deterministically.
+                if Task.isCancelled {
+                    continuation.resume(throwing: CancellationError())
+                    return
+                }
+                waiters[id] = continuation
+                notifyCountWatchers()
+            }
+        } onCancel: {
+            Task { await self.cancelWaiter(id) }
+        }
+    }
+
+    func open() {
+        isOpen = true
+        let parked = waiters
+        waiters = [:]
+        parked.values.forEach { $0.resume() }
+        notifyCountWatchers()
+    }
+
+    /// Test synchronization point: parks until the registered-waiter count
+    /// equals `target`. Event-driven (resumed by registration, cancellation,
+    /// and open), not polled.
+    func waitUntilWaiterCount(_ target: Int) async {
+        if waiters.count == target { return }
+        await withCheckedContinuation { continuation in
+            countWatchers.append((target, continuation))
+        }
+    }
+
+    private func cancelWaiter(_ id: UUID) {
+        guard let continuation = waiters.removeValue(forKey: id) else { return }
+        continuation.resume(throwing: CancellationError())
+        notifyCountWatchers()
+    }
+
+    private func notifyCountWatchers() {
+        let current = waiters.count
+        let matching = countWatchers.filter { $0.target == current }
+        countWatchers.removeAll { $0.target == current }
+        matching.forEach { $0.continuation.resume() }
+    }
+}
+
 final class DelayedKimchiPremiumRepository: KimchiPremiumRepositoryProtocol {
     var snapshotsByExchange: [Exchange: KimchiPremiumSnapshot]
     var delaysByExchange: [Exchange: UInt64]
+    var gatesByExchange: [Exchange: KimchiSnapshotGate]
     private(set) var requestedContexts: [(exchange: Exchange, symbols: [String])] = []
 
     init(
         snapshotsByExchange: [Exchange: KimchiPremiumSnapshot],
-        delaysByExchange: [Exchange: UInt64] = [:]
+        delaysByExchange: [Exchange: UInt64] = [:],
+        gatesByExchange: [Exchange: KimchiSnapshotGate] = [:]
     ) {
         self.snapshotsByExchange = snapshotsByExchange
         self.delaysByExchange = delaysByExchange
+        self.gatesByExchange = gatesByExchange
     }
 
     func fetchSnapshot(exchange: Exchange, symbols: [String]) async throws -> KimchiPremiumSnapshot {
         requestedContexts.append((exchange, symbols))
         if let delay = delaysByExchange[exchange], delay > 0 {
             try? await Task.sleep(nanoseconds: delay)
+        }
+        if let gate = gatesByExchange[exchange] {
+            try await gate.wait()
         }
         return snapshotsByExchange[exchange] ?? StubKimchiPremiumRepository().snapshot
     }
@@ -1096,12 +1176,13 @@ final class SpyPublicContentRepository: PublicContentRepositoryProtocol {
     }
 }
 
-final class NoOpPublicWebSocketService: PublicWebSocketServicing {
-    var onConnectionStateChange: ((PublicWebSocketConnectionState) -> Void)?
-    var onTickerReceived: ((TickerStreamPayload) -> Void)?
-    var onOrderbookReceived: ((OrderbookStreamPayload) -> Void)?
-    var onTradesReceived: ((TradesStreamPayload) -> Void)?
-    var onCandlesReceived: ((CandleStreamPayload) -> Void)?
+@MainActor
+final class NoOpPublicWebSocketService: @MainActor PublicWebSocketServicing {
+    var onConnectionStateChange: (@MainActor (PublicWebSocketConnectionState) -> Void)?
+    var onTickerReceived: (@MainActor (TickerStreamPayload) -> Void)?
+    var onOrderbookReceived: (@MainActor (OrderbookStreamPayload) -> Void)?
+    var onTradesReceived: (@MainActor (TradesStreamPayload) -> Void)?
+    var onCandlesReceived: (@MainActor (CandleStreamPayload) -> Void)?
 
     func connect() {
         Task { @MainActor [onConnectionStateChange] in
@@ -1113,12 +1194,13 @@ final class NoOpPublicWebSocketService: PublicWebSocketServicing {
     func updateSubscriptions(_ subscriptions: Set<PublicMarketSubscription>) {}
 }
 
-final class RecordingPublicWebSocketService: PublicWebSocketServicing {
-    var onConnectionStateChange: ((PublicWebSocketConnectionState) -> Void)?
-    var onTickerReceived: ((TickerStreamPayload) -> Void)?
-    var onOrderbookReceived: ((OrderbookStreamPayload) -> Void)?
-    var onTradesReceived: ((TradesStreamPayload) -> Void)?
-    var onCandlesReceived: ((CandleStreamPayload) -> Void)?
+@MainActor
+final class RecordingPublicWebSocketService: @MainActor PublicWebSocketServicing {
+    var onConnectionStateChange: (@MainActor (PublicWebSocketConnectionState) -> Void)?
+    var onTickerReceived: (@MainActor (TickerStreamPayload) -> Void)?
+    var onOrderbookReceived: (@MainActor (OrderbookStreamPayload) -> Void)?
+    var onTradesReceived: (@MainActor (TradesStreamPayload) -> Void)?
+    var onCandlesReceived: (@MainActor (CandleStreamPayload) -> Void)?
 
     private(set) var connectCallCount = 0
     private(set) var disconnectCallCount = 0
@@ -1145,12 +1227,13 @@ final class RecordingPublicWebSocketService: PublicWebSocketServicing {
     }
 }
 
-final class ManualPublicWebSocketService: PublicWebSocketServicing {
-    var onConnectionStateChange: ((PublicWebSocketConnectionState) -> Void)?
-    var onTickerReceived: ((TickerStreamPayload) -> Void)?
-    var onOrderbookReceived: ((OrderbookStreamPayload) -> Void)?
-    var onTradesReceived: ((TradesStreamPayload) -> Void)?
-    var onCandlesReceived: ((CandleStreamPayload) -> Void)?
+@MainActor
+final class ManualPublicWebSocketService: @MainActor PublicWebSocketServicing {
+    var onConnectionStateChange: (@MainActor (PublicWebSocketConnectionState) -> Void)?
+    var onTickerReceived: (@MainActor (TickerStreamPayload) -> Void)?
+    var onOrderbookReceived: (@MainActor (OrderbookStreamPayload) -> Void)?
+    var onTradesReceived: (@MainActor (TradesStreamPayload) -> Void)?
+    var onCandlesReceived: (@MainActor (CandleStreamPayload) -> Void)?
 
     func connect() {}
     func disconnect() {}
@@ -1173,7 +1256,8 @@ final class ManualPublicWebSocketService: PublicWebSocketServicing {
     }
 }
 
-final class NoOpPrivateWebSocketService: PrivateWebSocketServicing {
+@MainActor
+final class NoOpPrivateWebSocketService: @MainActor PrivateWebSocketServicing {
     var onConnectionStateChange: ((PrivateWebSocketConnectionState) -> Void)?
     var onOrderReceived: ((OrderStreamPayload) -> Void)?
     var onFillReceived: ((FillStreamPayload) -> Void)?
@@ -1189,35 +1273,76 @@ final class NoOpPrivateWebSocketService: PrivateWebSocketServicing {
 }
 
 final class URLProtocolSpy: URLProtocol {
-    static var requestCount = 0
-    static var responseStatusCode = 200
-    static var responseData = Data("{}".utf8)
-    static var lastRequest: URLRequest?
-    static var lastRequestBody: Data?
-    static var responseQueue: [(statusCode: Int, data: Data)] = []
-    static var requestedPaths: [String] = []
+    // URLProtocol callbacks arrive on URLSession's loading queues while tests
+    // read these values from the test executor, so all shared state lives
+    // behind a Mutex to satisfy Swift 6 isolation without unsafe opt-outs.
+    private struct Storage: Sendable {
+        var requestCount = 0
+        var responseStatusCode = 200
+        var responseData = Data("{}".utf8)
+        var lastRequest: URLRequest?
+        var lastRequestBody: Data?
+        var responseQueue: [(statusCode: Int, data: Data)] = []
+        var requestedPaths: [String] = []
+    }
+
+    private static let storage = Mutex(Storage())
+
+    static var requestCount: Int {
+        get { storage.withLock { $0.requestCount } }
+        set { storage.withLock { $0.requestCount = newValue } }
+    }
+
+    static var responseStatusCode: Int {
+        get { storage.withLock { $0.responseStatusCode } }
+        set { storage.withLock { $0.responseStatusCode = newValue } }
+    }
+
+    static var responseData: Data {
+        get { storage.withLock { $0.responseData } }
+        set { storage.withLock { $0.responseData = newValue } }
+    }
+
+    static var lastRequest: URLRequest? {
+        get { storage.withLock { $0.lastRequest } }
+        set { storage.withLock { $0.lastRequest = newValue } }
+    }
+
+    static var lastRequestBody: Data? {
+        get { storage.withLock { $0.lastRequestBody } }
+        set { storage.withLock { $0.lastRequestBody = newValue } }
+    }
+
+    static var responseQueue: [(statusCode: Int, data: Data)] {
+        get { storage.withLock { $0.responseQueue } }
+        set { storage.withLock { $0.responseQueue = newValue } }
+    }
+
+    static var requestedPaths: [String] {
+        get { storage.withLock { $0.requestedPaths } }
+        set { storage.withLock { $0.requestedPaths = newValue } }
+    }
 
     static func reset() {
-        requestCount = 0
-        responseStatusCode = 200
-        responseData = Data("{}".utf8)
-        lastRequest = nil
-        lastRequestBody = nil
-        responseQueue = []
-        requestedPaths = []
+        storage.withLock { $0 = Storage() }
     }
 
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
     override func startLoading() {
-        Self.requestCount += 1
-        Self.lastRequest = request
-        Self.lastRequestBody = request.httpBody ?? request.httpBodyStream?.readAllData()
-        Self.requestedPaths.append(request.url?.path ?? "")
-        let queuedResponse = Self.responseQueue.isEmpty ? nil : Self.responseQueue.removeFirst()
-        let statusCode = queuedResponse?.statusCode ?? Self.responseStatusCode
-        let data = queuedResponse?.data ?? Self.responseData
+        let body = request.httpBody ?? request.httpBodyStream?.readAllData()
+        let (statusCode, data): (Int, Data) = Self.storage.withLock { storage in
+            storage.requestCount += 1
+            storage.lastRequest = request
+            storage.lastRequestBody = body
+            storage.requestedPaths.append(request.url?.path ?? "")
+            let queuedResponse = storage.responseQueue.isEmpty ? nil : storage.responseQueue.removeFirst()
+            return (
+                queuedResponse?.statusCode ?? storage.responseStatusCode,
+                queuedResponse?.data ?? storage.responseData
+            )
+        }
         let response = HTTPURLResponse(url: request.url!, statusCode: statusCode, httpVersion: nil, headerFields: nil)!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: data)
