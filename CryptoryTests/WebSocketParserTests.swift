@@ -32,6 +32,78 @@ final class WebSocketParserTests: XCTestCase {
         XCTAssertEqual(payload.ticker.low24, 120000000)
     }
 
+    func testServerWelcomeEnvelopeIsAControlFrame() {
+        let message = """
+        {
+          "type": "welcome",
+          "protocolVersion": "2026-07-24",
+          "path": "/ws/market",
+          "authRequired": false,
+          "channels": ["tickers"],
+          "timestamp": 1713182400000
+        }
+        """
+
+        guard case .control = MarketStreamDecoder.decode(message) else {
+            return XCTFail("Expected welcome control frame")
+        }
+    }
+
+    func testTickerSubscriptionUsesBoundedServerContract() throws {
+        let subscription = PublicMarketSubscription(
+            channel: .ticker,
+            exchange: "upbit",
+            symbol: "BTC"
+        )
+        let message = MarketStreamDecoder.subscriptionMessage(
+            for: subscription,
+            action: "subscribe"
+        )
+        let data = try XCTUnwrap(message.data(using: .utf8))
+        let json = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: data) as? [String: Any]
+        )
+
+        XCTAssertEqual(json["action"] as? String, "subscribe")
+        XCTAssertEqual(json["channel"] as? String, "tickers")
+        XCTAssertEqual(json["exchanges"] as? [String], ["upbit"])
+        XCTAssertEqual(json["symbols"] as? [String], ["BTC"])
+        XCTAssertNil(json["type"])
+    }
+
+    func testMarketWebSocketTickerParserMatchesServerEventEnvelope() {
+        let message = """
+        {
+          "type": "event",
+          "channel": "tickers",
+          "timestamp": 1713182400100,
+          "data": {
+            "exchange": "upbit",
+            "symbol": "BTC",
+            "quoteCurrency": "KRW",
+            "price": 125000000,
+            "change24h": 0.5,
+            "volume24h": 123456789,
+            "high24h": 126000000,
+            "low24h": 120000000,
+            "timestamp": 1713182400000
+          }
+        }
+        """
+
+        guard case .some(.ticker(let payload)) = MarketWebSocketMessageParser.parse(message) else {
+            return XCTFail("Expected server ticker event payload")
+        }
+
+        XCTAssertEqual(payload.exchange, "upbit")
+        XCTAssertEqual(payload.symbol, "BTC")
+        XCTAssertEqual(payload.quoteCurrency, .krw)
+        XCTAssertEqual(payload.ticker.price, 125000000)
+        XCTAssertEqual(payload.ticker.change, 0.5)
+        XCTAssertEqual(payload.ticker.high24, 126000000)
+        XCTAssertEqual(payload.ticker.low24, 120000000)
+    }
+
     func testMarketWebSocketOrderbookParserMatchesContract() {
         let message = """
         {
@@ -91,6 +163,35 @@ final class WebSocketParserTests: XCTestCase {
         XCTAssertEqual(payload.trades.first?.price, 820)
         XCTAssertEqual(payload.trades.first?.quantity, 1200)
         XCTAssertEqual(payload.trades.first?.side, "buy")
+    }
+
+    func testMarketWebSocketTradeParserMatchesServerEventEnvelope() {
+        let message = """
+        {
+          "type": "event",
+          "channel": "trades",
+          "data": {
+            "exchange": "coinone",
+            "symbol": "XRP",
+            "quoteCurrency": "KRW",
+            "tradeId": "trade-server-1",
+            "price": 820,
+            "quantity": 1200,
+            "side": "buy",
+            "executedAt": "2026-07-24T01:02:03.000Z"
+          }
+        }
+        """
+
+        guard case .some(.trades(let payload)) = MarketWebSocketMessageParser.parse(message) else {
+            return XCTFail("Expected server trade event payload")
+        }
+
+        XCTAssertEqual(payload.exchange, "coinone")
+        XCTAssertEqual(payload.symbol, "XRP")
+        XCTAssertEqual(payload.quoteCurrency, .krw)
+        XCTAssertEqual(payload.trades.first?.id, "trade-server-1")
+        XCTAssertEqual(payload.trades.first?.quantity, 1200)
     }
 
     func testMarketWebSocketTradesParserPreservesClockTextTimeField() {
