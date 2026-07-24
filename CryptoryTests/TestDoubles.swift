@@ -1,4 +1,5 @@
 import XCTest
+import Synchronization
 @testable import Cryptory
 
 struct StubMarketRepository: MarketRepositoryProtocol {
@@ -1285,7 +1286,7 @@ final class URLProtocolSpy: URLProtocol {
         var requestedPaths: [String] = []
     }
 
-    private static let storage = TestLock(Storage())
+    private static let storage = Mutex(Storage())
 
     static var requestCount: Int {
         get { storage.withLock { $0.requestCount } }

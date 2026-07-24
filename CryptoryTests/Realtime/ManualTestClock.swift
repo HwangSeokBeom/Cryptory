@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 @testable import Cryptory
 
 /// Deterministic clock for realtime tests: time only moves when `advance(by:)`
@@ -15,7 +16,7 @@ final class ManualTestClock: RealtimeClock {
         var sleepers: [Sleeper] = []
     }
 
-    private let state = TestLock(State())
+    private let state = Mutex(State())
 
     var now: Duration {
         state.withLock { $0.now }

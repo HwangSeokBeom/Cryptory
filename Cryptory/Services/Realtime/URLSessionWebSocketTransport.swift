@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 /// Production transport backed by `URLSessionWebSocketTask`.
 ///
@@ -87,16 +88,15 @@ final class URLSessionWebSocketTransportConnection: WebSocketTransportConnection
     }
 
     /// Reference box so the connection and its session delegate share the
-    /// same lock. `NSLock` is available on the iOS 17 deployment baseline;
-    /// every access to `state` goes through `withLock`.
-    private final class SharedBox: @unchecked Sendable {
-        private let lock = NSLock()
-        private var state = Shared()
+    /// same mutex (`Mutex` itself is noncopyable). Checked `Sendable`: its
+    /// only stored property is the `Mutex`, which is `Sendable` by the
+    /// standard library's contract; every access to the protected `Shared`
+    /// state goes through `withLock`.
+    private final class SharedBox: Sendable {
+        let mutex = Mutex(Shared())
 
-        func withLock<R>(_ body: (inout Shared) -> R) -> R {
-            lock.lock()
-            defer { lock.unlock() }
-            return body(&state)
+        func withLock<R>(_ body: (inout Shared) -> sending R) -> sending R {
+            mutex.withLock(body)
         }
 
         /// Delivers a delegate-reported control event. The first close marks

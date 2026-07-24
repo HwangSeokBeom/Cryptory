@@ -60,15 +60,15 @@ Rationale, alternatives, and consequences: [ADR 0001](ADR/0001-actor-isolated-re
 - UI state: `@MainActor` (`CryptoViewModel` and SwiftUI views).
 - Realtime: actor isolation (`MarketStreamEngine`); events cross to the main actor exactly once, in the adapter.
 - App target builds with `SWIFT_VERSION = 6.0` and `SWIFT_APPROACHABLE_CONCURRENCY = YES`.
-- Remaining `@unchecked Sendable` in the app target is documented in [SECURITY_AND_PRIVACY.md](SECURITY_AND_PRIVACY.md) and ADR 0001; the realtime URLSession boundary guards all mutable state with an iOS 17-compatible `NSLock`, and both unchecked declarations document the non-`Sendable` Foundation references or lock-protected state they contain.
+- Remaining `@unchecked Sendable` in the app target is documented in [SECURITY_AND_PRIVACY.md](SECURITY_AND_PRIVACY.md) and ADR 0001; the realtime URLSession boundary guards all mutable state with the standard-library `Mutex`, and both unchecked declarations document the non-`Sendable` Foundation references or lock-protected state they contain.
 
-## Deployment-target audit (iOS 17.0)
+## Deployment-target audit (iOS 18.0)
 
-The project sets `IPHONEOS_DEPLOYMENT_TARGET = 17.0` for the project and test configurations; app and UI-test targets inherit that minimum.
+The project sets `IPHONEOS_DEPLOYMENT_TARGET = 18.0` for the project and test configurations; app and UI-test targets inherit that minimum.
 
 - **History:** the project was created with the tooling-default `26.4` (the local Xcode's SDK version at creation time), not a documented product decision. GitHub-hosted runners with Xcode 26.3 exposed no simulator runtime satisfying 26.4, so `xcodebuild -showdestinations` returned only placeholder destinations and CI could not run (GitHub Actions run #29653999898).
-- **Audit for 17.0:** Apple Translation APIs in `TranslationService.swift` remain guarded with `@available(iOS 26.0, *)` / `#available(iOS 26.0, *)`; iOS 17–25 use the existing fallback path. Swift compiler availability checking and `CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE` are required build gates.
-- **Policy:** iOS 17.0 is the product baseline. Newer-only APIs must stay behind explicit availability checks with a tested fallback rather than raising the whole-app minimum.
+- **Audit for 18.0:** Apple Translation APIs in `TranslationService.swift` remain guarded with `@available(iOS 26.0, *)` / `#available(iOS 26.0, *)`; iOS 18–25 use the existing fallback path. Swift compiler availability checking and `CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE` are required build gates.
+- **Policy:** iOS 18.0 is the product baseline. Newer-only APIs must stay behind explicit availability checks with a tested fallback rather than raising the whole-app minimum.
 
 ## Environment configuration
 
