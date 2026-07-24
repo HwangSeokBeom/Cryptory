@@ -38,7 +38,7 @@ Exchange API connections are **read-only by product contract**. The app never as
 - Firebase Messaging (push), GoogleSignIn-iOS, Sign in with Apple
 - Keychain for session storage; `UserDefaults` for non-sensitive snapshot caches
 - XCTest unit + UI tests; GitHub Actions CI (`.github/workflows/ios.yml`)
-- Xcode 26.x, deployment target iOS 26.0
+- Xcode 26.x, deployment target iOS 17.0
 
 ## Architecture summary
 
@@ -65,7 +65,7 @@ Pipeline internals (buffering, coalescing, reconnect and heartbeat policies): [D
 
 ## Build
 
-Requirements: Xcode 26.x with an iOS 26.x simulator runtime.
+Requirements: Xcode 26.x with an installed simulator runtime satisfying iOS 17.0 or newer.
 
 ```bash
 git clone https://github.com/HwangSeokBeom/Cryptory.git
@@ -118,8 +118,8 @@ Measured results (and explicit `UNVERIFIED` markers where measurement was not po
 
 - `CryptoViewModel` remains a ~20k-line single file; decomposition is deliberately out of scope for this branch (see ADR 0001).
 - The private trading WebSocket still uses the legacy `@unchecked Sendable` implementation (documented follow-up).
-- Deployment target iOS 26.0 restricts the app to iOS 26-generation devices; see [Docs/ARCHITECTURE.md](Docs/ARCHITECTURE.md) for the audit of that choice.
-- CI requires a runner with any iOS 26.x simulator runtime; the workflow documents this baseline.
+- The minimum supported OS is iOS 17.0; Apple Translation features remain runtime-gated to iOS 26.0 and use the existing fallback on older systems.
+- CI may run on any installed simulator runtime newer than the iOS 17.0 deployment target.
 - No crash reporting (Crashlytics/MetricKit) is integrated yet.
 
 ## Roadmap

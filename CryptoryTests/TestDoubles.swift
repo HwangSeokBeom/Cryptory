@@ -1,4 +1,3 @@
-import Synchronization
 import XCTest
 @testable import Cryptory
 
@@ -1286,7 +1285,7 @@ final class URLProtocolSpy: URLProtocol {
         var requestedPaths: [String] = []
     }
 
-    private static let storage = Mutex(Storage())
+    private static let storage = TestLock(Storage())
 
     static var requestCount: Int {
         get { storage.withLock { $0.requestCount } }

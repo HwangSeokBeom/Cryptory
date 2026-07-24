@@ -1,5 +1,4 @@
 import Foundation
-import Synchronization
 @testable import Cryptory
 
 enum ScriptedTransportError: Error {
@@ -15,7 +14,7 @@ final class ScriptedWebSocketTransport: WebSocketTransport {
         var suspendSendsOnOpen = false
     }
 
-    private let state = Mutex(State())
+    private let state = TestLock(State())
 
     var openCount: Int {
         state.withLock { $0.connections.count }
@@ -101,7 +100,7 @@ final class ScriptedWebSocketConnection: WebSocketTransportConnection {
         var deliveredFrameCount = 0
     }
 
-    private let state = Mutex(State())
+    private let state = TestLock(State())
 
     // MARK: - Test inspection
 

@@ -1,5 +1,4 @@
 import Foundation
-import Synchronization
 
 /// Production transport backed by `URLSessionWebSocketTask`.
 ///
@@ -56,7 +55,7 @@ extension URLSessionWebSocketTask: WebSocketSocketDriver {}
 /// **`@unchecked Sendable` boundary (documented):** the connection is shared
 /// between the engine actor, URLSession's delegate/completion queues, and
 /// cancellation handlers. All mutable state lives in `Shared` and is only
-/// accessed through `SharedBox`'s mutex; continuations extracted under the
+/// accessed through `SharedBox`'s lock; continuations extracted under the
 /// lock are resumed exactly once outside it. The remaining stored properties
 /// are immutable references/closures (`shared`, `driver`, `session`,
 /// `delegate`, `beforeReceiveWaiterInstall`) assigned in `init`. The
@@ -88,15 +87,16 @@ final class URLSessionWebSocketTransportConnection: WebSocketTransportConnection
     }
 
     /// Reference box so the connection and its session delegate share the
-    /// same mutex (`Mutex` itself is noncopyable). Checked `Sendable`: its
-    /// only stored property is the `Mutex`, which is `Sendable` by the
-    /// standard library's contract; every access to the protected `Shared`
-    /// state goes through `withLock`.
-    private final class SharedBox: Sendable {
-        let mutex = Mutex(Shared())
+    /// same lock. `NSLock` is available on the iOS 17 deployment baseline;
+    /// every access to `state` goes through `withLock`.
+    private final class SharedBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var state = Shared()
 
-        func withLock<R>(_ body: (inout Shared) -> sending R) -> sending R {
-            mutex.withLock(body)
+        func withLock<R>(_ body: (inout Shared) -> R) -> R {
+            lock.lock()
+            defer { lock.unlock() }
+            return body(&state)
         }
 
         /// Delivers a delegate-reported control event. The first close marks
