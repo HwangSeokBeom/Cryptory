@@ -187,19 +187,28 @@ enum MarketWebSocketMessageParser {
             return nil
         }
 
-        let type = websocketString(json, keys: ["type", "channel"])?.lowercased()
-        if ["subscribed", "pong", "ping", "ack"].contains(type ?? "") {
+        let envelopeType = websocketString(json, keys: ["type"])?.lowercased()
+        let payload = (json["data"] as? [String: Any]) ?? json
+        let type = envelopeType == "event"
+            ? websocketString(json, keys: ["channel"])?.lowercased()
+            : websocketString(json, keys: ["type", "channel"])?.lowercased()
+        if ["welcome", "subscribed", "pong", "ping", "ack", "error"].contains(type ?? "") {
             return nil
         }
 
         guard
-            let exchange = websocketString(json, keys: ["exchange"])?.lowercased(),
-            let symbol = websocketString(json, keys: ["symbol"])?.uppercased()
+            let exchange = (
+                websocketString(json, keys: ["exchange"])
+                    ?? websocketString(payload, keys: ["exchange"])
+            )?.lowercased(),
+            let symbol = (
+                websocketString(json, keys: ["symbol"])
+                    ?? websocketString(payload, keys: ["symbol"])
+            )?.uppercased()
         else {
             return nil
         }
 
-        let payload = (json["data"] as? [String: Any]) ?? json
         // The gateway may echo the subscribed quote currency on the envelope
         // (it is always sent on subscribe). When present it is authoritative
         // market identity; when absent the engine resolves it from the live
@@ -207,17 +216,21 @@ enum MarketWebSocketMessageParser {
         let quoteCurrency = websocketQuoteCurrency(json) ?? websocketQuoteCurrency(payload)
 
         switch type {
-        case PublicStreamChannel.ticker.rawValue:
+        case PublicStreamChannel.ticker.rawValue, "tickers":
             guard let price = websocketDouble(payload, keys: ["price", "tradePrice"]) else {
                 return nil
             }
+            let changePercent = websocketDouble(payload, keys: ["change24h"])
+                ?? normalizeChangePercent(
+                    websocketDouble(payload, keys: ["changePercent", "changeRate"]) ?? 0
+                )
 
             let ticker = TickerData(
                 price: price,
-                change: normalizeChangePercent(websocketDouble(payload, keys: ["changePercent", "changeRate"]) ?? 0),
+                change: changePercent,
                 volume: websocketDouble(payload, keys: ["volume24h", "volume"]) ?? 0,
-                high24: websocketDouble(payload, keys: ["high24", "highPrice"]) ?? price,
-                low24: websocketDouble(payload, keys: ["low24", "lowPrice"]) ?? price,
+                high24: websocketDouble(payload, keys: ["high24", "high24h", "highPrice"]) ?? price,
+                low24: websocketDouble(payload, keys: ["low24", "low24h", "lowPrice"]) ?? price,
                 timestamp: websocketDate(payload["timestamp"] ?? payload["time"] ?? payload["updatedAt"]),
                 isStale: websocketBool(payload, keys: ["stale", "isStale"]) ?? false,
                 sourceExchange: Exchange(rawValue: exchange),
@@ -241,9 +254,7 @@ enum MarketWebSocketMessageParser {
             return .orderbook(OrderbookStreamPayload(symbol: symbol, exchange: exchange, orderbook: orderbook, quoteCurrency: quoteCurrency))
 
         case PublicStreamChannel.trades.rawValue:
-            guard let rawTrades = payload["trades"] as? [Any] else {
-                return nil
-            }
+            let rawTrades = (payload["trades"] as? [Any]) ?? [payload]
 
             let trades = rawTrades.compactMap { item -> PublicTrade? in
                 guard let dictionary = item as? [String: Any] else { return nil }
@@ -560,23 +571,24 @@ final class WebSocketService: PublicWebSocketServicing, @unchecked Sendable {
     }
 
     private func subscriptionMessage(for subscription: PublicMarketSubscription, action: String) -> String {
-        var payload: [String: String] = [
-            "type": action,
+        var payload: [String: Any] = [
             "action": action,
-            "channel": subscription.channel == .candles ? "market.candle" : subscription.channel.rawValue
+            "channel": subscription.channel == .ticker ? "tickers" : subscription.channel.rawValue
         ]
 
-        if let exchange = subscription.exchange {
-            payload["exchange"] = exchange
-        }
-        if let symbol = subscription.symbol {
-            payload["symbol"] = symbol
-        }
-        if let quoteCurrency = subscription.quoteCurrency {
-            payload["quoteCurrency"] = quoteCurrency.rawValue
-        }
-        if let interval = subscription.interval {
-            payload["timeframe"] = interval.uppercased()
+        if subscription.channel == .candles {
+            payload["type"] = action
+            payload["channel"] = "market.candle"
+            payload["exchange"] = subscription.exchange
+            payload["symbol"] = subscription.symbol
+            payload["quoteCurrency"] = subscription.quoteCurrency?.rawValue
+            payload["timeframe"] = subscription.interval?.uppercased()
+        } else if subscription.channel == .ticker {
+            payload["exchanges"] = subscription.exchange.map { [$0] }
+            payload["symbols"] = subscription.symbol.map { [$0] }
+        } else {
+            payload["exchange"] = subscription.exchange
+            payload["symbols"] = subscription.symbol.map { [$0] }
         }
 
         let data = (try? JSONSerialization.data(withJSONObject: payload)) ?? Data()

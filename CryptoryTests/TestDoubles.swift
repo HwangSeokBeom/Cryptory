@@ -1,5 +1,5 @@
-import Synchronization
 import XCTest
+import Synchronization
 @testable import Cryptory
 
 struct StubMarketRepository: MarketRepositoryProtocol {

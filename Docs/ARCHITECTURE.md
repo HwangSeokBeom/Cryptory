@@ -60,15 +60,15 @@ Rationale, alternatives, and consequences: [ADR 0001](ADR/0001-actor-isolated-re
 - UI state: `@MainActor` (`CryptoViewModel` and SwiftUI views).
 - Realtime: actor isolation (`MarketStreamEngine`); events cross to the main actor exactly once, in the adapter.
 - App target builds with `SWIFT_VERSION = 6.0` and `SWIFT_APPROACHABLE_CONCURRENCY = YES`.
-- Remaining `@unchecked Sendable` in the app target is documented in [SECURITY_AND_PRIVACY.md](SECURITY_AND_PRIVACY.md) and ADR 0001; the new realtime path carries exactly one, documented at its declaration: `URLSessionWebSocketTransportConnection`, the compatibility boundary around non-`Sendable` URLSession types (its mutable state is mutex-guarded inside a checked-`Sendable` `SharedBox`; the declaration is `@unchecked` only because the URLSession task/session references themselves are not `Sendable`).
+- Remaining `@unchecked Sendable` in the app target is documented in [SECURITY_AND_PRIVACY.md](SECURITY_AND_PRIVACY.md) and ADR 0001; the realtime URLSession boundary guards all mutable state with the standard-library `Mutex`, and both unchecked declarations document the non-`Sendable` Foundation references or lock-protected state they contain.
 
-## Deployment-target audit (iOS 26.0)
+## Deployment-target audit (iOS 18.0)
 
-The project sets `IPHONEOS_DEPLOYMENT_TARGET = 26.0` at the project level and in the unit-test target; the app and UI-test targets inherit the project value.
+The project sets `IPHONEOS_DEPLOYMENT_TARGET = 18.0` for the project and test configurations; app and UI-test targets inherit that minimum.
 
 - **History:** the project was created with the tooling-default `26.4` (the local Xcode's SDK version at creation time), not a documented product decision. GitHub-hosted runners with Xcode 26.3 exposed no simulator runtime satisfying 26.4, so `xcodebuild -showdestinations` returned only placeholder destinations and CI could not run (GitHub Actions run #29653999898).
-- **Audit for 26.0:** the only OS-gated APIs in the codebase are the Apple Translation APIs in `TranslationService.swift`, already guarded with `@available(iOS 26.0, *)` / `#available(iOS 26.0, *)`. No source references any 26.1–26.4 API; all package dependencies have minimums far below iOS 26. Swift's compiler-enforced availability checking (plus `CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE`) makes a clean build at 26.0 the exhaustive check.
-- **Policy:** iOS 26.0 is the supported baseline — the intended iOS 26 design generation, forward-compatible with every 26.x runtime, and not tied to any single patch-level simulator runtime on CI. Raising the target requires a real API need documented here.
+- **Audit for 18.0:** Apple Translation APIs in `TranslationService.swift` remain guarded with `@available(iOS 26.0, *)` / `#available(iOS 26.0, *)`; iOS 18–25 use the existing fallback path. Swift compiler availability checking and `CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE` are required build gates.
+- **Policy:** iOS 18.0 is the product baseline. Newer-only APIs must stay behind explicit availability checks with a tested fallback rather than raising the whole-app minimum.
 
 ## Environment configuration
 

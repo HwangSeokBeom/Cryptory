@@ -56,7 +56,7 @@ extension URLSessionWebSocketTask: WebSocketSocketDriver {}
 /// **`@unchecked Sendable` boundary (documented):** the connection is shared
 /// between the engine actor, URLSession's delegate/completion queues, and
 /// cancellation handlers. All mutable state lives in `Shared` and is only
-/// accessed through `SharedBox`'s mutex; continuations extracted under the
+/// accessed through `SharedBox`'s lock; continuations extracted under the
 /// lock are resumed exactly once outside it. The remaining stored properties
 /// are immutable references/closures (`shared`, `driver`, `session`,
 /// `delegate`, `beforeReceiveWaiterInstall`) assigned in `init`. The

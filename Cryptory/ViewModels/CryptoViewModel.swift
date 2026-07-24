@@ -1302,6 +1302,7 @@ final class CryptoViewModel: ObservableObject {
     private var chartDeferredSubscriptionTask: Task<Void, Never>?
     private var kimchiHydrationTask: Task<Void, Never>?
     private var kimchiVisibleHydrationTask: Task<Void, Never>?
+    private var tickerFlashResetTasksByMarketIdentity: [MarketIdentity: Task<Void, Never>] = [:]
     private var marketImageRetryTasksByMarketIdentity: [MarketIdentity: Task<Void, Never>] = [:]
     private var isPublicPollingFallbackActive = false
     private var isPrivatePollingFallbackActive = false
@@ -1547,6 +1548,7 @@ final class CryptoViewModel: ObservableObject {
         kimchiHydrationTask?.cancel()
         kimchiVisibleHydrationTask?.cancel()
         kimchiPremiumSettleTask?.cancel()
+        tickerFlashResetTasksByMarketIdentity.values.forEach { $0.cancel() }
     }
 
     private func hydratePersistedMarketSnapshots() {
@@ -10330,10 +10332,16 @@ final class CryptoViewModel: ObservableObject {
             }
         }
 
-        Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .milliseconds(500))
-            guard let self else { return }
+        tickerFlashResetTasksByMarketIdentity[marketIdentity]?.cancel()
+        tickerFlashResetTasksByMarketIdentity[marketIdentity] = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(for: .milliseconds(500))
+            } catch {
+                return
+            }
+            guard let self, !Task.isCancelled else { return }
             guard var ticker = self.pricesByMarketIdentity[marketIdentity], ticker.flash != nil else {
+                self.tickerFlashResetTasksByMarketIdentity[marketIdentity] = nil
                 return
             }
             ticker.flash = nil
@@ -10344,6 +10352,7 @@ final class CryptoViewModel: ObservableObject {
                     reason: "ticker_flash_reset"
                 )
             }
+            self.tickerFlashResetTasksByMarketIdentity[marketIdentity] = nil
         }
     }
 
