@@ -1067,6 +1067,13 @@ final class CryptoViewModel: ObservableObject {
     @Published private(set) var isSavingPriceAlert = false
     @Published private(set) var priceAlertLoadMessage: String?
 
+    var isPriceAlertSupportedForSelection: Bool {
+        PriceAlertSupport.isSupported(
+            exchange: selectedExchange,
+            quoteCurrency: selectedQuoteCurrency
+        )
+    }
+
     @Published var orderSide: OrderSide = .buy
     @Published var orderType: OrderType = .limit
     @Published var orderPrice = ""
@@ -4837,6 +4844,10 @@ final class CryptoViewModel: ObservableObject {
 
     func presentPriceAlertSheet() {
         guard let coin = selectedCoin else { return }
+        guard isPriceAlertSupportedForSelection else {
+            showNotification(PriceAlertSupport.message, type: .error)
+            return
+        }
         guard let session = authState.session else {
             presentLogin(for: .portfolio)
             return
@@ -4885,6 +4896,13 @@ final class CryptoViewModel: ObservableObject {
         }
         guard let targetPrice = priceAlertDraft.targetPrice, targetPrice > 0 else {
             priceAlertLoadMessage = "목표 가격은 0보다 커야 합니다."
+            return
+        }
+        guard PriceAlertSupport.isSupported(
+            exchange: priceAlertDraft.exchange,
+            quoteCurrency: priceAlertDraft.quoteCurrency
+        ) else {
+            priceAlertLoadMessage = PriceAlertSupport.message
             return
         }
 

@@ -181,6 +181,13 @@ struct ChartView: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("가격 알림")
+                .accessibilityHint(
+                    vm.isPriceAlertSupportedForSelection
+                        ? "현재 마켓의 가격 알림을 설정합니다."
+                        : PriceAlertSupport.message
+                )
+                .disabled(vm.isPriceAlertSupportedForSelection == false)
+                .opacity(vm.isPriceAlertSupportedForSelection ? 1 : 0.45)
             }
         }
         .padding(.horizontal, 16)

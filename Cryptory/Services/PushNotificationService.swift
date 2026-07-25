@@ -84,7 +84,7 @@ final class FCMTokenRegistrar: FCMTokenRegistrarProtocol {
         _ = try await client.requestJSON(
             path: client.configuration.pushFCMTokenPath,
             method: "POST",
-            body: ["token": token, "platform": "ios"],
+            body: ["token": token, "platform": "IOS"],
             accessRequirement: .authenticatedRequired,
             accessToken: session.accessToken
         )
@@ -95,7 +95,7 @@ final class FCMTokenRegistrar: FCMTokenRegistrarProtocol {
         _ = try await client.requestJSON(
             path: client.configuration.pushFCMTokenPath,
             method: "DELETE",
-            body: ["token": token, "platform": "ios"],
+            body: ["token": token],
             accessRequirement: .authenticatedRequired,
             accessToken: session.accessToken
         )
