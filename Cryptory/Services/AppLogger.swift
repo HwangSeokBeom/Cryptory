@@ -38,6 +38,12 @@ enum AppLogger {
         print("[AUTH] \(message)")
     }
 
+    /// Emits allowlisted push lifecycle state in every build configuration.
+    /// Callers must never include APNs/FCM token values or credential payloads.
+    nonisolated static func pushStatus(_ message: String) {
+        print("[PUSH] \(message)")
+    }
+
     nonisolated static func nextInstanceID(scope: String) -> Int {
         counterLock.lock()
         defer { counterLock.unlock() }
