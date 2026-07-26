@@ -45,8 +45,8 @@ aps_environment="$(
 /usr/libexec/PlistBuddy -c 'Print :aps-environment' "$entitlements_path" \
   | grep -Fx '$(APS_ENVIRONMENT)' >/dev/null
 
-grep -F 'API_BASE_URL = https:/$()/crytory.duckdns.org' "$release_config" >/dev/null
-grep -F 'WS_BASE_URL = wss:/$()/crytory.duckdns.org' "$release_config" >/dev/null
+grep -F 'API_BASE_URL = https:/$()/cryptory.duckdns.org' "$release_config" >/dev/null
+grep -F 'WS_BASE_URL = wss:/$()/cryptory.duckdns.org' "$release_config" >/dev/null
 
 echo "PASS: Bundle ID, Team ID, production APS environment, HTTPS, and WSS contracts"
 echo "NOTE: signing certificate, provisioning profile, APNs delivery, archive export, and upload were not verified"

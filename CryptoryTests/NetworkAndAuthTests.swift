@@ -90,7 +90,7 @@ final class NetworkAndAuthTests: XCTestCase {
         )
 
         XCTAssertEqual(devRuntime.restBaseURL.absoluteString, "http://127.0.0.1:3002")
-        XCTAssertEqual(prodRuntime.restBaseURL.absoluteString, "https://crytory.duckdns.org")
+        XCTAssertEqual(prodRuntime.restBaseURL.absoluteString, "https://cryptory.duckdns.org")
         XCTAssertEqual(devConfiguration.googleLoginPath, "/api/v1/auth/social/google")
         XCTAssertEqual(devConfiguration.appleLoginPath, "/api/v1/auth/social/apple")
         XCTAssertEqual(prodConfiguration.googleLoginPath, "/api/v1/auth/social/google")
@@ -108,11 +108,11 @@ final class NetworkAndAuthTests: XCTestCase {
         )
         XCTAssertEqual(
             try prodClient.makeRequest(path: prodConfiguration.googleLoginPath, method: "POST", accessRequirement: .publicAccess).url?.absoluteString,
-            "https://crytory.duckdns.org/api/v1/auth/social/google"
+            "https://cryptory.duckdns.org/api/v1/auth/social/google"
         )
         XCTAssertEqual(
             try prodClient.makeRequest(path: prodConfiguration.appleLoginPath, method: "POST", accessRequirement: .publicAccess).url?.absoluteString,
-            "https://crytory.duckdns.org/api/v1/auth/social/apple"
+            "https://cryptory.duckdns.org/api/v1/auth/social/apple"
         )
     }
 
@@ -162,10 +162,10 @@ final class NetworkAndAuthTests: XCTestCase {
         )
 
         XCTAssertEqual(configuration.environment, .production)
-        XCTAssertEqual(configuration.restBaseURL.absoluteString, "https://crytory.duckdns.org")
-        XCTAssertEqual(configuration.webBaseURL.absoluteString, "https://crytory.duckdns.org")
-        XCTAssertEqual(configuration.publicMarketWebSocketURL.absoluteString, "wss://crytory.duckdns.org/ws/market")
-        XCTAssertEqual(configuration.privateTradingWebSocketURL.absoluteString, "wss://crytory.duckdns.org/ws/trading")
+        XCTAssertEqual(configuration.restBaseURL.absoluteString, "https://cryptory.duckdns.org")
+        XCTAssertEqual(configuration.webBaseURL.absoluteString, "https://cryptory.duckdns.org")
+        XCTAssertEqual(configuration.publicMarketWebSocketURL.absoluteString, "wss://cryptory.duckdns.org/ws/market")
+        XCTAssertEqual(configuration.privateTradingWebSocketURL.absoluteString, "wss://cryptory.duckdns.org/ws/trading")
         XCTAssertTrue(configuration.isATSSafe)
     }
 

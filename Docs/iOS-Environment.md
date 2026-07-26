@@ -60,13 +60,13 @@
 | --- | --- | --- |
 | `APP_ENV` | `Prod` | `Dev` |
 | App name | `Cryptory` | `Cryptory Dev` |
-| `API_BASE_URL` | `http://crytory.duckdns.org` | `http://127.0.0.1:3002` |
-| `WS_BASE_URL` | `ws://crytory.duckdns.org` | `ws://127.0.0.1:3002` |
-| `WEB_BASE_URL` | `http://crytory.duckdns.org` | `http://127.0.0.1:3002` |
-| Public WS URL | `ws://crytory.duckdns.org/ws/market` | `ws://127.0.0.1:3002/ws/market` |
-| Private WS URL | `ws://crytory.duckdns.org/ws/trading` | `ws://127.0.0.1:3002/ws/trading` |
-| Google social login | `http://crytory.duckdns.org/api/v1/auth/social/google` | `http://127.0.0.1:3002/api/v1/auth/social/google` |
-| Apple social login | `http://crytory.duckdns.org/api/v1/auth/social/apple` | `http://127.0.0.1:3002/api/v1/auth/social/apple` |
+| `API_BASE_URL` | `https://cryptory.duckdns.org` | `http://127.0.0.1:3002` |
+| `WS_BASE_URL` | `wss://cryptory.duckdns.org` | `ws://127.0.0.1:3002` |
+| `WEB_BASE_URL` | `https://cryptory.duckdns.org` | `http://127.0.0.1:3002` |
+| Public WS URL | `wss://cryptory.duckdns.org/ws/market` | `ws://127.0.0.1:3002/ws/market` |
+| Private WS URL | `wss://cryptory.duckdns.org/ws/trading` | `ws://127.0.0.1:3002/ws/trading` |
+| Google social login | `https://cryptory.duckdns.org/api/v1/auth/social/google` | `http://127.0.0.1:3002/api/v1/auth/social/google` |
+| Apple social login | `https://cryptory.duckdns.org/api/v1/auth/social/apple` | `http://127.0.0.1:3002/api/v1/auth/social/apple` |
 
 ## 7. Simulator Local Server
 
@@ -113,9 +113,9 @@
 
 ## 11. Notes and Cautions
 
-- Production still uses HTTP because the requested production base URL is HTTP. Production ATS is limited to `crytory.duckdns.org`.
+- Production uses HTTPS/WSS through `cryptory.duckdns.org`; the production plist does not allow insecure transport exceptions for this host.
 - Dev local networking is limited to Dev plist handling: `NSAllowsLocalNetworking`, `localhost`, `127.0.0.1`, and local network usage description.
-- `WEB_BASE_URL` now follows the selected environment. If production legal/policy pages are not served from `http://crytory.duckdns.org`, provide environment-specific web/legal URLs in xcconfig.
+- `WEB_BASE_URL` follows the selected environment. If production legal/policy pages are not served from `https://cryptory.duckdns.org`, provide environment-specific web/legal URLs in xcconfig.
 - Do not reintroduce URL literals in feature code. Add values to `AppRuntimeConfiguration` and xcconfig instead.
 
 ## 12. Remaining TODO

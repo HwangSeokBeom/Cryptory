@@ -16,7 +16,7 @@ Last updated: 2026-07-18 (branch refactor/portfolio-realtime-foundation)
 ## Escalation checklist
 
 1. Confirm scope: one exchange, one feed (public/private), or whole backend? Reproduce in the app (Dev scheme against prod URLs if needed).
-2. Check the backend gateway host (`https://crytory.duckdns.org`) for REST reachability, then the WS endpoints (`/ws/market`, `/ws/trading`).
+2. Check the backend gateway host (`https://cryptory.duckdns.org`) for REST reachability, then the WS endpoints (`/ws/market`, `/ws/trading`).
 3. Check upstream exchange status pages (Upbit, Bithumb, Coinone, Korbit) — the gateway normalizes all of them into one envelope, so a single-exchange outage is upstream, not gateway.
 4. Classify severity with the matrix above; note start time.
 5. Mitigate (sections below), then write up post-incident actions.
@@ -28,7 +28,7 @@ Honest limitation: there is currently no crash reporting (no Crashlytics; only F
 The backend gateway exposes a single public socket at `/ws/market` that normalizes all exchanges into one JSON envelope. The production client is the actor-isolated `MarketStreamEngine` behind `MarketStreamUIAdapter` (`Cryptory/Services/Realtime/`). The legacy `WebSocketService` is deprecated and no longer used for the public path; only the private trading socket still runs on the legacy `PrivateWebSocketService` implementation (documented follow-up).
 
 - Symptoms in-app: prices stop ticking on the market/chart tabs; `publicWebSocketState` leaves `.connected`; the ViewModel derives `StreamingStatus.pollingFallback` when the state is `.disconnected`/`.failed` and surfaces a streaming warning. The engine sends a protocol-level ping every 20 s with a 10 s pong timeout, so a half-open connection is detected within ~30 s and enters the reconnect path (`heartbeat timeout` appears as the disconnect reason in the Pipeline Lab and `realtime.heartbeat` logs).
-- Immediate checks: can you open a WS connection to `wss://crytory.duckdns.org/ws/market`? Is REST (`/`) still answering? Are all exchanges stale or just one?
+- Immediate checks: can you open a WS connection to `wss://cryptory.duckdns.org/ws/market`? Is REST (`/`) still answering? Are all exchanges stale or just one?
 - Diagnosis: all-exchange staleness on one socket implies gateway outage; single-exchange staleness implies upstream exchange outage behind the gateway (check exchange status pages / gateway server logs — server-side, outside this repo).
 - Client behavior during outage: the engine schedules reconnects with exponential backoff (1 s initial, ×2, 30 s cap, ±20 % jitter); backoff resets only once a connection proves useful (first decoded event or pong). Subscription churn during the wait reconciles the registry without resetting backoff, and the converged set is replayed exactly once on reconnect. Separately, the ViewModel activates a REST polling fallback (`updatePublicPollingIfNeeded`) that polls tickers/chart data every 5 seconds (8 seconds on the kimchi tab) while status is `.pollingFallback`.
 - Mitigation: restore the gateway (server-side). Client-side, users still get 5s-granularity data via the polling fallback; no client release is required for a pure backend outage. Foregrounding the app retriggers connects (`onScenePhaseChanged` acts on `.active`, `CryptoViewModel.swift:4413–4438`).
@@ -49,7 +49,7 @@ Private socket `/ws/trading` (`PrivateWebSocketService`, `WebSocketService.swift
 All REST goes through `APIClient` and the `Live*Repository` types in `Cryptory/Services/NetworkService.swift`.
 
 - Symptoms: initial loads fail, pull-to-refresh errors, and — critically — the WS polling fallbacks (a) and (b) also fail, so the app degrades to cached snapshots (`UserDefaultsMarketSnapshotCacheStore`, `NetworkService.swift:846`) and error states.
-- Immediate checks: `curl https://crytory.duckdns.org/...` for a known endpoint; distinguish DNS (DuckDNS), TLS certificate expiry, and application-level 5xx.
+- Immediate checks: `curl https://cryptory.duckdns.org/...` for a known endpoint; distinguish DNS (DuckDNS), TLS certificate expiry, and application-level 5xx.
 - Diagnosis: `NetworkServiceError` categories distinguish transport errors, HTTP status errors, and parsing failures; parsing failures on 200s indicate a backend contract regression rather than an outage.
 - Mitigation: server-side. Client-side, verify cached market snapshots render rather than blank screens.
 - Post-incident: if the cause was a contract change, add/extend a parsing test in `CryptoryTests/NetworkAndAuthTests.swift`.

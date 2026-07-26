@@ -3,11 +3,15 @@
 서버를 새 AWS 계정으로 옮겨도 iOS Release는 같은 public hostname을 사용한다.
 
 ```text
-REST: https://crytory.duckdns.org
-WS:   wss://crytory.duckdns.org
+REST: https://cryptory.duckdns.org
+WS:   wss://cryptory.duckdns.org
 ```
 
 따라서 DNS cutover 전에는 앱의 endpoint를 새 IP로 직접 바꾸지 않는다.
+
+이미 배포된 앱은 과거 오타 호스트 `crytory.duckdns.org`를 참조할 수 있다.
+새 Release는 위 canonical 호스트를 사용하되, 서버의 DNS·TLS·Nginx는 기존
+앱의 강제 업데이트가 완료될 때까지 두 호스트를 함께 지원해야 한다.
 
 ## 고정 계약
 

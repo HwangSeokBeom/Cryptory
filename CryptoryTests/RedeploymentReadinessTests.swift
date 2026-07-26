@@ -66,7 +66,7 @@ final class RedeploymentReadinessTests: XCTestCase {
             "cryptory://trade/BTC",
             "cryptory://orders/open",
             "cryptory://wallet/deposit",
-            "https://crytory.duckdns.org/withdraw?asset=BTC",
+            "https://cryptory.duckdns.org/withdraw?asset=BTC",
             "cryptory://route/%EB%A7%A4%EC%88%98/BTC"
         ] {
             XCTAssertTrue(AppRouteGuard.isTradingRoute(try XCTUnwrap(URL(string: route))), route)
