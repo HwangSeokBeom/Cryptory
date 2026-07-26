@@ -78,6 +78,43 @@ final class RedeploymentReadinessTests: XCTestCase {
         )
     }
 
+    @MainActor
+    func testPriceAlertPushRoutesOnlyToInformationalMarketData() {
+        var receivedRoute: PushPriceAlertRoute?
+        NotificationRouter.shared.onPriceAlert = { route in
+            receivedRoute = route
+        }
+        defer {
+            NotificationRouter.shared.onPriceAlert = nil
+        }
+
+        NotificationRouter.shared.route(
+            userInfo: [
+                "type": "PRICE_ALERT",
+                "exchange": "UPBIT",
+                "symbol": "BTC",
+                "quoteCurrency": "KRW",
+                "alertId": "alert-1"
+            ]
+        )
+
+        XCTAssertEqual(receivedRoute?.exchange, .upbit)
+        XCTAssertEqual(receivedRoute?.symbol, "BTC")
+        XCTAssertEqual(receivedRoute?.quoteCurrency, .krw)
+        XCTAssertEqual(receivedRoute?.alertId, "alert-1")
+
+        receivedRoute = nil
+        NotificationRouter.shared.route(
+            userInfo: [
+                "type": "ORDER_FILLED",
+                "exchange": "UPBIT",
+                "symbol": "BTC",
+                "deepLink": "cryptory://trade/BTC"
+            ]
+        )
+        XCTAssertNil(receivedRoute)
+    }
+
     func testFcmRegistrationUsesCanonicalIOSPlatformAndDeleteHasMinimalBody() async throws {
         URLProtocolSpy.reset()
         URLProtocolSpy.responseQueue = [
