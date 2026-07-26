@@ -1,5 +1,6 @@
 import SwiftUI
 import AuthenticationServices
+import GoogleSignIn
 import UIKit
 
 struct LoginView: View {
@@ -280,16 +281,17 @@ struct LoginView: View {
         VStack(spacing: 12) {
             dividerLabel("또는")
 
-            socialButton(
-                title: vm.isSigningIn(with: .google) ? "Google 로그인 중..." : "Google로 계속하기",
-                systemImage: "g.circle.fill",
-                isLoading: vm.isSigningIn(with: .google),
+            GoogleSignInButtonView(
+                isEnabled: vm.isAuthenticationBusy == false,
                 action: {
                     Task {
                         await vm.submitGoogleSignIn(presenting: UIApplication.shared.cryptoryTopViewController())
                     }
                 }
             )
+            .frame(maxWidth: .infinity)
+            .frame(height: 48)
+            .opacity(vm.isAuthenticationBusy && !vm.isSigningIn(with: .google) ? 0.55 : 1)
 
             appleSignInButton
         }
@@ -310,42 +312,6 @@ struct LoginView: View {
                 .fill(Color.themeBorder)
                 .frame(height: 1)
         }
-    }
-
-    private func socialButton(
-        title: String,
-        systemImage: String,
-        isLoading: Bool,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            HStack(spacing: 10) {
-                if isLoading {
-                    ProgressView()
-                        .progressViewStyle(.circular)
-                        .tint(.themeText)
-                } else {
-                    Image(systemName: systemImage)
-                        .font(.system(size: 18, weight: .semibold))
-                }
-
-                Text(title)
-                    .font(.system(size: 15, weight: .bold))
-            }
-            .foregroundColor(.themeText)
-            .frame(maxWidth: .infinity)
-            .frame(minHeight: 50)
-            .background(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(Color.bgSecondary)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .stroke(Color.themeBorder, lineWidth: 1)
-                    )
-            )
-        }
-        .buttonStyle(AuthPressableButtonStyle())
-        .disabled(vm.isAuthenticationBusy)
     }
 
     private var appleSignInButton: some View {
@@ -656,6 +622,46 @@ struct LoginView: View {
             return
         }
         safariDestination = destination
+    }
+}
+
+@MainActor
+private struct GoogleSignInButtonView: UIViewRepresentable {
+    let isEnabled: Bool
+    let action: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(action: action)
+    }
+
+    func makeUIView(context: Context) -> GIDSignInButton {
+        let button = GIDSignInButton()
+        button.style = .wide
+        button.colorScheme = .dark
+        button.addTarget(
+            context.coordinator,
+            action: #selector(Coordinator.didTapGoogleSignIn),
+            for: .touchUpInside
+        )
+        return button
+    }
+
+    func updateUIView(_ button: GIDSignInButton, context: Context) {
+        context.coordinator.action = action
+        button.isEnabled = isEnabled
+    }
+
+    final class Coordinator: NSObject {
+        var action: () -> Void
+
+        init(action: @escaping () -> Void) {
+            self.action = action
+        }
+
+        @objc
+        func didTapGoogleSignIn() {
+            action()
+        }
     }
 }
 

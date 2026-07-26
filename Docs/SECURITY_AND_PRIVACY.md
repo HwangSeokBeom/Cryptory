@@ -49,7 +49,7 @@ Must never be logged, in any build configuration:
 
 Runtime endpoints are resolved by `AppRuntimeConfiguration` (`Cryptory/Services/NetworkService.swift:247–476`):
 
-- Production (`Configurations/Release-Prod.xcconfig`) defaults to `https://crytory.duckdns.org` (REST/web) and `wss://crytory.duckdns.org` (WebSocket, paths `/ws/market` and `/ws/trading`).
+- Production (`Configurations/Release-Prod.xcconfig`) defaults to `https://cryptory.duckdns.org` (REST/web) and `wss://cryptory.duckdns.org` (WebSocket, paths `/ws/market` and `/ws/trading`).
 - `isATSSafe` (`NetworkService.swift:460–465`) verifies all four resolved URLs use `https`/`wss`; `assertProductionTransportSecurity()` (`:467–475`) raises an `assertionFailure` if a production-environment build resolves to plaintext schemes. Note this assertion is `#if DEBUG`-gated, so it catches misconfiguration during development but is compiled out of Release binaries (see gaps).
 - Development (`Configurations/Debug-Dev.xcconfig`) uses plain `http/ws` against `127.0.0.1:3002` only. `Cryptory/Info-Dev.plist` enables `NSAllowsLocalNetworking` for this; the production `Info.plist` carries no such exception.
 

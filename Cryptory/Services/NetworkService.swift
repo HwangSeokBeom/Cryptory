@@ -357,10 +357,10 @@ struct AppRuntimeConfiguration {
             defaultString = runtimeSetting(
                 in: values,
                 keys: "PROD_API_BASE_URL", "PRODUCTION_API_BASE_URL", "CRYPTORY_PRODUCTION_API_BASE_URL"
-            ) ?? "https://crytory.duckdns.org"
+            ) ?? "https://cryptory.duckdns.org"
         }
 
-        return URL(string: defaultString) ?? URL(string: "https://crytory.duckdns.org")!
+        return URL(string: defaultString) ?? URL(string: "https://cryptory.duckdns.org")!
     }
 
     private static func environmentSpecificRESTBaseURLString(

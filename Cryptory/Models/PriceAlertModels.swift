@@ -12,6 +12,14 @@ enum PriceAlertCondition: String, CaseIterable, Identifiable, Codable {
         case .below: return "이하"
         }
     }
+
+    var apiValue: String {
+        rawValue.uppercased()
+    }
+
+    init?(apiValue: String) {
+        self.init(rawValue: apiValue.lowercased())
+    }
 }
 
 enum PriceAlertRepeatPolicy: String, CaseIterable, Identifiable, Codable {
@@ -25,6 +33,30 @@ enum PriceAlertRepeatPolicy: String, CaseIterable, Identifiable, Codable {
         case .once: return "1회"
         case .repeating: return "반복"
         }
+    }
+
+    var apiValue: String {
+        switch self {
+        case .once: return "ONCE"
+        case .repeating: return "REPEAT"
+        }
+    }
+
+    init?(apiValue: String) {
+        switch apiValue.uppercased() {
+        case "ONCE": self = .once
+        case "REPEAT": self = .repeating
+        default: return nil
+        }
+    }
+}
+
+enum PriceAlertSupport {
+    static let message = "가격 알림은 현재 업비트·빗썸의 KRW/BTC 마켓에서만 지원해요."
+
+    static func isSupported(exchange: Exchange, quoteCurrency: MarketQuoteCurrency) -> Bool {
+        [.upbit, .bithumb].contains(exchange)
+            && [.krw, .btc].contains(quoteCurrency)
     }
 }
 

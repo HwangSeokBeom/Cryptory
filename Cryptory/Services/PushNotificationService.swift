@@ -84,7 +84,7 @@ final class FCMTokenRegistrar: FCMTokenRegistrarProtocol {
         _ = try await client.requestJSON(
             path: client.configuration.pushFCMTokenPath,
             method: "POST",
-            body: ["token": token, "platform": "ios"],
+            body: ["token": token, "platform": "IOS"],
             accessRequirement: .authenticatedRequired,
             accessToken: session.accessToken
         )
@@ -95,7 +95,7 @@ final class FCMTokenRegistrar: FCMTokenRegistrarProtocol {
         _ = try await client.requestJSON(
             path: client.configuration.pushFCMTokenPath,
             method: "DELETE",
-            body: ["token": token, "platform": "ios"],
+            body: ["token": token],
             accessRequirement: .authenticatedRequired,
             accessToken: session.accessToken
         )
@@ -119,21 +119,34 @@ final class PushNotificationService: NSObject {
         guard FirebaseBootstrapper.configureIfNeeded() else {
             UNUserNotificationCenter.current().delegate = self
             AppLogger.debug(.network, "[Push] firebase_unavailable messaging_skipped=true")
+            AppLogger.pushStatus("messaging configured=false reason=firebase_unavailable")
             return
         }
         UNUserNotificationCenter.current().delegate = self
         Messaging.messaging().delegate = self
+        AppLogger.pushStatus("messaging configured=true delegateConfigured=true")
     }
 
     func requestAuthorizationAndRegister() {
         guard FirebaseBootstrapper.isConfigured else {
             AppLogger.debug(.network, "[Push] registration skipped reason=firebase_unconfigured")
+            AppLogger.pushStatus("authorization requested=false reason=firebase_unconfigured")
             return
         }
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .badge, .sound]) { granted, _ in
+        AppLogger.pushStatus("authorization requested=true")
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .badge, .sound]) { granted, error in
+            if error != nil {
+                AppLogger.pushStatus("authorization result=failure registerRequested=false")
+            }
             UNUserNotificationCenter.current().getNotificationSettings { settings in
                 AppLogger.debug(.network, "[Push] permission status=\(settings.authorizationStatus.debugName)")
-                if granted || settings.authorizationStatus == .provisional || settings.authorizationStatus == .authorized {
+                let shouldRegister = granted
+                    || settings.authorizationStatus == .provisional
+                    || settings.authorizationStatus == .authorized
+                AppLogger.pushStatus(
+                    "authorization status=\(settings.authorizationStatus.debugName) registerRequested=\(shouldRegister)"
+                )
+                if shouldRegister {
                     DispatchQueue.main.async {
                         UIApplication.shared.registerForRemoteNotifications()
                     }
@@ -143,28 +156,68 @@ final class PushNotificationService: NSObject {
     }
 
     func updateAPNSToken(_ deviceToken: Data) {
-        guard FirebaseBootstrapper.isConfigured else { return }
+        guard FirebaseBootstrapper.isConfigured else {
+            AppLogger.pushStatus("apns token received=true forwardedToFirebase=false reason=firebase_unconfigured")
+            return
+        }
         Messaging.messaging().apnsToken = deviceToken
+        AppLogger.pushStatus(
+            "apns token received=true length=\(deviceToken.count) forwardedToFirebase=true"
+        )
+    }
+
+    func reportAPNSRegistrationFailure() {
+        AppLogger.pushStatus("apns registration result=failure")
     }
 
     func bindSession(_ session: AuthSession?) {
         currentSession = session
+        AppLogger.pushStatus(
+            "session bound=\(session != nil) pendingFCMToken=\(pendingToken != nil)"
+        )
         if let session, let token = pendingToken {
-            Task { try? await registrar.register(token: token, session: session) }
+            register(token: token, session: session, source: "session_bind")
         }
     }
 
     func cleanupForLogout(previousSession: AuthSession?) {
         currentSession = nil
-        guard let token = pendingToken, let session = previousSession else { return }
-        Task { try? await registrar.delete(token: token, session: session) }
+        guard let token = pendingToken, let session = previousSession else {
+            AppLogger.pushStatus("logout tokenDeletion=skipped reason=missing_token_or_session")
+            return
+        }
+        Task {
+            do {
+                try await registrar.delete(token: token, session: session)
+                AppLogger.pushStatus("logout tokenDeletion=success")
+            } catch {
+                AppLogger.pushStatus("logout tokenDeletion=failure")
+            }
+        }
     }
 
     private func handleFCMToken(_ token: String) {
         pendingToken = token
         AppLogger.debug(.network, "[Push] fcm token received exists=true length=\(token.count)")
-        guard let session = currentSession else { return }
-        Task { try? await registrar.register(token: token, session: session) }
+        AppLogger.pushStatus(
+            "fcm token received=true length=\(token.count) sessionBound=\(currentSession != nil)"
+        )
+        guard let session = currentSession else {
+            AppLogger.pushStatus("fcm registration=deferred reason=session_unavailable")
+            return
+        }
+        register(token: token, session: session, source: "token_refresh")
+    }
+
+    private func register(token: String, session: AuthSession, source: String) {
+        Task {
+            do {
+                try await registrar.register(token: token, session: session)
+                AppLogger.pushStatus("fcm registration=success source=\(source)")
+            } catch {
+                AppLogger.pushStatus("fcm registration=failure source=\(source)")
+            }
+        }
     }
 }
 
@@ -172,6 +225,7 @@ extension PushNotificationService: MessagingDelegate {
     func messaging(_ messaging: Messaging, didReceiveRegistrationToken fcmToken: String?) {
         guard let fcmToken, fcmToken.isEmpty == false else {
             AppLogger.debug(.network, "[Push] fcm token received exists=false length=0")
+            AppLogger.pushStatus("fcm token received=false length=0")
             return
         }
         handleFCMToken(fcmToken)

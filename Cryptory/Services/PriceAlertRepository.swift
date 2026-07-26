@@ -14,6 +14,9 @@ final class LivePriceAlertRepository: PriceAlertRepositoryProtocol {
     }
 
     func fetchPriceAlerts(session: AuthSession, exchange: Exchange, symbol: String, quoteCurrency: MarketQuoteCurrency) async throws -> [PriceAlert] {
+        guard PriceAlertSupport.isSupported(exchange: exchange, quoteCurrency: quoteCurrency) else {
+            throw NetworkServiceError.parsingFailed(PriceAlertSupport.message)
+        }
         AppLogger.debug(.network, "[PriceAlert] load symbol=\(symbol) quote=\(quoteCurrency.rawValue)")
         let json = try await client.requestJSON(
             path: client.configuration.priceAlertsPath,
@@ -29,19 +32,32 @@ final class LivePriceAlertRepository: PriceAlertRepositoryProtocol {
     }
 
     func savePriceAlert(session: AuthSession, draft: PriceAlertDraft) async throws -> PriceAlert {
+        guard PriceAlertSupport.isSupported(exchange: draft.exchange, quoteCurrency: draft.quoteCurrency) else {
+            throw NetworkServiceError.parsingFailed(PriceAlertSupport.message)
+        }
         guard let targetPrice = draft.targetPrice, targetPrice > 0 else {
             throw NetworkServiceError.parsingFailed("목표 가격은 0보다 커야 합니다.")
         }
         AppLogger.debug(.network, "[PriceAlert] save condition=\(draft.condition.rawValue) target=\(targetPrice)")
-        let body: JSONObject = [
-            "exchange": draft.exchange.rawValue,
-            "symbol": draft.symbol,
-            "quoteCurrency": draft.quoteCurrency.rawValue,
-            "condition": draft.condition.rawValue,
-            "targetPrice": targetPrice,
-            "repeatPolicy": draft.repeatPolicy.rawValue,
-            "isActive": draft.isActive
-        ]
+        let body: JSONObject
+        if draft.alertId == nil {
+            body = [
+                "exchange": draft.exchange.rawValue,
+                "symbol": draft.symbol,
+                "quoteCurrency": draft.quoteCurrency.rawValue,
+                "condition": draft.condition.apiValue,
+                "targetPrice": targetPrice,
+                "repeatMode": draft.repeatPolicy.apiValue,
+                "isActive": draft.isActive
+            ]
+        } else {
+            body = [
+                "condition": draft.condition.apiValue,
+                "targetPrice": targetPrice,
+                "repeatMode": draft.repeatPolicy.apiValue,
+                "isActive": draft.isActive
+            ]
+        }
         let path = draft.alertId.map { client.configuration.priceAlertPath(id: $0) } ?? client.configuration.priceAlertsPath
         let json = try await client.requestJSON(
             path: path,
@@ -92,8 +108,11 @@ final class LivePriceAlertRepository: PriceAlertRepositoryProtocol {
                   let target = dictionary["targetPrice"] as? Double ?? (dictionary["targetPrice"] as? NSNumber)?.doubleValue
             else { return nil }
             let quote = MarketQuoteCurrency(rawValue: (dictionary["quoteCurrency"] as? String ?? "KRW").uppercased()) ?? .krw
-            let condition = PriceAlertCondition(rawValue: dictionary["condition"] as? String ?? "") ?? .above
-            let repeatPolicy = PriceAlertRepeatPolicy(rawValue: dictionary["repeatPolicy"] as? String ?? "") ?? .once
+            let condition = PriceAlertCondition(apiValue: dictionary["condition"] as? String ?? "") ?? .above
+            let repeatMode = dictionary["repeatMode"] as? String ?? dictionary["repeatPolicy"] as? String ?? ""
+            let repeatPolicy = PriceAlertRepeatPolicy(apiValue: repeatMode)
+                ?? PriceAlertRepeatPolicy(rawValue: repeatMode.lowercased())
+                ?? .once
             let isActive = dictionary["isActive"] as? Bool ?? true
             return PriceAlert(
                 id: id,

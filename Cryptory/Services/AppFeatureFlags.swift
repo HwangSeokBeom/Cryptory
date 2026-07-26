@@ -56,6 +56,7 @@ enum AppRouteGuard {
 
     static func isTradingRoute(_ url: URL) -> Bool {
         let routeParts = [
+            url.absoluteString,
             url.host,
             url.path,
             url.lastPathComponent,
@@ -69,6 +70,7 @@ enum AppRouteGuard {
 
     static func informationalTab(for url: URL) -> Tab? {
         let routeParts = [
+            url.absoluteString,
             url.host,
             url.path,
             url.lastPathComponent
