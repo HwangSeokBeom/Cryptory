@@ -55,7 +55,8 @@ private struct KeyboardDismissGestureInstaller: UIViewRepresentable {
         }
 
         deinit {
-            AppLogger.debug(.lifecycle, "KeyboardDismissCoordinator deinit #\(instanceID)")
+            let deinitInstanceID = instanceID
+            AppLogger.debug(.lifecycle, "KeyboardDismissCoordinator deinit #\(deinitInstanceID)")
         }
 
         func installIfNeeded(from anchorView: UIView, enabled: Bool) {

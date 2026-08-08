@@ -579,6 +579,66 @@ final class NetworkAndAuthTests: XCTestCase {
         XCTAssertTrue(snapshot.coins.contains { $0.symbol == "PYTH" })
     }
 
+    func testMarketTickerPageSendsCursorAndParsesPaginationMetadata() async throws {
+        URLProtocolSpy.reset()
+        URLProtocolSpy.responseData = Data(
+            """
+            {
+              "success": true,
+              "data": {
+                "exchange": "upbit",
+                "quoteCurrency": "KRW",
+                "items": [
+                  {
+                    "market": "KRW-ETH",
+                    "baseCurrency": "ETH",
+                    "koreanName": "이더리움",
+                    "currentPrice": "5200000",
+                    "signedChangeRate": "-0.003",
+                    "accTradePrice24h": "987654321"
+                  }
+                ],
+                "meta": {
+                  "returnedCount": 1,
+                  "nextCursor": "cursor-page-2",
+                  "hasNext": true
+                }
+              }
+            }
+            """.utf8
+        )
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [URLProtocolSpy.self]
+        let repository = LiveMarketRepository(
+            client: APIClient(
+                configuration: makeAPIConfiguration(baseURL: "https://example.com"),
+                session: URLSession(configuration: configuration)
+            )
+        )
+
+        let snapshot = try await repository.fetchTickerPage(
+            exchange: .upbit,
+            quoteCurrency: .krw,
+            cursor: "cursor-page-1",
+            limit: 50,
+            sortKey: "quoteVolume",
+            sortDirection: "desc"
+        )
+        let url = try XCTUnwrap(URLProtocolSpy.lastRequest?.url)
+        let queryItems = Dictionary(uniqueKeysWithValues: (URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []).map { ($0.name, $0.value ?? "") })
+
+        XCTAssertEqual(queryItems["cursor"], "cursor-page-1")
+        XCTAssertEqual(queryItems["limit"], "50")
+        XCTAssertEqual(queryItems["sort"], "volume")
+        XCTAssertEqual(queryItems["order"], "desc")
+        XCTAssertEqual(snapshot.tickers["ETH"]?.price, 5_200_000)
+        XCTAssertEqual(snapshot.paginationReturnedCount, 1)
+        XCTAssertEqual(snapshot.paginationNextCursor, "cursor-page-2")
+        XCTAssertTrue(snapshot.paginationHasNext)
+        XCTAssertTrue(snapshot.hasPaginationMetadata)
+    }
+
     func testMarketIdentityUsesMarketIdWhenAvailableAndQuoteFallbackWhenMissing() {
         let krwBTC = MarketIdentity(exchange: .upbit, marketId: "KRW-BTC", symbol: "BTC", quoteCurrency: .krw)
         let btcETH = MarketIdentity(exchange: .upbit, marketId: "BTC-ETH", symbol: "ETH", quoteCurrency: .btc)

@@ -687,6 +687,10 @@ struct MarketTickerSnapshot: Codable {
     let filteredSymbols: [String]
     let supportedQuotes: [MarketQuoteCurrency]
     let defaultQuoteCurrency: MarketQuoteCurrency?
+    let paginationNextCursor: String?
+    let paginationHasNext: Bool
+    let paginationReturnedCount: Int
+    let hasPaginationMetadata: Bool
 
     private enum CodingKeys: String, CodingKey {
         case exchange
@@ -696,6 +700,10 @@ struct MarketTickerSnapshot: Codable {
         case filteredSymbols
         case supportedQuotes
         case defaultQuoteCurrency
+        case paginationNextCursor
+        case paginationHasNext
+        case paginationReturnedCount
+        case hasPaginationMetadata
     }
 
     init(
@@ -705,7 +713,11 @@ struct MarketTickerSnapshot: Codable {
         meta: ResponseMeta,
         filteredSymbols: [String] = [],
         supportedQuotes: [MarketQuoteCurrency] = [],
-        defaultQuoteCurrency: MarketQuoteCurrency? = nil
+        defaultQuoteCurrency: MarketQuoteCurrency? = nil,
+        paginationNextCursor: String? = nil,
+        paginationHasNext: Bool = false,
+        paginationReturnedCount: Int? = nil,
+        hasPaginationMetadata: Bool = false
     ) {
         self.exchange = exchange
         self.coins = coins
@@ -714,6 +726,10 @@ struct MarketTickerSnapshot: Codable {
         self.filteredSymbols = filteredSymbols
         self.supportedQuotes = supportedQuotes
         self.defaultQuoteCurrency = defaultQuoteCurrency
+        self.paginationNextCursor = paginationNextCursor
+        self.paginationHasNext = paginationHasNext
+        self.paginationReturnedCount = paginationReturnedCount ?? tickers.count
+        self.hasPaginationMetadata = hasPaginationMetadata
     }
 
     init(from decoder: Decoder) throws {
@@ -725,7 +741,11 @@ struct MarketTickerSnapshot: Codable {
             meta: try container.decode(ResponseMeta.self, forKey: .meta),
             filteredSymbols: try container.decodeIfPresent([String].self, forKey: .filteredSymbols) ?? [],
             supportedQuotes: try container.decodeIfPresent([MarketQuoteCurrency].self, forKey: .supportedQuotes) ?? [],
-            defaultQuoteCurrency: try container.decodeIfPresent(MarketQuoteCurrency.self, forKey: .defaultQuoteCurrency)
+            defaultQuoteCurrency: try container.decodeIfPresent(MarketQuoteCurrency.self, forKey: .defaultQuoteCurrency),
+            paginationNextCursor: try container.decodeIfPresent(String.self, forKey: .paginationNextCursor),
+            paginationHasNext: try container.decodeIfPresent(Bool.self, forKey: .paginationHasNext) ?? false,
+            paginationReturnedCount: try container.decodeIfPresent(Int.self, forKey: .paginationReturnedCount),
+            hasPaginationMetadata: try container.decodeIfPresent(Bool.self, forKey: .hasPaginationMetadata) ?? false
         )
     }
 }
@@ -1119,6 +1139,14 @@ protocol MarketRepositoryProtocol {
     func fetchMarkets(exchange: Exchange, quoteCurrency: MarketQuoteCurrency) async throws -> MarketCatalogSnapshot
     func fetchTickers(exchange: Exchange) async throws -> MarketTickerSnapshot
     func fetchTickers(exchange: Exchange, quoteCurrency: MarketQuoteCurrency) async throws -> MarketTickerSnapshot
+    func fetchTickerPage(
+        exchange: Exchange,
+        quoteCurrency: MarketQuoteCurrency,
+        cursor: String?,
+        limit: Int,
+        sortKey: String,
+        sortDirection: String
+    ) async throws -> MarketTickerSnapshot
     func fetchOrderbook(symbol: String, exchange: Exchange) async throws -> OrderbookSnapshot
     func fetchTrades(symbol: String, exchange: Exchange) async throws -> PublicTradesSnapshot
     func fetchCandles(symbol: String, exchange: Exchange, interval: String) async throws -> CandleSnapshot
@@ -1135,6 +1163,17 @@ extension MarketRepositoryProtocol {
 
     func fetchTickers(exchange: Exchange, quoteCurrency: MarketQuoteCurrency) async throws -> MarketTickerSnapshot {
         try await fetchTickers(exchange: exchange)
+    }
+
+    func fetchTickerPage(
+        exchange: Exchange,
+        quoteCurrency: MarketQuoteCurrency,
+        cursor: String?,
+        limit: Int,
+        sortKey: String,
+        sortDirection: String
+    ) async throws -> MarketTickerSnapshot {
+        try await fetchTickers(exchange: exchange, quoteCurrency: quoteCurrency)
     }
 
     func fetchCandles(symbol: String, exchange: Exchange, quoteCurrency: MarketQuoteCurrency, interval: String, limit: Int) async throws -> CandleSnapshot {
@@ -1936,17 +1975,46 @@ final class LiveMarketRepository: MarketRepositoryProtocol {
     }
 
     func fetchTickers(exchange: Exchange, quoteCurrency: MarketQuoteCurrency) async throws -> MarketTickerSnapshot {
-        let queryItems = [
+        try await fetchTickerPage(
+            exchange: exchange,
+            quoteCurrency: quoteCurrency,
+            cursor: nil,
+            limit: 100,
+            sortKey: "",
+            sortDirection: ""
+        )
+    }
+
+    func fetchTickerPage(
+        exchange: Exchange,
+        quoteCurrency: MarketQuoteCurrency,
+        cursor: String?,
+        limit: Int,
+        sortKey: String,
+        sortDirection: String
+    ) async throws -> MarketTickerSnapshot {
+        let boundedLimit = min(max(limit, 1), 100)
+        var queryItems = [
             URLQueryItem(name: "exchange", value: exchange.rawValue),
             URLQueryItem(name: "quoteCurrency", value: quoteCurrency.apiValue),
-            URLQueryItem(name: "limit", value: "100")
+            URLQueryItem(name: "limit", value: String(boundedLimit))
         ]
+        if let cursor, cursor.isEmpty == false {
+            queryItems.append(URLQueryItem(name: "cursor", value: cursor))
+        }
+        let normalizedSortKey = sortKey == "quoteVolume" ? "volume" : sortKey
+        if normalizedSortKey.isEmpty == false {
+            queryItems.append(URLQueryItem(name: "sort", value: normalizedSortKey))
+        }
+        if sortDirection.isEmpty == false {
+            queryItems.append(URLQueryItem(name: "order", value: sortDirection))
+        }
         let requestURL = (try? client.makeRequest(
             path: client.configuration.marketTickersPath,
             queryItems: queryItems,
             accessRequirement: .publicAccess
         ).url?.absoluteString) ?? client.configuration.marketTickersPath
-        AppLogger.debug(.network, "[MarketTickerREST] request url=\(requestURL) exchange=\(exchange.rawValue) quote=\(quoteCurrency.rawValue) limit=100")
+        AppLogger.debug(.network, "[MarketTickerREST] request url=\(requestURL) exchange=\(exchange.rawValue) quote=\(quoteCurrency.rawValue) limit=\(boundedLimit) cursorExists=\(cursor != nil)")
         let json = try await client.requestJSON(
             path: client.configuration.marketTickersPath,
             queryItems: queryItems,
@@ -1954,6 +2022,17 @@ final class LiveMarketRepository: MarketRepositoryProtocol {
         )
 
         let container = splitPayload(json)
+        let paginationDictionary = (container.payload as? JSONObject)?["meta"] as? JSONObject
+        let hasPaginationMetadata = paginationDictionary?.containsAny([
+            "nextCursor",
+            "next_cursor",
+            "hasNext",
+            "has_next",
+            "returnedCount",
+            "returned_count"
+        ]) ?? false
+        let paginationNextCursor = paginationDictionary?.string(["nextCursor", "next_cursor"])
+        let paginationHasNext = paginationDictionary?.bool(["hasNext", "has_next"]) ?? false
         if exchange == .coinone {
             AppLogger.debug(
                 .network,
@@ -2054,7 +2133,11 @@ final class LiveMarketRepository: MarketRepositoryProtocol {
             meta: container.meta,
             filteredSymbols: resolvedUniverse.filteredSymbols,
             supportedQuotes: container.meta.supportedQuotes,
-            defaultQuoteCurrency: container.meta.defaultQuoteCurrency
+            defaultQuoteCurrency: container.meta.defaultQuoteCurrency,
+            paginationNextCursor: paginationNextCursor,
+            paginationHasNext: paginationHasNext,
+            paginationReturnedCount: paginationDictionary?.int(["returnedCount", "returned_count"]) ?? receivedCount,
+            hasPaginationMetadata: hasPaginationMetadata
         )
     }
 

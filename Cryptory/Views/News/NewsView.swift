@@ -154,7 +154,7 @@ struct NewsView: View {
     private var newsList: some View {
         GeometryReader { proxy in
             ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
+                LazyVStack(alignment: .leading, spacing: 16) {
                     headlineTicker
                     HStack {
                         dateFilterBar(selectedDate: vm.newsSelectedDate, onSelect: vm.selectNewsDate)
@@ -182,7 +182,7 @@ struct NewsView: View {
                                 .background(Capsule().fill(Color.bgTertiary))
                         }
                         ForEach(groupedNews(items), id: \.date) { group in
-                            VStack(alignment: .leading, spacing: 10) {
+                            LazyVStack(alignment: .leading, spacing: 10) {
                                 Text(group.date)
                                     .font(.system(size: 15, weight: .heavy))
                                     .foregroundColor(.themeText)
@@ -1579,12 +1579,12 @@ private struct TrendsContentView: View {
 
     private func percentValue(_ value: Double?) -> String {
         guard let value else { return "제공되지 않음" }
-        return String(format: "%.2f%%", value)
+        return PriceFormatter.formatUnsignedPercent(value)
     }
 
     private func percentValueOptional(_ value: Double?) -> String? {
         guard let value else { return nil }
-        return String(format: "%.2f%%", value)
+        return PriceFormatter.formatUnsignedPercent(value)
     }
 
     private func fearGreedLabel(_ value: Int?) -> String? {
@@ -1624,17 +1624,17 @@ private struct TrendsContentView: View {
             return description
         }
         let dominance = [
-            trends.btcDominance.map { "BTC 도미넌스 \(String(format: "%.2f%%", $0))" },
-            trends.ethDominance.map { "ETH 도미넌스 \(String(format: "%.2f%%", $0))" },
+            trends.btcDominance.map { "BTC 도미넌스 \(PriceFormatter.formatUnsignedPercent($0))" },
+            trends.ethDominance.map { "ETH 도미넌스 \(PriceFormatter.formatUnsignedPercent($0))" },
             trends.totalVolume24h.map { "24h 거래량 \(compactCurrency($0, currency: trends.currency))" }
         ].compactMap { $0 }
         return dominance.isEmpty ? "시장 핵심 지표가 제공되면 요약을 업데이트합니다." : dominance.joined(separator: " · ")
     }
 
     private func sourceFooter(_ trends: MarketTrendsSnapshot) -> String {
-        let source = trends.dataProvider ?? "source 미확인"
+        let source = trends.dataProvider ?? "출처 확인 중"
         let updated = trends.asOf.map(PriceFormatter.formatReferenceDate) ?? "업데이트 시각 미확인"
-        return "\(source) 기준 · \(updated) 업데이트"
+        return "\(source) · \(updated) 업데이트"
     }
 
     private func isStale(_ trends: MarketTrendsSnapshot) -> Bool {

@@ -308,6 +308,9 @@ private struct MarketPaginationState: Equatable {
     var nextCursor: String?
     var hasNext: Bool
     var isLoadingNextPage: Bool
+    var serverNextCursor: String?
+    var serverHasNext: Bool
+    var hasServerPaginationMetadata: Bool
     var currentGeneration: Int
     var exchange: Exchange
     var quoteCurrency: MarketQuoteCurrency
@@ -320,6 +323,9 @@ private struct MarketPaginationState: Equatable {
             nextCursor: nil,
             hasNext: true,
             isLoadingNextPage: false,
+            serverNextCursor: nil,
+            serverHasNext: false,
+            hasServerPaginationMetadata: false,
             currentGeneration: 0,
             exchange: exchange,
             quoteCurrency: quoteCurrency,
@@ -339,6 +345,9 @@ private struct MarketPaginationState: Equatable {
         nextCursor = nil
         hasNext = true
         isLoadingNextPage = false
+        serverNextCursor = nil
+        serverHasNext = false
+        hasServerPaginationMetadata = false
         currentGeneration = generation
         self.exchange = exchange
         self.quoteCurrency = quoteCurrency
@@ -848,6 +857,32 @@ private struct MarketPresentationBuildInput {
     let overrideMeta: ResponseMeta
 }
 
+private struct FilteredMarketRowsCache {
+    let rowRevision: UInt64
+    let exchange: Exchange
+    let quoteCurrency: MarketQuoteCurrency
+    let filter: String
+    let normalizedQuery: String
+    let favoriteSymbols: Set<String>
+    let rows: [MarketRowViewState]
+
+    func matches(
+        rowRevision: UInt64,
+        exchange: Exchange,
+        quoteCurrency: MarketQuoteCurrency,
+        filter: String,
+        normalizedQuery: String,
+        favoriteSymbols: Set<String>
+    ) -> Bool {
+        self.rowRevision == rowRevision
+            && self.exchange == exchange
+            && self.quoteCurrency == quoteCurrency
+            && self.filter == filter
+            && self.normalizedQuery == normalizedQuery
+            && self.favoriteSymbols == favoriteSymbols
+    }
+}
+
 private struct KimchiPremiumRequestContext: Hashable, Equatable {
     let exchange: Exchange
     let route: Tab
@@ -1006,7 +1041,12 @@ final class CryptoViewModel: ObservableObject {
 
     @Published private(set) var marketState: Loadable<[CoinInfo]> = .idle
     @Published private(set) var pricesByMarketIdentity: [MarketIdentity: TickerData] = [:]
-    @Published private(set) var marketRowStates: [MarketRowViewState] = []
+    @Published private(set) var marketRowStates: [MarketRowViewState] = [] {
+        didSet {
+            marketRowsRevision &+= 1
+            filteredMarketRowsCache = nil
+        }
+    }
     @Published private(set) var marketStatusViewState: ScreenStatusViewState = .idle
     @Published private(set) var marketLoadState: SourceAwareLoadState = .initialLoading
     @Published private(set) var marketPresentationState: MarketScreenPresentationState = .initial(exchange: .upbit)
@@ -1222,6 +1262,7 @@ final class CryptoViewModel: ObservableObject {
     private let marketPaginationPageSize = 50
     private let marketHydrationDelayNanoseconds: UInt64 = 650_000_000
     private let marketImageHydrationDebounceNanoseconds: UInt64 = 90_000_000
+    private let marketVisibilityWorkDebounceNanoseconds: UInt64 = 70_000_000
     private let marketRowPatchCoalesceNanoseconds: UInt64 = 16_000_000
     private let marketImageVisibleBatchSize = 12
     private let marketImagePrefetchBatchSize = 18
@@ -1285,6 +1326,7 @@ final class CryptoViewModel: ObservableObject {
     private var privatePollingTask: Task<Void, Never>?
     private var marketHydrationTask: Task<Void, Never>?
     private var marketImageHydrationTask: Task<Void, Never>?
+    private var marketVisibilityWorkTask: Task<Void, Never>?
     private var marketRowPatchTask: Task<Void, Never>?
     /// Owned presentation-build task: staging cancel-replaces the previous
     /// build, and the ownership token below gates publication so a stale
@@ -1315,6 +1357,7 @@ final class CryptoViewModel: ObservableObject {
     private var isPrivatePollingFallbackActive = false
     private var marketCatalogFetchTasks: [Exchange: Task<MarketCatalogSnapshot, Error>] = [:]
     private var tickerFetchTasks: [Exchange: Task<MarketTickerSnapshot, Error>] = [:]
+    private var marketTickerPageFetchTask: Task<Void, Never>?
     private var lastMarketCatalogFetchedAtByExchange: [Exchange: Date] = [:]
     private var lastTickerFetchedAtByExchange: [Exchange: Date] = [:]
     private var marketCatalogResponseCountsByExchange: [Exchange: Int] = [:]
@@ -1324,6 +1367,8 @@ final class CryptoViewModel: ObservableObject {
     private var supportedQuoteCurrenciesByExchange: [Exchange: [MarketQuoteCurrency]] = [:]
     private var defaultQuoteCurrencyByExchange: [Exchange: MarketQuoteCurrency] = [:]
     private var marketUnsupportedMessage: String?
+    private var marketRowsRevision: UInt64 = 0
+    private var filteredMarketRowsCache: FilteredMarketRowsCache?
     private var hasLoadedTickerSnapshotByExchange: [Exchange: Bool] = [:]
     private var marketPresentationSnapshotsByExchange: [Exchange: MarketPresentationSnapshot] = [:]
     private var activeMarketPresentationSnapshot: MarketPresentationSnapshot?
@@ -1531,7 +1576,8 @@ final class CryptoViewModel: ObservableObject {
     }
 
     deinit {
-        AppLogger.debug(.lifecycle, "CryptoViewModel deinit #\(instanceID)")
+        let deinitInstanceID = instanceID
+        AppLogger.debug(.lifecycle, "CryptoViewModel deinit #\(deinitInstanceID)")
         marketSearchDebounceTask?.cancel()
         portfolioSummaryFetchTask?.cancel()
         portfolioHistoryFetchTask?.cancel()
@@ -1544,12 +1590,14 @@ final class CryptoViewModel: ObservableObject {
         privatePollingTask?.cancel()
         marketHydrationTask?.cancel()
         marketImageHydrationTask?.cancel()
+        marketVisibilityWorkTask?.cancel()
         marketRowPatchTask?.cancel()
         marketPresentationBuildTask?.cancel()
         bootstrapTask?.cancel()
         sparklineHydrationTask?.cancel()
         priorityVisibleSparklineTask?.cancel()
         topCardSparklinePrefetchTask?.cancel()
+        marketTickerPageFetchTask?.cancel()
         sparklineFetchTasksByKey.values.forEach { $0.cancel() }
         topCardPlaceholderTimeoutTasksByKey.values.forEach { $0.cancel() }
         kimchiHydrationTask?.cancel()
@@ -2048,7 +2096,36 @@ final class CryptoViewModel: ObservableObject {
     }
 
     var displayedMarketRows: [MarketRowViewState] {
-        filteredMarketRows(from: marketRowStates)
+        let normalizedQuery = searchQuery
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        let filter = marketFilter.rawValue
+        if let cache = filteredMarketRowsCache,
+           cache.matches(
+               rowRevision: marketRowsRevision,
+               exchange: selectedExchange,
+               quoteCurrency: selectedQuoteCurrency,
+               filter: filter,
+               normalizedQuery: normalizedQuery,
+               favoriteSymbols: favCoins
+           ) {
+            return cache.rows
+        }
+
+        let rows = filteredMarketRows(
+            from: marketRowStates,
+            normalizedQuery: normalizedQuery
+        )
+        filteredMarketRowsCache = FilteredMarketRowsCache(
+            rowRevision: marketRowsRevision,
+            exchange: selectedExchange,
+            quoteCurrency: selectedQuoteCurrency,
+            filter: filter,
+            normalizedQuery: normalizedQuery,
+            favoriteSymbols: favCoins,
+            rows: rows
+        )
+        return rows
     }
 
     var displayedMarketRowIDs: [String] {
@@ -2971,33 +3048,57 @@ final class CryptoViewModel: ObservableObject {
                 .prefix(48)
         )
         lastVisibleMarketRowAtByExchange[exchange] = Date()
-        let visibleMarketIds = (visibleMarketIdentitiesByExchange[exchange] ?? []).map { $0.marketId ?? $0.symbol }
-        AppLogger.debug(
-            .network,
-            "[GraphVisibility] exchange=\(exchange.rawValue) quoteCurrency=\(selectedQuoteCurrency.rawValue) generation=\(marketPresentationGeneration) visibleRowCount=\(visibleMarketIds.count) marketIds=\(visibleMarketIds.prefix(12).joined(separator: ",")) tab=\(activeTab.rawValue) reason=row_visible"
-        )
-        reconcileVisibleSparklines(
-            exchange: exchange,
-            reason: "first_visible_rows"
-        )
-        enqueueVisiblePriorityRefineIfNeeded(
-            for: canonicalMarketIdentity,
-            exchange: exchange,
-            reason: "row_visible_priority_\(canonicalMarketIdentity.cacheKey)"
-        )
-        scheduleVisibleSparklineHydration(
-            for: exchange,
-            reason: "row_visible_\(canonicalMarketIdentity.cacheKey)"
-        )
         prefetchNextMarketPageIfNeeded(
             exchange: exchange,
             visibleMarketIdentity: canonicalMarketIdentity,
             reason: "row_visible_\(canonicalMarketIdentity.cacheKey)"
         )
-        scheduleMarketImageHydration(
-            for: exchange,
-            reason: "row_visible_\(canonicalMarketIdentity.cacheKey)"
+        scheduleMarketVisibilityWork(
+            exchange: exchange,
+            focusedMarketIdentity: canonicalMarketIdentity
         )
+    }
+
+    private func scheduleMarketVisibilityWork(
+        exchange: Exchange,
+        focusedMarketIdentity: MarketIdentity
+    ) {
+        marketVisibilityWorkTask?.cancel()
+        marketVisibilityWorkTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            try? await Task.sleep(nanoseconds: self.marketVisibilityWorkDebounceNanoseconds)
+            guard Task.isCancelled == false,
+                  self.activeTab == .market,
+                  self.selectedExchange == exchange,
+                  self.selectedQuoteCurrency == focusedMarketIdentity.quoteCurrency else {
+                return
+            }
+
+            let visibleMarketIds = (self.visibleMarketIdentitiesByExchange[exchange] ?? [])
+                .map { $0.marketId ?? $0.symbol }
+            AppLogger.debug(
+                .network,
+                "[GraphVisibility] exchange=\(exchange.rawValue) quoteCurrency=\(self.selectedQuoteCurrency.rawValue) generation=\(self.marketPresentationGeneration) visibleRowCount=\(visibleMarketIds.count) marketIds=\(visibleMarketIds.prefix(12).joined(separator: ",")) tab=\(self.activeTab.rawValue) reason=settled_visibility"
+            )
+            self.reconcileVisibleSparklines(
+                exchange: exchange,
+                reason: "settled_visible_rows"
+            )
+            self.enqueueVisiblePriorityRefineIfNeeded(
+                for: focusedMarketIdentity,
+                exchange: exchange,
+                reason: "row_visible_priority_\(focusedMarketIdentity.cacheKey)"
+            )
+            self.scheduleVisibleSparklineHydration(
+                for: exchange,
+                reason: "row_visible_\(focusedMarketIdentity.cacheKey)"
+            )
+            self.scheduleMarketImageHydration(
+                for: exchange,
+                reason: "row_visible_\(focusedMarketIdentity.cacheKey)"
+            )
+            self.marketVisibilityWorkTask = nil
+        }
     }
 
     private func resetPendingMarketRowPatches(reason: String) {
@@ -9722,10 +9823,17 @@ final class CryptoViewModel: ObservableObject {
         let quoteCurrency = selectedQuoteCurrency
         AppLogger.debug(
             .network,
-            "[MarketTickerRequest] exchange=\(exchange.rawValue) quoteCurrency=\(quoteCurrency.rawValue) url=/market/tickers?exchange=\(exchange.rawValue)&quoteCurrency=\(quoteCurrency.apiValue)&limit=100 requestGeneration=\(requestContext.generation)"
+            "[MarketTickerRequest] exchange=\(exchange.rawValue) quoteCurrency=\(quoteCurrency.rawValue) url=/market/tickers?exchange=\(exchange.rawValue)&quoteCurrency=\(quoteCurrency.apiValue)&limit=\(marketPaginationPageSize)&sort=volume&order=desc requestGeneration=\(requestContext.generation)"
         )
         let requestTask = Task {
-            try await marketRepository.fetchTickers(exchange: exchange, quoteCurrency: quoteCurrency)
+            try await marketRepository.fetchTickerPage(
+                exchange: exchange,
+                quoteCurrency: quoteCurrency,
+                cursor: nil,
+                limit: marketPaginationPageSize,
+                sortKey: "volume",
+                sortDirection: "desc"
+            )
         }
         tickerFetchTasks[exchange] = requestTask
 
@@ -9765,6 +9873,9 @@ final class CryptoViewModel: ObservableObject {
             lastTickerFetchedAtByExchange[exchange] = Date()
             marketTickerResponseCountsByExchange[exchange] = tickerSnapshot.tickers.count
             marketTickerMetaByExchange[exchange] = tickerSnapshot.meta
+            marketPaginationState.serverNextCursor = tickerSnapshot.paginationNextCursor
+            marketPaginationState.serverHasNext = tickerSnapshot.paginationHasNext
+            marketPaginationState.hasServerPaginationMetadata = tickerSnapshot.hasPaginationMetadata
             applySupportedQuotes(
                 supportedQuotes: tickerSnapshot.supportedQuotes,
                 defaultQuote: tickerSnapshot.defaultQuoteCurrency,
@@ -16066,28 +16177,26 @@ final class CryptoViewModel: ObservableObject {
         )
     }
 
-    private func filteredMarketRows(from rows: [MarketRowViewState]) -> [MarketRowViewState] {
+    private func filteredMarketRows(
+        from rows: [MarketRowViewState],
+        normalizedQuery: String? = nil
+    ) -> [MarketRowViewState] {
         let quoteFilteredRows = rows.filter { row in
-            let matches = row.exchange == selectedExchange
+            row.exchange == selectedExchange
                 && row.marketIdentity.quoteCurrency == selectedQuoteCurrency
                 && Self.marketQuoteMatches(row.coin, quoteCurrency: selectedQuoteCurrency)
-            if matches == false {
-                AppLogger.debug(
-                    .network,
-                    "[MarketRender] exchange=\(selectedExchange.rawValue) quoteCurrency=\(selectedQuoteCurrency.rawValue) droppedRow=\(row.marketIdentity.cacheKey) reason=quote_or_exchange_mismatch"
-                )
-            }
-            return matches
         }
         let filteredByFavorite = marketFilter == .fav
             ? quoteFilteredRows.filter(\.isFavorite)
             : quoteFilteredRows
 
-        guard !searchQuery.isEmpty else {
+        let query = normalizedQuery ?? searchQuery
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        guard query.isEmpty == false else {
             return filteredByFavorite
         }
 
-        let query = searchQuery.lowercased()
         return filteredByFavorite.filter { row in
             row.listSymbolDisplayName.lowercased().contains(query)
             || row.pairDisplayName.lowercased().contains(query)
@@ -17495,16 +17604,55 @@ final class CryptoViewModel: ObservableObject {
         guard marketPaginationState.exchange == exchange,
               marketPaginationState.quoteCurrency == selectedQuoteCurrency,
               marketPaginationState.currentGeneration == marketPresentationGeneration,
-              marketPaginationState.isLoadingNextPage == false,
-              marketPaginationState.hasNext,
-              marketPaginationState.nextCursor != nil else {
+              marketPaginationState.isLoadingNextPage == false else {
             return
         }
+        let hasServerPage = marketPaginationState.hasServerPaginationMetadata
+            && marketPaginationState.serverHasNext
+            && marketPaginationState.serverNextCursor != nil
+        let hasLocalPage = marketPaginationState.hasNext
+            && marketPaginationState.nextCursor != nil
+        guard hasServerPage || hasLocalPage else { return }
 
         let rowsBefore = snapshot.rows.count
         let remainingRows = rowsBefore - visibleIndex - 1
         let progress = rowsBefore > 0 ? Double(visibleIndex + 1) / Double(rowsBefore) : 0
         guard remainingRows <= 15 || progress >= 0.75 else {
+            return
+        }
+
+        if marketPaginationState.hasServerPaginationMetadata {
+            guard marketPaginationState.serverHasNext,
+                  let serverCursor = marketPaginationState.serverNextCursor else {
+                marketPaginationState.hasNext = false
+                return
+            }
+            let localCursor = marketPaginationState.nextCursor
+                ?? snapshot.rows.last?.marketIdentity.cacheKey
+            marketPaginationState.nextCursor = localCursor
+            marketPaginationState.hasNext = localCursor != nil
+            let generation = marketPresentationGeneration
+            let quoteCurrency = selectedQuoteCurrency
+            let sortKey = marketPaginationState.sortKey
+            let sortDirection = marketPaginationState.sortDirection
+            marketPaginationState.isLoadingNextPage = true
+            AppLogger.debug(
+                .network,
+                "[CursorPaginationRequest] exchange=\(exchange.rawValue) quoteCurrency=\(quoteCurrency.rawValue) sortKey=\(sortKey) sortDirection=\(sortDirection) cursorExists=true generation=\(generation) reason=\(reason)_server_page"
+            )
+            marketTickerPageFetchTask?.cancel()
+            marketTickerPageFetchTask = Task { @MainActor [weak self] in
+                await self?.loadNextMarketTickerPage(
+                    exchange: exchange,
+                    quoteCurrency: quoteCurrency,
+                    serverCursor: serverCursor,
+                    localCursor: localCursor,
+                    generation: generation,
+                    sortKey: sortKey,
+                    sortDirection: sortDirection,
+                    reason: reason
+                )
+            }
             return
         }
 
@@ -17518,6 +17666,164 @@ final class CryptoViewModel: ObservableObject {
             for: exchange,
             reason: "hydrate_prefetch_page_rows"
         )
+    }
+
+    private func loadNextMarketTickerPage(
+        exchange: Exchange,
+        quoteCurrency: MarketQuoteCurrency,
+        serverCursor: String,
+        localCursor: String?,
+        generation: Int,
+        sortKey: String,
+        sortDirection: String,
+        reason: String
+    ) async {
+        let requestStartedAt = Date()
+        do {
+            let tickerSnapshot = try await marketRepository.fetchTickerPage(
+                exchange: exchange,
+                quoteCurrency: quoteCurrency,
+                cursor: serverCursor,
+                limit: marketPaginationPageSize,
+                sortKey: sortKey,
+                sortDirection: sortDirection
+            )
+            guard Task.isCancelled == false,
+                  activeTab == .market,
+                  selectedExchange == exchange,
+                  selectedQuoteCurrency == quoteCurrency,
+                  marketPresentationGeneration == generation,
+                  marketPaginationState.currentGeneration == generation,
+                  marketPaginationState.serverNextCursor == serverCursor else {
+                return
+            }
+
+            let responseAcceptedAt = Date()
+            marketPaginationState.hasServerPaginationMetadata = tickerSnapshot.hasPaginationMetadata
+            marketPaginationState.serverNextCursor = tickerSnapshot.paginationNextCursor
+            marketPaginationState.serverHasNext = tickerSnapshot.paginationHasNext
+                && tickerSnapshot.paginationReturnedCount > 0
+            marketTickerResponseCountsByExchange[exchange, default: 0] += tickerSnapshot.tickers.count
+            marketTickerMetaByExchange[exchange] = tickerSnapshot.meta
+            applySupportedQuotes(
+                supportedQuotes: tickerSnapshot.supportedQuotes,
+                defaultQuote: tickerSnapshot.defaultQuoteCurrency,
+                exchange: exchange,
+                isAuthoritative: tickerSnapshot.meta.hasSupportedQuotesMetadata || tickerSnapshot.supportedQuotes.isEmpty == false,
+                source: "ticker_page_response"
+            )
+            guard selectedExchange == exchange,
+                  selectedQuoteCurrency == quoteCurrency,
+                  marketPresentationGeneration == generation else {
+                return
+            }
+
+            var mergedCoins = tickerSnapshotCoinsByExchange[exchange] ?? []
+            for incomingCoin in tickerSnapshot.coins {
+                let incomingIdentity = incomingCoin.marketIdentity(
+                    exchange: exchange,
+                    quoteCurrency: quoteCurrency
+                )
+                if let existingIndex = mergedCoins.firstIndex(where: {
+                    $0.marketIdentity(exchange: exchange, quoteCurrency: quoteCurrency) == incomingIdentity
+                }) {
+                    mergedCoins[existingIndex] = Self.mergeCoinInfoPreservingImage(
+                        primary: incomingCoin,
+                        supplementary: mergedCoins[existingIndex],
+                        exchange: exchange
+                    )
+                } else {
+                    mergedCoins.append(incomingCoin)
+                }
+            }
+            tickerSnapshotCoinsByExchange[exchange] = mergedCoins
+            filteredTickerIdentitiesByExchange[exchange] = Self.deduplicatedMarketIdentities(
+                (filteredTickerIdentitiesByExchange[exchange] ?? [])
+                    + resolvedMarketIdentities(exchange: exchange, symbols: tickerSnapshot.filteredSymbols)
+            )
+            hasLoadedTickerSnapshotByExchange[exchange] = true
+            promoteResolvedMarketIdentityState(for: exchange)
+
+            for (symbol, ticker) in tickerSnapshot.tickers {
+                if let responseSourceExchange = ticker.sourceExchange,
+                   responseSourceExchange != exchange {
+                    continue
+                }
+                let marketIdentity = resolvedMarketIdentity(exchange: exchange, symbol: symbol)
+                graphTickerReadyAtByKey[sparklineCacheKey(marketIdentity: marketIdentity)] = responseAcceptedAt
+                mergeTicker(
+                    symbol: symbol,
+                    exchange: exchange.rawValue,
+                    incoming: ticker,
+                    seedHistoryIfNeeded: true
+                )
+                seedSparklineSnapshotIfAvailable(
+                    marketIdentity: marketIdentity,
+                    ticker: ticker,
+                    source: .tickerSnapshot,
+                    fetchedAt: ticker.timestamp ?? tickerSnapshot.meta.fetchedAt ?? responseAcceptedAt
+                )
+            }
+
+            let timingKey = marketRowsApplyTimingKey(exchange: exchange, generation: generation)
+            marketRowsApplyTimingContexts[timingKey] = MarketRowsApplyTimingContext(
+                exchange: exchange,
+                quoteCurrency: quoteCurrency,
+                generation: generation,
+                reason: "\(reason)_pagination_response",
+                requestStartedAt: requestStartedAt,
+                responseAcceptedAt: responseAcceptedAt,
+                responseDecodeMs: Int(responseAcceptedAt.timeIntervalSince(requestStartedAt) * 1000)
+            )
+            AppLogger.debug(
+                .network,
+                "[CursorPaginationResponse] exchange=\(exchange.rawValue) quoteCurrency=\(quoteCurrency.rawValue) returnedCount=\(tickerSnapshot.paginationReturnedCount) nextCursorExists=\(tickerSnapshot.paginationNextCursor != nil) hasNext=\(tickerSnapshot.paginationHasNext) generation=\(generation) accepted=true rejectReason=-"
+            )
+
+            let requestContext = MarketRequestContext(
+                exchange: exchange,
+                quoteCurrency: quoteCurrency,
+                route: activeTab,
+                universeVersion: marketUniverseVersion(for: exchange),
+                generation: generation,
+                cursor: localCursor,
+                sortKey: sortKey,
+                sortDirection: sortDirection,
+                searchQuery: normalizedMarketSearchQuery
+            )
+            let didStagePresentation = stageAndSwapMarketPresentationIfPossible(
+                for: exchange,
+                requestContext: requestContext,
+                reason: "\(reason)_pagination_server_page"
+            )
+            if didStagePresentation == false {
+                marketPaginationState.isLoadingNextPage = false
+            }
+            scheduleVisibleSparklineHydration(
+                for: exchange,
+                reason: "hydrate_server_page_rows"
+            )
+        } catch {
+            guard marketPresentationGeneration == generation,
+                  marketPaginationState.currentGeneration == generation else {
+                return
+            }
+            marketPaginationState.isLoadingNextPage = false
+            if case NetworkServiceError.httpError(let statusCode, _, _) = error,
+               statusCode == 410 {
+                resetMarketPagination(reason: "server_cursor_expired", incrementGeneration: true)
+                await loadTickers(
+                    for: exchange,
+                    forceRefresh: true,
+                    reason: "server_cursor_expired"
+                )
+                return
+            }
+            AppLogger.debug(
+                .network,
+                "[CursorPaginationResponse] exchange=\(exchange.rawValue) quoteCurrency=\(quoteCurrency.rawValue) returnedCount=0 nextCursorExists=false hasNext=\(marketPaginationState.serverHasNext) generation=\(generation) accepted=false rejectReason=\(error.localizedDescription)"
+            )
+        }
     }
 
     private func applyCachedMarketPresentationIfAvailable(for exchange: Exchange, reason: String) {
@@ -17649,6 +17955,12 @@ final class CryptoViewModel: ObservableObject {
     }
 
     private func resetMarketPagination(reason: String, incrementGeneration: Bool) {
+        let preservesServerCursor = reason == "search_query_changed"
+        let preservedServerNextCursor = marketPaginationState.serverNextCursor
+        let preservedServerHasNext = marketPaginationState.serverHasNext
+        let preservedServerMetadata = marketPaginationState.hasServerPaginationMetadata
+        marketTickerPageFetchTask?.cancel()
+        marketTickerPageFetchTask = nil
         if incrementGeneration {
             marketPresentationGeneration += 1
         }
@@ -17659,6 +17971,11 @@ final class CryptoViewModel: ObservableObject {
             sortKey: "quoteVolume",
             sortDirection: "desc"
         )
+        if preservesServerCursor {
+            marketPaginationState.serverNextCursor = preservedServerNextCursor
+            marketPaginationState.serverHasNext = preservedServerHasNext
+            marketPaginationState.hasServerPaginationMetadata = preservedServerMetadata
+        }
         marketScrollResetToken += 1
         AppLogger.debug(
             .network,

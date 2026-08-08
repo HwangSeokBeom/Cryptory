@@ -29,6 +29,9 @@ final class CryptoryUITests: XCTestCase {
         app.launch()
 
         XCTAssertTrue(app.staticTexts["업비트 기준 빠른 비교"].waitForExistence(timeout: 5))
+        let exchangeSelectorTitle = app.staticTexts["국내 거래소 선택"].firstMatch
+        XCTAssertTrue(exchangeSelectorTitle.waitForExistence(timeout: 3))
+        XCTAssertGreaterThanOrEqual(exchangeSelectorTitle.frame.minX, 12)
         XCTAssertTrue(app.staticTexts["약간 지연"].waitForExistence(timeout: 3))
         XCTAssertTrue(app.staticTexts["일부 지연"].waitForExistence(timeout: 3))
         XCTAssertTrue(app.staticTexts["업데이트 방금 전"].exists || app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "업데이트")).firstMatch.exists)
@@ -140,6 +143,7 @@ final class CryptoryUITests: XCTestCase {
         }
     }
 
+    @MainActor
     private func assertExists(
         _ element: XCUIElement,
         in app: XCUIApplication,
@@ -155,6 +159,7 @@ final class CryptoryUITests: XCTestCase {
         )
     }
 
+    @MainActor
     private func tap(
         _ element: XCUIElement,
         in app: XCUIApplication,
@@ -170,6 +175,7 @@ final class CryptoryUITests: XCTestCase {
         }
     }
 
+    @MainActor
     private func debugSnapshot(_ app: XCUIApplication) -> String {
         String(app.debugDescription.prefix(6_000))
     }

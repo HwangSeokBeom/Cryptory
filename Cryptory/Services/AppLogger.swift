@@ -14,19 +14,26 @@ enum AppLogger {
     nonisolated(unsafe) private static var instanceCounters: [String: Int] = [:]
     nonisolated(unsafe) private static var onceKeys = Set<String>()
 
-    nonisolated static func debug(_ category: AppLogCategory, _ message: String) {
+    nonisolated static func debug(
+        _ category: AppLogCategory,
+        _ message: @autoclosure () -> String
+    ) {
         #if DEBUG
-        print("[\(category.rawValue)] \(message)")
+        print("[\(category.rawValue)] \(message())")
         #endif
     }
 
-    nonisolated static func debugOnce(_ category: AppLogCategory, key: String, _ message: String) {
+    nonisolated static func debugOnce(
+        _ category: AppLogCategory,
+        key: String,
+        _ message: @autoclosure () -> String
+    ) {
         #if DEBUG
         counterLock.lock()
         let shouldLog = onceKeys.insert(key).inserted
         counterLock.unlock()
         guard shouldLog else { return }
-        print("[\(category.rawValue)] \(message)")
+        print("[\(category.rawValue)] \(message())")
         #endif
     }
 

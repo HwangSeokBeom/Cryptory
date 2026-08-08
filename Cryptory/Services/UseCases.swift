@@ -560,8 +560,8 @@ struct KimchiPremiumViewStateUseCase {
                 exchange: exchange,
                 sourceExchange: exchange,
                 premiumText: phase == .settled ? "데이터 없음" : "확인 중",
-                domesticPriceText: phase == .settled ? "데이터 없음" : "가격 확인 중",
-                referencePriceText: phase == .settled ? "데이터 없음" : "기준가 확인 중",
+                domesticPriceText: phase == .settled ? "데이터 없음" : "확인 중",
+                referencePriceText: phase == .settled ? "데이터 없음" : "확인 중",
                 premiumIsPlaceholder: true,
                 domesticPriceIsPlaceholder: true,
                 referencePriceIsPlaceholder: true,
@@ -611,13 +611,8 @@ struct KimchiPremiumViewStateUseCase {
             selectedExchange: exchange,
             exchange: row.exchange,
             sourceExchange: row.sourceExchange,
-            premiumText: resolvedPremium.map {
-                String(format: "%@%.2f%%", $0 >= 0 ? "+" : "", $0)
-            } ?? premiumPlaceholderText(
-                row: row,
-                referencePrice: resolvedReferencePrice,
-                phase: phase
-            ),
+            premiumText: resolvedPremium.map(PriceFormatter.formatPercent)
+                ?? premiumPlaceholderText(phase: phase),
             domesticPriceText: row.domesticPrice.map { PriceFormatter.formatPrice($0) } ?? domesticPlaceholderText(phase: phase),
             referencePriceText: resolvedReferencePrice.map { PriceFormatter.formatPrice($0) } ?? referencePlaceholderText(phase: phase),
             premiumIsPlaceholder: premiumIsPlaceholder,
@@ -798,28 +793,20 @@ struct KimchiPremiumViewStateUseCase {
         return ((domesticPrice - referencePrice) / referencePrice) * 100
     }
 
-    private nonisolated func premiumPlaceholderText(
-        row: KimchiPremiumRow,
-        referencePrice: Double?,
-        phase: PresentationPhase
-    ) -> String {
+    private nonisolated func premiumPlaceholderText(phase: PresentationPhase) -> String {
         if phase == .settled {
             return "데이터 없음"
         }
 
-        if referencePrice != nil, row.domesticPrice == nil {
-            return "가격 확인 중"
-        }
-
-        return "기준가 확인 중"
+        return "확인 중"
     }
 
     private nonisolated func domesticPlaceholderText(phase: PresentationPhase) -> String {
-        phase == .settled ? "데이터 없음" : "가격 확인 중"
+        phase == .settled ? "데이터 없음" : "확인 중"
     }
 
     private nonisolated func referencePlaceholderText(phase: PresentationPhase) -> String {
-        phase == .settled ? "데이터 없음" : "기준가 확인 중"
+        phase == .settled ? "데이터 없음" : "확인 중"
     }
 
     private nonisolated func resolvedWarningMessage(

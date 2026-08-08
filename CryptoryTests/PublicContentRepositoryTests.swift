@@ -1042,6 +1042,9 @@ final class PublicContentRepositoryTests: XCTestCase {
         XCTAssertEqual(PriceFormatter.formatKRW(1234), "₩1,234")
         XCTAssertEqual(PriceFormatter.formatPercent(2.97), "+2.97%")
         XCTAssertEqual(PriceFormatter.formatPercent(-1.2), "-1.20%")
+        XCTAssertEqual(PriceFormatter.formatUnsignedPercent(56.68195648620574), "56.68%")
+        XCTAssertEqual(PriceFormatter.formatUnsignedPercent(5.0), "5%")
+        XCTAssertEqual(PriceFormatter.formatPrice(147.0), "147")
     }
 
     func testMarketListPriceFormatterUsesQuoteSpecificCompactDisplay() {

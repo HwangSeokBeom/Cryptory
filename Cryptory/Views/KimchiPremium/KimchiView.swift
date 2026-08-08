@@ -1,5 +1,7 @@
 import SwiftUI
 
+private let kimchiTabBarReservedHeight: CGFloat = 112
+
 private struct KimchiExchangeStyle {
     let title: String
     let subtitle: String
@@ -38,7 +40,7 @@ struct KimchiView: View {
                 representativeSection
                 listSection
 
-                Spacer(minLength: 20)
+                Spacer(minLength: kimchiTabBarReservedHeight)
             }
         }
         .refreshable {
@@ -160,6 +162,7 @@ struct KimchiView: View {
             Text("국내 거래소 선택")
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundColor(.textSecondary)
+                .padding(.horizontal, 16)
 
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
@@ -328,13 +331,13 @@ struct KimchiView: View {
     private func kimchiBadgeTitle(for state: KimchiHeaderBadgeState) -> String {
         switch state {
         case .idle, .syncing:
-            return "SYNC"
+            return "동기화 중"
         case .ready:
-            return "READY"
+            return "최신"
         case .delayed:
-            return "DELAYED"
+            return "지연"
         case .degraded:
-            return "DEGRADED"
+            return "일부 지연"
         }
     }
 

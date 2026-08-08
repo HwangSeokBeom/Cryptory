@@ -3699,6 +3699,98 @@ final class ViewModelStateTests: XCTestCase {
     }
 
     @MainActor
+    func testMarketScrollPrefetchLoadsAndAppendsServerTickerPage() async throws {
+        let allCoins = (0..<75).map { index in
+            let symbol = String(format: "P%03d", index)
+            return CoinCatalog.coin(
+                symbol: symbol,
+                exchange: .upbit,
+                marketId: "KRW-\(symbol)",
+                displayName: "페이지 \(index)",
+                englishName: "Page \(index)"
+            )
+        }
+
+        func makeTickerSnapshot(
+            coins: [CoinInfo],
+            nextCursor: String?,
+            hasNext: Bool
+        ) -> MarketTickerSnapshot {
+            let tickers = Dictionary(uniqueKeysWithValues: coins.enumerated().map { offset, coin in
+                (
+                    coin.symbol,
+                    TickerData(
+                        price: Double(10_000 - offset),
+                        change: Double(offset % 5) - 2,
+                        volume: Double(1_000_000 - allCoins.firstIndex(where: { $0.symbol == coin.symbol })!),
+                        high24: Double(10_100 - offset),
+                        low24: Double(9_900 - offset),
+                        sparkline: [Double(9_990 - offset), Double(10_000 - offset)],
+                        sparklinePointCount: 2,
+                        hasServerSparkline: true
+                    )
+                )
+            })
+            return MarketTickerSnapshot(
+                exchange: .upbit,
+                coins: coins,
+                tickers: tickers,
+                meta: .empty,
+                paginationNextCursor: nextCursor,
+                paginationHasNext: hasNext,
+                paginationReturnedCount: coins.count,
+                hasPaginationMetadata: true
+            )
+        }
+
+        let repository = PagingMarketRepository(
+            catalogSnapshot: MarketCatalogSnapshot(
+                exchange: .upbit,
+                markets: allCoins,
+                supportedIntervalsBySymbol: Dictionary(uniqueKeysWithValues: allCoins.map { ($0.symbol, ["1h"]) }),
+                meta: .empty
+            ),
+            firstPage: makeTickerSnapshot(
+                coins: Array(allCoins.prefix(50)),
+                nextCursor: "server-page-2",
+                hasNext: true
+            ),
+            secondPage: makeTickerSnapshot(
+                coins: Array(allCoins.dropFirst(50)),
+                nextCursor: nil,
+                hasNext: false
+            )
+        )
+        let vm = CryptoViewModel(
+            marketRepository: repository,
+            tradingRepository: SpyTradingRepository(),
+            portfolioRepository: SpyPortfolioRepository(),
+            kimchiPremiumRepository: StubKimchiPremiumRepository(),
+            exchangeConnectionsRepository: SpyExchangeConnectionsRepository(),
+            authService: StubAuthenticationService(),
+            publicWebSocketService: NoOpPublicWebSocketService(),
+            privateWebSocketService: NoOpPrivateWebSocketService(),
+            userDefaults: makeIsolatedDefaults()
+        )
+
+        await vm.refreshMarketData(forceRefresh: true, reason: "server_pagination_initial")
+        XCTAssertEqual(vm.displayedMarketRows.count, 50)
+        let nearEndRow = try XCTUnwrap(vm.displayedMarketRows.dropFirst(44).first)
+
+        vm.markMarketRowVisible(marketIdentity: nearEndRow.marketIdentity)
+        await waitUntil(timeoutNanoseconds: 3_000_000_000) {
+            repository.pageRequests.count == 2 && vm.displayedMarketRows.count == 75
+        }
+
+        XCTAssertEqual(repository.pageRequests.first?.cursor, nil)
+        XCTAssertEqual(repository.pageRequests.first?.limit, 50)
+        XCTAssertEqual(repository.pageRequests.last?.cursor, "server-page-2")
+        XCTAssertEqual(repository.pageRequests.last?.limit, 50)
+        XCTAssertEqual(vm.displayedMarketRows.count, 75)
+        XCTAssertEqual(Set(vm.displayedMarketRows.map(\.id)).count, 75)
+    }
+
+    @MainActor
     func testFailedSparklineRefreshKeepsStaleVisibleGraph() async {
         let successSnapshot = CandleSnapshot(
             exchange: .upbit,

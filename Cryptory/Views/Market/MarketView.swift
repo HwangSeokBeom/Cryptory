@@ -306,7 +306,7 @@ struct MarketView: View {
                         .foregroundColor(.white)
                 }
                 Spacer()
-                Text(vm.marketPresentationState.transitionState.phase == .hydrated ? "LIVE" : "READY")
+                Text(vm.marketPresentationState.transitionState.phase == .hydrated ? "최신" : "동기화 중")
                     .font(.system(size: 10, weight: .bold))
                     .foregroundColor(.white)
                     .padding(.horizontal, 8)
@@ -367,6 +367,10 @@ struct MarketView: View {
 
     @ViewBuilder
     private var listSection: some View {
+        let rows = vm.displayedMarketRows
+        let renderableRows = rows.filter { $0.dataState != .pending }
+        let pendingRowCount = rows.count - renderableRows.count
+
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .bottom, spacing: 12) {
                 sectionHeader(
@@ -384,9 +388,34 @@ struct MarketView: View {
                     title: "지원하지 않는 마켓입니다.",
                     detail: unsupportedMessage
                 )
-            } else if shouldShowListSkeleton {
+            } else if case .failed(let message) = vm.marketState, rows.isEmpty {
+                stateView(
+                    title: "시세를 불러오지 못했어요",
+                    detail: message,
+                    retryAction: {
+                        Task {
+                            await vm.refreshMarketData(forceRefresh: true, reason: "market_error_retry")
+                        }
+                    }
+                )
+            } else if case .empty = vm.marketState, rows.isEmpty {
+                stateView(
+                    title: "표시할 마켓 데이터가 없습니다.",
+                    detail: "\(vm.selectedExchange.displayName) · \(vm.selectedQuoteCurrency.rawValue)"
+                )
+            } else if vm.marketFilter == .fav && rows.isEmpty {
+                stateView(
+                    title: "관심 코인이 아직 없어요",
+                    detail: "별표를 눌러 관심 코인을 추가해보세요."
+                )
+            } else if rows.isEmpty {
+                stateView(
+                    title: "검색 결과가 없어요",
+                    detail: "다른 검색어를 입력하거나 거래소를 바꿔보세요."
+                )
+            } else if renderableRows.isEmpty {
                 LazyVStack(spacing: 0) {
-                    ForEach(0..<8, id: \.self) { _ in
+                    ForEach(0..<6, id: \.self) { _ in
                         marketRowSkeleton
                         Divider()
                             .background(Color.themeBorder.opacity(0.28))
@@ -398,34 +427,9 @@ struct MarketView: View {
                 )
                 .id("list-skeleton-\(marketRenderScopeKey)")
                 .transition(.identity)
-            } else if case .failed(let message) = vm.marketState, vm.displayedMarketRows.isEmpty {
-                stateView(
-                    title: "시세를 불러오지 못했어요",
-                    detail: message,
-                    retryAction: {
-                        Task {
-                            await vm.refreshMarketData(forceRefresh: true, reason: "market_error_retry")
-                        }
-                    }
-                )
-            } else if case .empty = vm.marketState, vm.displayedMarketRows.isEmpty {
-                stateView(
-                    title: "표시할 마켓 데이터가 없습니다.",
-                    detail: "\(vm.selectedExchange.displayName) · \(vm.selectedQuoteCurrency.rawValue)"
-                )
-            } else if vm.marketFilter == .fav && vm.displayedMarketRows.isEmpty {
-                stateView(
-                    title: "관심 코인이 아직 없어요",
-                    detail: "별표를 눌러 관심 코인을 추가해보세요."
-                )
-            } else if vm.displayedMarketRows.isEmpty {
-                stateView(
-                    title: "검색 결과가 없어요",
-                    detail: "다른 검색어를 입력하거나 거래소를 바꿔보세요."
-                )
             } else {
                 LazyVStack(spacing: 0) {
-                    ForEach(Array(vm.displayedMarketRows.enumerated()), id: \.element.id) { index, row in
+                    ForEach(Array(renderableRows.enumerated()), id: \.element.id) { index, row in
                         CoinRowView(
                             row: row,
                             configuration: displayConfiguration,
@@ -439,7 +443,10 @@ struct MarketView: View {
                             onVisible: {
                                 vm.markMarketRowVisible(
                                     marketIdentity: row.marketIdentity,
-                                    surrounding: marketExposureBand(around: index)
+                                    surrounding: marketExposureBand(
+                                        around: index,
+                                        rows: renderableRows
+                                    )
                                 )
                             }
                         )
@@ -448,6 +455,10 @@ struct MarketView: View {
 
                         Divider()
                             .background(Color.themeBorder.opacity(0.28))
+                    }
+
+                    if pendingRowCount > 0 {
+                        marketPendingRowsFooter(count: pendingRowCount)
                     }
                 }
                 .background(
@@ -503,10 +514,6 @@ struct MarketView: View {
         [GridItem(.flexible()), GridItem(.flexible())]
     }
 
-    private var shouldShowListSkeleton: Bool {
-        vm.marketPresentationState.listRowsState.isLoading && vm.displayedMarketRows.isEmpty
-    }
-
     private var suppressesMarketSwapAnimations: Bool {
         vm.marketPresentationState.transitionState.isLoading
             || vm.marketPresentationState.transitionState.previousExchange != nil
@@ -527,13 +534,36 @@ struct MarketView: View {
         }
     }
 
-    private func marketExposureBand(around index: Int) -> [MarketIdentity] {
+    private func marketExposureBand(
+        around index: Int,
+        rows: [MarketRowViewState]
+    ) -> [MarketIdentity] {
         let lowerBound = max(index - 6, 0)
-        let upperBound = min(index + 6, vm.displayedMarketRows.count - 1)
+        let upperBound = min(index + 6, rows.count - 1)
         guard lowerBound <= upperBound else {
             return []
         }
-        return Array(vm.displayedMarketRows[lowerBound...upperBound].map(\.marketIdentity))
+        return Array(rows[lowerBound...upperBound].map(\.marketIdentity))
+    }
+
+    private func marketPendingRowsFooter(count: Int) -> some View {
+        HStack(spacing: 10) {
+            ProgressView()
+                .controlSize(.small)
+                .tint(.accent)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("나머지 시세를 불러오는 중")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(.themeText)
+                Text("준비 중인 종목 \(count)개는 값이 확인되는 순서대로 표시됩니다.")
+                    .font(.system(size: 10))
+                    .foregroundColor(.textMuted)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+        .accessibilityIdentifier("market.pendingRows")
     }
 
     private var displayModeButton: some View {

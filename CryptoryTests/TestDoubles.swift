@@ -33,6 +33,81 @@ struct StubMarketRepository: MarketRepositoryProtocol {
     func fetchSparkline(symbol: String, exchange: Exchange, quoteCurrency: MarketQuoteCurrency, interval: String, limit: Int) async throws -> MarketSparklineSnapshot { sparklineSnapshot }
 }
 
+final class PagingMarketRepository: MarketRepositoryProtocol {
+    struct PageRequest: Equatable {
+        let cursor: String?
+        let limit: Int
+        let sortKey: String
+        let sortDirection: String
+    }
+
+    let marketCandlesEndpointPath = "/market/candles"
+    let catalogSnapshot: MarketCatalogSnapshot
+    let firstPage: MarketTickerSnapshot
+    let secondPage: MarketTickerSnapshot
+    private(set) var pageRequests: [PageRequest] = []
+    private let fallback = StubMarketRepository()
+
+    init(
+        catalogSnapshot: MarketCatalogSnapshot,
+        firstPage: MarketTickerSnapshot,
+        secondPage: MarketTickerSnapshot
+    ) {
+        self.catalogSnapshot = catalogSnapshot
+        self.firstPage = firstPage
+        self.secondPage = secondPage
+    }
+
+    func fetchMarkets(exchange: Exchange) async throws -> MarketCatalogSnapshot {
+        catalogSnapshot
+    }
+
+    func fetchTickers(exchange: Exchange) async throws -> MarketTickerSnapshot {
+        firstPage
+    }
+
+    func fetchTickerPage(
+        exchange: Exchange,
+        quoteCurrency: MarketQuoteCurrency,
+        cursor: String?,
+        limit: Int,
+        sortKey: String,
+        sortDirection: String
+    ) async throws -> MarketTickerSnapshot {
+        pageRequests.append(
+            PageRequest(
+                cursor: cursor,
+                limit: limit,
+                sortKey: sortKey,
+                sortDirection: sortDirection
+            )
+        )
+        return cursor == nil ? firstPage : secondPage
+    }
+
+    func fetchOrderbook(symbol: String, exchange: Exchange) async throws -> OrderbookSnapshot {
+        fallback.orderbookSnapshot
+    }
+
+    func fetchTrades(symbol: String, exchange: Exchange) async throws -> PublicTradesSnapshot {
+        fallback.publicTradesSnapshot
+    }
+
+    func fetchCandles(symbol: String, exchange: Exchange, interval: String) async throws -> CandleSnapshot {
+        fallback.candleSnapshot
+    }
+
+    func fetchSparkline(
+        symbol: String,
+        exchange: Exchange,
+        quoteCurrency: MarketQuoteCurrency,
+        interval: String,
+        limit: Int
+    ) async throws -> MarketSparklineSnapshot {
+        fallback.sparklineSnapshot
+    }
+}
+
 final class SpyMarketRepository: MarketRepositoryProtocol {
     let marketCandlesEndpointPath = "/market/candles"
     private(set) var fetchedMarkets: [Exchange] = []

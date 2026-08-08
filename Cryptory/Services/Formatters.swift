@@ -1,14 +1,15 @@
 import Foundation
 
 struct PriceFormatter {
-    /// formatPrice: ≥1000 → 정수+콤마, ≥1 → 소수1자리, <1 → 소수4자리
+    /// formatPrice: ≥1000 → 정수+콤마, ≥1 → 필요할 때만 소수 1자리, <1 → 최대 소수 4자리
     nonisolated static func formatPrice(_ value: Double) -> String {
+        guard value.isFinite else { return "—" }
         if value >= 1000 {
             return value.formatted(.number.precision(.fractionLength(0)))
         } else if value >= 1 {
-            return String(format: "%.1f", value)
+            return value.formatted(.number.precision(.fractionLength(0...1)))
         } else {
-            return String(format: "%.4f", value)
+            return value.formatted(.number.precision(.fractionLength(0...4)))
         }
     }
 
@@ -210,6 +211,13 @@ struct PriceFormatter {
 
     nonisolated static func formatPercent(_ value: Double) -> String {
         String(format: "%+.2f%%", value)
+    }
+
+    /// Screen copy that does not need an explicit sign. Keeps at most two
+    /// decimal places and removes presentation-only trailing zeroes.
+    nonisolated static func formatUnsignedPercent(_ value: Double) -> String {
+        guard value.isFinite else { return "—" }
+        return "\(trimTrailingZeros(String(format: "%.2f", value)))%"
     }
 
     nonisolated static func formatRank(_ value: Int) -> String {

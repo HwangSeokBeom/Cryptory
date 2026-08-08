@@ -282,51 +282,6 @@ struct MarketRowContent: View {
         .padding(.horizontal, 16)
         .padding(.vertical, configuration.rowVerticalPadding)
         .clipped()
-        .background(
-            GeometryReader { proxy in
-                Color.clear
-                    .onAppear {
-                        logLayout(proxyWidth: proxy.size.width)
-                    }
-                    .onChange(of: proxy.size.width) { _, newWidth in
-                        logLayout(proxyWidth: newWidth)
-                    }
-            }
-        )
-    }
-
-    private func logLayout(proxyWidth: CGFloat) {
-        let fixedWidth = configuration.priceWidth
-            + configuration.changeWidth
-            + configuration.changeColumnLeadingPadding
-            + (configuration.showsVolume ? configuration.volumeWidth + 6 : 0)
-            + (configuration.showsSparkline ? sparklineColumnWidth + configuration.sparklineColumnLeadingPadding : 0)
-        let contentWidth = max(proxyWidth - 32, 0)
-        let assetAreaWidth = max(contentWidth - fixedWidth, 0)
-        let assetTitleWidth = estimatedSymbolTitleWidth(model.listSymbolDisplayName)
-        let identityChromeWidth = (showsFavoriteControl ? 22 : 0)
-            + (configuration.showsSymbolImage ? configuration.symbolImageSize + 8 : 14)
-        let availableAssetTitleWidth = max(assetAreaWidth - identityChromeWidth, 0)
-        let didSymbolTruncate = assetTitleWidth > availableAssetTitleWidth
-        let didOverflow = configuration.symbolColumnMinimumWidth + fixedWidth > contentWidth
-        AppLogger.debug(
-            .layout,
-            "[GraphLayout] exchange=\(model.marketIdentity.exchange.rawValue) quoteCurrency=\(model.marketIdentity.quoteCurrency.rawValue) marketId=\(model.marketIdentity.marketId ?? model.marketIdentity.symbol) rowWidth=\(Int(proxyWidth.rounded())) contentWidth=\(Int(contentWidth.rounded())) sparklineWidth=\(Int(configuration.sparklineWidth.rounded())) sparklineHeight=\(Int(configuration.sparklineHeight.rounded())) priceWidth=\(Int(configuration.priceWidth.rounded())) changeWidth=\(Int(configuration.changeWidth.rounded())) volumeWidth=\(Int(configuration.volumeWidth.rounded())) didOverflow=\(didOverflow) bottomInset=-"
-        )
-        AppLogger.debug(
-            .layout,
-            "[MarketRowLayout] level=\((didOverflow || didSymbolTruncate) ? "WARN" : "DEBUG") rowWidth=\(Int(proxyWidth.rounded())) assetTitle=\(model.listSymbolDisplayName) assetTitleWidth=\(Int(assetTitleWidth.rounded())) didSymbolTruncate=\(didSymbolTruncate) quoteCurrency=\(model.marketIdentity.quoteCurrency.rawValue) priceWidth=\(Int(configuration.priceWidth.rounded())) changeWidth=\(Int(configuration.changeWidth.rounded())) volumeWidth=\(Int(configuration.volumeWidth.rounded())) sparklineWidth=\(Int(sparklineColumnWidth.rounded())) assetAreaWidth=\(Int(assetAreaWidth.rounded())) formattedPrice=\(model.priceText) formattedVolume=\(model.volumeText) didOverflow=\(didOverflow)"
-        )
-    }
-
-    private func estimatedSymbolTitleWidth(_ title: String) -> CGFloat {
-        let fontSize: CGFloat = configuration.compactLayout ? 12 : 13
-        #if canImport(UIKit)
-        let font = UIFont.systemFont(ofSize: fontSize, weight: .heavy)
-        return (title as NSString).size(withAttributes: [.font: font]).width
-        #else
-        return CGFloat(title.count) * fontSize * 0.64
-        #endif
     }
 }
 

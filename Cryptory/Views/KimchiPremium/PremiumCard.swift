@@ -56,19 +56,25 @@ struct PremiumCard: View, Equatable {
                     metricBlock(
                         title: "김프",
                         value: cell.premiumText,
-                        valueColor: premiumTextColor(for: cell)
+                        valueColor: premiumTextColor(for: cell),
+                        horizontalAlignment: .leading,
+                        frameAlignment: .leading
                     )
                     metricDivider
                     metricBlock(
                         title: "국내가",
                         value: cell.domesticPriceText,
-                        valueColor: cell.domesticPriceIsPlaceholder ? .textSecondary : .themeText
+                        valueColor: cell.domesticPriceIsPlaceholder ? .textSecondary : .themeText,
+                        horizontalAlignment: .trailing,
+                        frameAlignment: .trailing
                     )
                     metricDivider
                     metricBlock(
                         title: coinViewState.referenceLabel,
                         value: cell.referencePriceText,
-                        valueColor: cell.referencePriceIsPlaceholder ? .textSecondary : .themeText
+                        valueColor: cell.referencePriceIsPlaceholder ? .textSecondary : .themeText,
+                        horizontalAlignment: .trailing,
+                        frameAlignment: .trailing
                     )
                 }
 
@@ -134,8 +140,14 @@ struct PremiumCard: View, Equatable {
         }
     }
 
-    private func metricBlock(title: String, value: String, valueColor: Color) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
+    private func metricBlock(
+        title: String,
+        value: String,
+        valueColor: Color,
+        horizontalAlignment: HorizontalAlignment,
+        frameAlignment: Alignment
+    ) -> some View {
+        VStack(alignment: horizontalAlignment, spacing: 6) {
             Text(title)
                 .font(.system(size: 10, weight: .medium))
                 .foregroundColor(.textMuted)
@@ -147,7 +159,7 @@ struct PremiumCard: View, Equatable {
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: frameAlignment)
     }
 
     private var metricDivider: some View {

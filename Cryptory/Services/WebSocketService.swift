@@ -425,7 +425,8 @@ final class WebSocketService: PublicWebSocketServicing, @unchecked Sendable {
     }
 
     deinit {
-        AppLogger.debug(.lifecycle, "PublicWebSocketService deinit #\(instanceID)")
+        let deinitInstanceID = instanceID
+        AppLogger.debug(.lifecycle, "PublicWebSocketService deinit #\(deinitInstanceID)")
     }
 
     func connect() {
@@ -673,7 +674,8 @@ final class PrivateWebSocketService: PrivateWebSocketServicing, @unchecked Senda
     }
 
     deinit {
-        AppLogger.debug(.lifecycle, "PrivateWebSocketService deinit #\(instanceID)")
+        let deinitInstanceID = instanceID
+        AppLogger.debug(.lifecycle, "PrivateWebSocketService deinit #\(deinitInstanceID)")
     }
 
     func connect(accessToken: String) {
